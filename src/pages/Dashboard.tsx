@@ -16,54 +16,12 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import type { AlertItem } from '@/data/mockData';
 
-interface DashAlert {
-  id: string;
-  severity: AlertSev;
-  title: string;
-  message: string;
-  timestamp: string;
-  actionLabel?: string;
-  dismissed: boolean;
-}
-
 const severityConfig = {
   critical: { icon: XCircle, border: 'border-l-destructive', bg: 'bg-destructive/5', text: 'text-destructive' },
   high: { icon: AlertTriangle, border: 'border-l-warning', bg: 'bg-warning/5', text: 'text-warning' },
   medium: { icon: AlertCircle, border: 'border-l-info', bg: 'bg-info/5', text: 'text-info' },
   info: { icon: Info, border: 'border-l-muted-foreground', bg: 'bg-muted/5', text: 'text-muted-foreground' },
 };
-
-const statusTaskColors: Record<string, string> = {
-  'in-progress': 'text-success',
-  queued: 'text-muted-foreground',
-  completed: 'text-primary',
-  blocked: 'text-destructive',
-};
-
-const mockCommits = [
-  { hash: 'a3f2c1d', message: 'feat: implement dashboard summary tiles', author: 'Frontend Architect', time: '5 min ago' },
-  { hash: 'b8e4f2a', message: 'feat: add auth middleware with JWT', author: 'Backend Engineer', time: '12 min ago' },
-  { hash: 'c1d5e3b', message: 'test: add integration tests for auth', author: 'QA Sentinel', time: '18 min ago' },
-  { hash: 'd2f6a4c', message: 'docs: update API reference', author: 'Doc Writer', time: '25 min ago' },
-];
-
-const mockActivityFeed = [
-  { id: 'f1', icon: Bot, text: 'Frontend Architect started task: Build dashboard', time: '2 min ago', type: 'agent' },
-  { id: 'f2', icon: GitCommit, text: 'Backend Engineer committed: auth middleware', time: '12 min ago', type: 'commit' },
-  { id: 'f3', icon: AlertTriangle, text: 'Loop detected in Doc Writer — paused automatically', time: '15 min ago', type: 'alert' },
-  { id: 'f4', icon: TestTube2, text: 'QA Sentinel: 87/94 tests passing', time: '20 min ago', type: 'test' },
-  { id: 'f5', icon: FileText, text: 'Spec drift detected in section §3.3', time: '25 min ago', type: 'drift' },
-  { id: 'f6', icon: DollarSign, text: 'Budget checkpoint: $142/$200 consumed', time: '30 min ago', type: 'budget' },
-  { id: 'f7', icon: Eye, text: 'Planning Engine reviewed PR #12', time: '35 min ago', type: 'review' },
-  { id: 'f8', icon: Bot, text: 'Security Auditor paused — awaiting credentials', time: '40 min ago', type: 'agent' },
-];
-
-const initialAlerts: DashAlert[] = [
-  { id: 'alert-1', severity: 'critical', title: 'Budget threshold reached', message: 'Project budget at 89% — 3 agents throttled', timestamp: '2 min ago', actionLabel: 'Extend Budget', dismissed: false },
-  { id: 'alert-2', severity: 'high', title: 'Agent loop detected', message: 'Doc Writer has repeated the same action 4 times', timestamp: '8 min ago', actionLabel: 'Intervene', dismissed: false },
-  { id: 'alert-3', severity: 'medium', title: 'Spec drift detected', message: 'Implementation diverged from PRD section 4.2', timestamp: '23 min ago', dismissed: false },
-  { id: 'alert-4', severity: 'info', title: 'New eval results', message: 'QA Sentinel completed batch evaluation — 94% pass rate', timestamp: '45 min ago', dismissed: false },
-];
 
 /* ─── Sprint Timeline (Redesigned) ─── */
 function SprintTimeline() {
