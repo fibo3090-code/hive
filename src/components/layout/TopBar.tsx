@@ -20,7 +20,7 @@ const routeNames: Record<string, string> = {
 export function TopBar() {
   const location = useLocation();
   const currentRoute = routeNames[location.pathname] || 'HIVE';
-  const { state, toggleSession } = useHive();
+  const { state, activeProject, toggleSession } = useHive();
   const { session, agents, healthScore } = state;
 
   const workingCount = agents.filter(a => a.status === 'working').length;
@@ -30,7 +30,7 @@ export function TopBar() {
     <header className="flex h-10 items-center justify-between border-b border-border bg-surface-1 px-4">
       {/* Left: project + breadcrumb */}
       <div className="flex items-center gap-3">
-        <span className="text-sm font-semibold text-foreground">HIVE Dashboard</span>
+        <span className="text-sm font-semibold text-foreground">{activeProject?.name ?? 'HIVE Dashboard'}</span>
         <span className="text-muted-foreground/40">/</span>
         <span className="text-sm text-muted-foreground">{currentRoute}</span>
       </div>

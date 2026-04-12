@@ -79,6 +79,47 @@
     --chart-4: 280 68% 60%;
     --chart-5: 0 72% 51%;
   }
+
+  .light {
+    --background: 42 33% 96%;
+    --foreground: 240 10% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 12%;
+
+    --secondary: 42 20% 90%;
+    --secondary-foreground: 240 10% 18%;
+
+    --muted: 40 18% 92%;
+    --muted-foreground: 240 5% 38%;
+
+    --accent: 40 20% 88%;
+    --accent-foreground: 240 10% 12%;
+
+    --destructive: 0 72% 47%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 40 16% 84%;
+    --input: 40 16% 84%;
+
+    --success: 142 71% 36%;
+    --warning: 38 92% 42%;
+    --info: 217 91% 50%;
+
+    --surface-0: 42 33% 96%;
+    --surface-1: 0 0% 100%;
+    --surface-2: 40 20% 92%;
+    --surface-3: 40 20% 88%;
+
+    --sidebar-background: 40 24% 94%;
+    --sidebar-foreground: 240 6% 32%;
+    --sidebar-accent: 40 20% 88%;
+    --sidebar-accent-foreground: 240 10% 18%;
+    --sidebar-border: 40 16% 84%;
+  }
 }
 
 @layer base {
@@ -92,6 +133,19 @@
   code, pre, .font-mono {
     font-family: 'JetBrains Mono', monospace;
   }
+}
+
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+.compact-mode .compact-card {
+  padding: 0.75rem;
 }
 
 /* HIVE Custom Utilities */

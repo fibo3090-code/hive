@@ -199,7 +199,7 @@ function BackgroundSessionCard() {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { state, dismissAlert: ctxDismissAlert, updateTaskStatus } = useHive();
+  const { state, activeProject, dismissAlert: ctxDismissAlert, updateTaskStatus } = useHive();
   const { agents, tasks, alerts, session, healthScore } = state;
   const [timeFilter, setTimeFilter] = useState('1h');
   const [alertsExpanded, setAlertsExpanded] = useState(true);
@@ -209,6 +209,8 @@ export default function Dashboard() {
   const budgetTotal = session.budgetTotal;
   const budgetPct = Math.round((budgetUsed / budgetTotal) * 100);
   const displayedActivity = showMoreActivity ? mockActivityFeed : mockActivityFeed.slice(0, 5);
+  const specCompletion = activeProject?.specCompletion ?? 73;
+  const testCoverage = activeProject?.testCoverage ?? 68;
 
   const dismissAlert = (id: string) => {
     ctxDismissAlert(id);
@@ -276,8 +278,8 @@ export default function Dashboard() {
         {[
           { label: 'Health Score', value: String(healthScore), icon: Heart, color: 'text-success', sub: '+2 from last session', path: '/insights' },
           { label: 'Budget', value: `$${budgetUsed}/$${budgetTotal}`, icon: DollarSign, color: budgetPct > 80 ? 'text-warning' : 'text-foreground', sub: `${budgetPct}% consumed`, path: '/settings' },
-          { label: 'Spec Completion', value: '73%', icon: FileCheck, color: 'text-info', sub: '22/30 requirements', path: '/spec' },
-          { label: 'Test Coverage', value: '68%', icon: TestTube2, color: 'text-primary', sub: '87/94 passing', path: '/insights' },
+          { label: 'Spec Completion', value: `${specCompletion}%`, icon: FileCheck, color: 'text-info', sub: `${activeProject?.name ?? 'Project'} requirements`, path: '/spec' },
+          { label: 'Test Coverage', value: `${testCoverage}%`, icon: TestTube2, color: 'text-primary', sub: '87/94 passing', path: '/insights' },
           { label: 'Active Agents', value: `${agents.filter(a => a.status === 'working').length}/${agents.length}`, icon: Bot, color: 'text-primary', sub: `${agents.filter(a => a.status === 'blocked').length} blocked, ${agents.filter(a => a.status === 'paused').length} paused`, path: '/hive-graph' },
         ].map((tile) => (
           <motion.div key={tile.label} whileHover={{ scale: 1.02 }} onClick={() => navigate(tile.path)}

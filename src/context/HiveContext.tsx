@@ -1,7 +1,7 @@
-import React, { createContext, useContext, useReducer, useCallback, type Dispatch } from 'react';
+import React, { createContext, useContext, useReducer, useCallback, useEffect, type Dispatch } from 'react';
 import {
-  mockAgents, mockTasks, mockAlerts, mockSession,
-  type Agent, type TaskItem, type AlertItem, type SessionInfo, type AgentStatus,
+  mockAgents, mockTasks, mockAlerts, mockProjects, mockSession,
+  type Project, type TaskItem, type AlertItem, type SessionInfo, type AgentStatus,
 } from '@/data/mockData';
 
 /* ─── Notification type (lives in context now) ─── */
@@ -29,7 +29,8 @@ const initialNotifications: Notification[] = [
 /* ─── State shape ─── */
 export interface HiveState {
   session: SessionInfo;
-  agents: Agent[];
+  projects: Project[];
+  agents: typeof mockAgents;
   tasks: TaskItem[];
   alerts: AlertItem[];
   notifications: Notification[];
@@ -37,15 +38,68 @@ export interface HiveState {
   healthScore: number;
 }
 
-const initialState: HiveState = {
+const STORAGE_KEY = 'hive-runtime';
+
+function syncProjectMetrics(state: HiveState, projectId: string | null) {
+  const activeProject = state.projects.find((project) => project.id === projectId) ?? state.projects[0] ?? null;
+
+  if (!activeProject) {
+    return state;
+  }
+
+  return {
+    ...state,
+    activeProjectId: activeProject.id,
+    healthScore: activeProject.healthScore,
+    session: {
+      ...state.session,
+      budgetUsed: activeProject.budget.used,
+      budgetTotal: activeProject.budget.total,
+      agentCount: activeProject.agentCount,
+    },
+  };
+}
+
+const initialState: HiveState = syncProjectMetrics({
   session: { ...mockSession },
+  projects: [...mockProjects],
   agents: [...mockAgents],
   tasks: [...mockTasks],
   alerts: [...mockAlerts],
   notifications: initialNotifications,
   activeProjectId: 'proj-001',
   healthScore: 87,
-};
+}, 'proj-001');
+
+function readInitialState(): HiveState {
+  if (typeof window === 'undefined') {
+    return initialState;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return initialState;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<HiveState>;
+    const hydrated: HiveState = {
+      ...initialState,
+      ...parsed,
+      projects: parsed.projects ?? initialState.projects,
+      agents: parsed.agents ?? initialState.agents,
+      tasks: parsed.tasks ?? initialState.tasks,
+      alerts: parsed.alerts ?? initialState.alerts,
+      notifications: parsed.notifications ?? initialState.notifications,
+      session: { ...initialState.session, ...parsed.session },
+    };
+
+    return syncProjectMetrics(hydrated, hydrated.activeProjectId);
+  } catch (error) {
+    console.error('Failed to read hive runtime state', error);
+    return initialState;
+  }
+}
 
 /* ─── Actions ─── */
 export type HiveAction =
@@ -60,6 +114,8 @@ export type HiveAction =
   | { type: 'MARK_ALL_NOTIFICATIONS_READ' }
   | { type: 'DISMISS_NOTIFICATION'; payload: string }
   | { type: 'SET_ACTIVE_PROJECT'; payload: string }
+  | { type: 'ADD_PROJECT'; payload: Project }
+  | { type: 'UPDATE_PROJECT'; payload: { projectId: string; changes: Partial<Project> } }
   | { type: 'SET_HEALTH_SCORE'; payload: number };
 
 function hiveReducer(state: HiveState, action: HiveAction): HiveState {
@@ -146,7 +202,23 @@ function hiveReducer(state: HiveState, action: HiveAction): HiveState {
       };
 
     case 'SET_ACTIVE_PROJECT':
-      return { ...state, activeProjectId: action.payload };
+      return syncProjectMetrics(state, action.payload);
+
+    case 'ADD_PROJECT':
+      return syncProjectMetrics({
+        ...state,
+        projects: [action.payload, ...state.projects],
+      }, action.payload.id);
+
+    case 'UPDATE_PROJECT': {
+      const projects = state.projects.map((project) =>
+        project.id === action.payload.projectId
+          ? { ...project, ...action.payload.changes }
+          : project
+      );
+
+      return syncProjectMetrics({ ...state, projects }, state.activeProjectId);
+    }
 
     case 'SET_HEALTH_SCORE':
       return { ...state, healthScore: action.payload };
@@ -159,6 +231,7 @@ function hiveReducer(state: HiveState, action: HiveAction): HiveState {
 /* ─── Context ─── */
 interface HiveContextValue {
   state: HiveState;
+  activeProject: Project | null;
   dispatch: Dispatch<HiveAction>;
   // Convenience helpers
   toggleSession: () => void;
@@ -169,12 +242,15 @@ interface HiveContextValue {
   updateTaskStatus: (taskId: string, status: TaskItem['status']) => void;
   setAgentStatus: (agentId: string, status: AgentStatus) => void;
   extendBudget: (newTotal: number) => void;
+  setActiveProject: (projectId: string) => void;
+  addProject: (project: Project) => void;
+  updateProject: (projectId: string, changes: Partial<Project>) => void;
 }
 
 const HiveContext = createContext<HiveContextValue | null>(null);
 
 export function HiveProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = useReducer(hiveReducer, initialState);
+  const [state, dispatch] = useReducer(hiveReducer, undefined, readInitialState);
 
   const toggleSession = useCallback(() => dispatch({ type: 'TOGGLE_SESSION' }), []);
   const dismissAlert = useCallback((id: string) => dispatch({ type: 'DISMISS_ALERT', payload: id }), []);
@@ -187,13 +263,32 @@ export function HiveProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SET_AGENT_STATUS', payload: { agentId, status } }), []);
   const extendBudget = useCallback((newTotal: number) =>
     dispatch({ type: 'UPDATE_BUDGET', payload: { total: newTotal } }), []);
+  const setActiveProject = useCallback((projectId: string) =>
+    dispatch({ type: 'SET_ACTIVE_PROJECT', payload: projectId }), []);
+  const addProject = useCallback((project: Project) =>
+    dispatch({ type: 'ADD_PROJECT', payload: project }), []);
+  const updateProject = useCallback((projectId: string, changes: Partial<Project>) =>
+    dispatch({ type: 'UPDATE_PROJECT', payload: { projectId, changes } }), []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }, [state]);
+
+  const activeProject = state.projects.find((project) => project.id === state.activeProjectId) ?? null;
 
   return (
     <HiveContext.Provider value={{
-      state, dispatch,
+      state,
+      activeProject,
+      dispatch,
       toggleSession, dismissAlert, dismissNotification,
       markNotificationRead, markAllNotificationsRead,
       updateTaskStatus, setAgentStatus, extendBudget,
+      setActiveProject, addProject, updateProject,
     }}>
       {children}
     </HiveContext.Provider>

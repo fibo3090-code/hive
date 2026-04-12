@@ -5,9 +5,11 @@ import { Progress } from '@/components/ui/progress';
 import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
+import { useHive } from '@/context/HiveContext';
 
 export default function Projects() {
   const navigate = useNavigate();
+  const { activeProject, setActiveProject } = useHive();
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background p-8">
@@ -27,8 +29,14 @@ export default function Projects() {
           return (
             <button
               key={project.id}
-              onClick={() => navigate('/dashboard')}
-              className="group rounded-xl border border-border bg-card p-5 text-left hover:border-primary/40 hover:glow-amber transition-all"
+              onClick={() => {
+                setActiveProject(project.id);
+                navigate('/dashboard');
+              }}
+              className={cn(
+                'group rounded-xl border border-border bg-card p-5 text-left hover:border-primary/40 hover:glow-amber transition-all',
+                activeProject?.id === project.id && 'border-primary/40 glow-amber'
+              )}
             >
               <div className="flex items-start justify-between mb-3">
                 <div>
