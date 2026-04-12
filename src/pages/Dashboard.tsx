@@ -167,29 +167,30 @@ function SprintTimeline() {
 
 /* ─── Background Session Card ─── */
 function BackgroundSessionCard() {
-  const [paused, setPaused] = useState(false);
-  const navigate = useNavigate();
+  const { state, toggleSession } = useHive();
+  const { session, agents } = state;
+  const workingCount = agents.filter(a => a.status === 'working').length;
 
   return (
-    <div className={cn('rounded-lg border p-4 transition-colors', paused ? 'border-warning/20 bg-warning/5' : 'border-primary/20 bg-primary/5')}>
+    <div className={cn('rounded-lg border p-4 transition-colors', !session.isActive ? 'border-warning/20 bg-warning/5' : 'border-primary/20 bg-primary/5')}>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <div className={cn('h-2 w-2 rounded-full', paused ? 'bg-warning' : 'bg-primary animate-status-pulse')} />
-          <h3 className={cn('text-sm font-semibold', paused ? 'text-warning' : 'text-primary')}>
-            {paused ? 'Session Paused' : 'Background Session Active'}
+          <div className={cn('h-2 w-2 rounded-full', !session.isActive ? 'bg-warning' : 'bg-primary animate-status-pulse')} />
+          <h3 className={cn('text-sm font-semibold', !session.isActive ? 'text-warning' : 'text-primary')}>
+            {!session.isActive ? 'Session Paused' : 'Background Session Active'}
           </h3>
         </div>
-        <span className="text-micro font-mono text-primary">01:23:45</span>
+        <span className="text-micro font-mono text-primary">{session.elapsed}</span>
       </div>
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        <span>4 agents {paused ? 'paused' : 'working'}</span>
-        <span>342K tokens</span>
-        <span>$142 spent</span>
+        <span>{workingCount} agents {!session.isActive ? 'paused' : 'working'}</span>
+        <span>{(session.tokensUsed / 1000).toFixed(0)}K tokens</span>
+        <span>${session.budgetUsed} spent</span>
       </div>
       <div className="flex gap-2 mt-3">
-        <button onClick={() => navigate('/dashboard')} className="text-xs text-primary hover:underline">View Wake Report</button>
-        <button onClick={() => { setPaused(!paused); toast(paused ? 'Session resumed' : 'Session paused'); }} className={cn('text-xs hover:underline', paused ? 'text-success' : 'text-muted-foreground')}>
-          {paused ? 'Resume Session' : 'Pause Session'}
+        <button className="text-xs text-primary hover:underline">View Wake Report</button>
+        <button onClick={() => { toggleSession(); toast(!session.isActive ? 'Session resumed' : 'Session paused'); }} className={cn('text-xs hover:underline', !session.isActive ? 'text-success' : 'text-muted-foreground')}>
+          {!session.isActive ? 'Resume Session' : 'Pause Session'}
         </button>
       </div>
     </div>
