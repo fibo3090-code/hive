@@ -1,28 +1,8 @@
-import { useState } from 'react';
 import { Bell, Check, X, AlertTriangle, XCircle, AlertCircle, Info, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
-
-export interface Notification {
-  id: string;
-  type: 'critical' | 'high' | 'medium' | 'info';
-  title: string;
-  message: string;
-  time: string;
-  read: boolean;
-  actionable?: boolean;
-  actionLabel?: string;
-}
-
-const initialNotifications: Notification[] = [
-  { id: 'n1', type: 'critical', title: 'Budget threshold reached', message: 'Project budget at 89% — 3 agents throttled', time: '2 min ago', read: false, actionable: true, actionLabel: 'Extend Budget' },
-  { id: 'n2', type: 'high', title: 'Agent loop detected', message: 'Doc Writer repeated same action 4 times', time: '8 min ago', read: false, actionable: true, actionLabel: 'Intervene' },
-  { id: 'n3', type: 'medium', title: 'Spec drift in §4.2', message: 'Implementation diverged from PRD', time: '23 min ago', read: false, actionable: true, actionLabel: 'Review' },
-  { id: 'n4', type: 'info', title: 'Eval batch complete', message: 'QA Sentinel — 94% pass rate', time: '45 min ago', read: false },
-  { id: 'n5', type: 'info', title: 'PR #11 ready', message: 'Backend Engineer: auth middleware', time: '1 hr ago', read: true },
-  { id: 'n6', type: 'medium', title: 'Test coverage dropped', message: 'Coverage fell below 70% threshold', time: '1.5 hr ago', read: true },
-  { id: 'n7', type: 'high', title: 'Security scan warning', message: 'Potential credential leak in config.ts', time: '2 hr ago', read: true, actionable: true, actionLabel: 'Review' },
-];
+import { useState } from 'react';
+import { useHive } from '@/context/HiveContext';
 
 const typeConfig = {
   critical: { icon: XCircle, color: 'text-destructive', bg: 'bg-destructive/10', dot: 'bg-destructive' },
@@ -33,23 +13,12 @@ const typeConfig = {
 
 export function NotificationDropdown() {
   const [open, setOpen] = useState(false);
-  const [notifications, setNotifications] = useState(initialNotifications);
+  const { state, markNotificationRead, markAllNotificationsRead, dismissNotification } = useHive();
+  const { notifications } = state;
   const unreadCount = notifications.filter(n => !n.read).length;
 
-  const markAsRead = (id: string) => {
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
-  };
-
-  const markAllRead = () => {
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
-  };
-
-  const dismiss = (id: string) => {
-    setNotifications(prev => prev.filter(n => n.id !== id));
-  };
-
   const handleAction = (id: string) => {
-    markAsRead(id);
+    markNotificationRead(id);
     // In a real app this would trigger the action
   };
 
@@ -70,7 +39,6 @@ export function NotificationDropdown() {
       <AnimatePresence>
         {open && (
           <>
-            {/* Backdrop */}
             <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
 
             <motion.div
@@ -80,7 +48,6 @@ export function NotificationDropdown() {
               transition={{ duration: 0.15 }}
               className="absolute right-0 top-full mt-2 z-50 w-[380px] rounded-lg border border-border bg-card shadow-xl overflow-hidden"
             >
-              {/* Header */}
               <div className="flex items-center justify-between border-b border-border px-4 py-3">
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm font-semibold">Notifications</h3>
@@ -89,13 +56,12 @@ export function NotificationDropdown() {
                   )}
                 </div>
                 {unreadCount > 0 && (
-                  <button onClick={markAllRead} className="text-micro text-primary hover:underline">
+                  <button onClick={markAllNotificationsRead} className="text-micro text-primary hover:underline">
                     Mark all read
                   </button>
                 )}
               </div>
 
-              {/* List */}
               <div className="max-h-[400px] overflow-auto scrollbar-thin divide-y divide-border">
                 {notifications.length === 0 ? (
                   <div className="py-12 text-center">
@@ -126,7 +92,7 @@ export function NotificationDropdown() {
                             <p className={cn('text-xs font-medium leading-tight', !n.read ? 'text-foreground' : 'text-muted-foreground')}>{n.title}</p>
                             <div className="flex items-center gap-1 shrink-0">
                               {!n.read && <span className={cn('h-1.5 w-1.5 rounded-full', config.dot)} />}
-                              <button onClick={() => dismiss(n.id)} className="text-muted-foreground/50 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button onClick={() => dismissNotification(n.id)} className="text-muted-foreground/50 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity">
                                 <X className="h-3 w-3" />
                               </button>
                             </div>
@@ -142,7 +108,7 @@ export function NotificationDropdown() {
                               </button>
                             )}
                             {!n.read && (
-                              <button onClick={() => markAsRead(n.id)} className="text-micro text-muted-foreground hover:text-foreground flex items-center gap-0.5">
+                              <button onClick={() => markNotificationRead(n.id)} className="text-micro text-muted-foreground hover:text-foreground flex items-center gap-0.5">
                                 <Check className="h-2.5 w-2.5" /> Read
                               </button>
                             )}
@@ -154,7 +120,6 @@ export function NotificationDropdown() {
                 )}
               </div>
 
-              {/* Footer */}
               <div className="border-t border-border px-4 py-2 text-center">
                 <button onClick={() => setOpen(false)} className="text-micro text-muted-foreground hover:text-foreground">
                   Close

@@ -1,9 +1,9 @@
-import { Play, Users, Clock, Pause, Square } from 'lucide-react';
+import { Play, Users, Clock, Pause } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { NotificationDropdown } from './NotificationDropdown';
-import { useState } from 'react';
+import { useHive } from '@/context/HiveContext';
 import { cn } from '@/lib/utils';
 
 const routeNames: Record<string, string> = {
@@ -20,11 +20,11 @@ const routeNames: Record<string, string> = {
 export function TopBar() {
   const location = useLocation();
   const currentRoute = routeNames[location.pathname] || 'HIVE';
-  const [sessionActive, setSessionActive] = useState(true);
-  const [elapsed, setElapsed] = useState('01:23:45');
-  const [budgetUsed] = useState(142);
-  const [budgetTotal] = useState(200);
-  const budgetPct = Math.round((budgetUsed / budgetTotal) * 100);
+  const { state, toggleSession } = useHive();
+  const { session, agents, healthScore } = state;
+
+  const workingCount = agents.filter(a => a.status === 'working').length;
+  const budgetPct = Math.round((session.budgetUsed / session.budgetTotal) * 100);
 
   return (
     <header className="flex h-10 items-center justify-between border-b border-border bg-surface-1 px-4">
@@ -38,13 +38,13 @@ export function TopBar() {
       {/* Right: session info + controls */}
       <div className="flex items-center gap-4">
         {/* Session pill */}
-        {sessionActive && (
+        {session.isActive && (
           <div className="flex items-center gap-2 rounded-full border border-primary/30 bg-primary/5 px-3 py-1">
             <Users className="h-3 w-3 text-primary" />
-            <span className="text-caption font-mono text-primary">4</span>
+            <span className="text-caption font-mono text-primary">{workingCount}</span>
             <span className="h-3 w-px bg-primary/20" />
             <Clock className="h-3 w-3 text-primary" />
-            <span className="text-caption font-mono text-primary">{elapsed}</span>
+            <span className="text-caption font-mono text-primary">{session.elapsed}</span>
           </div>
         )}
 
@@ -56,18 +56,18 @@ export function TopBar() {
               cx="10" cy="10" r="8" fill="none"
               stroke="hsl(var(--success))"
               strokeWidth="2"
-              strokeDasharray={`${87 * 0.502} ${50.2 - 87 * 0.502}`}
+              strokeDasharray={`${healthScore * 0.502} ${50.2 - healthScore * 0.502}`}
               strokeLinecap="round"
             />
           </svg>
-          <span className="text-caption font-mono text-success">87</span>
+          <span className="text-caption font-mono text-success">{healthScore}</span>
         </div>
 
         {/* Budget bar */}
         <div className="flex items-center gap-2 w-28">
-          <span className="text-micro text-muted-foreground">${budgetUsed}</span>
+          <span className="text-micro text-muted-foreground">${session.budgetUsed}</span>
           <Progress value={budgetPct} className="h-1.5 flex-1" />
-          <span className="text-micro text-muted-foreground">${budgetTotal}</span>
+          <span className="text-micro text-muted-foreground">${session.budgetTotal}</span>
         </div>
 
         {/* Notification dropdown */}
@@ -76,15 +76,15 @@ export function TopBar() {
         {/* Session toggle button */}
         <Button
           size="sm"
-          onClick={() => setSessionActive(!sessionActive)}
+          onClick={toggleSession}
           className={cn(
             'h-7 gap-1.5 text-xs transition-all',
-            sessionActive
+            session.isActive
               ? 'bg-primary/10 text-primary border border-primary/30 hover:bg-destructive/10 hover:text-destructive hover:border-destructive/30'
               : 'bg-primary text-primary-foreground hover:bg-primary/90'
           )}
         >
-          {sessionActive ? (
+          {session.isActive ? (
             <>
               <Pause className="h-3 w-3" />
               Pause

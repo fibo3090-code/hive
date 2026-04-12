@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { mockAgents, mockTasks } from '@/data/mockData';
+import { useHive } from '@/context/HiveContext';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ConfidenceBar } from '@/components/shared/ConfidenceBar';
 import {
@@ -14,18 +14,7 @@ import { Progress } from '@/components/ui/progress';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-
-type AlertSev = 'critical' | 'high' | 'medium' | 'info';
-
-interface DashAlert {
-  id: string;
-  severity: AlertSev;
-  title: string;
-  message: string;
-  timestamp: string;
-  actionLabel?: string;
-  dismissed: boolean;
-}
+import type { AlertItem } from '@/data/mockData';
 
 const severityConfig = {
   critical: { icon: XCircle, border: 'border-l-destructive', bg: 'bg-destructive/5', text: 'text-destructive' },
@@ -57,13 +46,6 @@ const mockActivityFeed = [
   { id: 'f6', icon: DollarSign, text: 'Budget checkpoint: $142/$200 consumed', time: '30 min ago', type: 'budget' },
   { id: 'f7', icon: Eye, text: 'Planning Engine reviewed PR #12', time: '35 min ago', type: 'review' },
   { id: 'f8', icon: Bot, text: 'Security Auditor paused — awaiting credentials', time: '40 min ago', type: 'agent' },
-];
-
-const initialAlerts: DashAlert[] = [
-  { id: 'alert-1', severity: 'critical', title: 'Budget threshold reached', message: 'Project budget at 89% — 3 agents throttled', timestamp: '2 min ago', actionLabel: 'Extend Budget', dismissed: false },
-  { id: 'alert-2', severity: 'high', title: 'Agent loop detected', message: 'Doc Writer has repeated the same action 4 times', timestamp: '8 min ago', actionLabel: 'Intervene', dismissed: false },
-  { id: 'alert-3', severity: 'medium', title: 'Spec drift detected', message: 'Implementation diverged from PRD section 4.2', timestamp: '23 min ago', dismissed: false },
-  { id: 'alert-4', severity: 'info', title: 'New eval results', message: 'QA Sentinel completed batch evaluation — 94% pass rate', timestamp: '45 min ago', dismissed: false },
 ];
 
 /* ─── Sprint Timeline (Redesigned) ─── */
@@ -185,29 +167,30 @@ function SprintTimeline() {
 
 /* ─── Background Session Card ─── */
 function BackgroundSessionCard() {
-  const [paused, setPaused] = useState(false);
-  const navigate = useNavigate();
+  const { state, toggleSession } = useHive();
+  const { session, agents } = state;
+  const workingCount = agents.filter(a => a.status === 'working').length;
 
   return (
-    <div className={cn('rounded-lg border p-4 transition-colors', paused ? 'border-warning/20 bg-warning/5' : 'border-primary/20 bg-primary/5')}>
+    <div className={cn('rounded-lg border p-4 transition-colors', !session.isActive ? 'border-warning/20 bg-warning/5' : 'border-primary/20 bg-primary/5')}>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <div className={cn('h-2 w-2 rounded-full', paused ? 'bg-warning' : 'bg-primary animate-status-pulse')} />
-          <h3 className={cn('text-sm font-semibold', paused ? 'text-warning' : 'text-primary')}>
-            {paused ? 'Session Paused' : 'Background Session Active'}
+          <div className={cn('h-2 w-2 rounded-full', !session.isActive ? 'bg-warning' : 'bg-primary animate-status-pulse')} />
+          <h3 className={cn('text-sm font-semibold', !session.isActive ? 'text-warning' : 'text-primary')}>
+            {!session.isActive ? 'Session Paused' : 'Background Session Active'}
           </h3>
         </div>
-        <span className="text-micro font-mono text-primary">01:23:45</span>
+        <span className="text-micro font-mono text-primary">{session.elapsed}</span>
       </div>
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        <span>4 agents {paused ? 'paused' : 'working'}</span>
-        <span>342K tokens</span>
-        <span>$142 spent</span>
+        <span>{workingCount} agents {!session.isActive ? 'paused' : 'working'}</span>
+        <span>{(session.tokensUsed / 1000).toFixed(0)}K tokens</span>
+        <span>${session.budgetUsed} spent</span>
       </div>
       <div className="flex gap-2 mt-3">
-        <button onClick={() => navigate('/dashboard')} className="text-xs text-primary hover:underline">View Wake Report</button>
-        <button onClick={() => { setPaused(!paused); toast(paused ? 'Session resumed' : 'Session paused'); }} className={cn('text-xs hover:underline', paused ? 'text-success' : 'text-muted-foreground')}>
-          {paused ? 'Resume Session' : 'Pause Session'}
+        <button className="text-xs text-primary hover:underline">View Wake Report</button>
+        <button onClick={() => { toggleSession(); toast(!session.isActive ? 'Session resumed' : 'Session paused'); }} className={cn('text-xs hover:underline', !session.isActive ? 'text-success' : 'text-muted-foreground')}>
+          {!session.isActive ? 'Resume Session' : 'Pause Session'}
         </button>
       </div>
     </div>
@@ -216,24 +199,23 @@ function BackgroundSessionCard() {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { state, dismissAlert: ctxDismissAlert, updateTaskStatus } = useHive();
+  const { agents, tasks, alerts, session, healthScore } = state;
   const [timeFilter, setTimeFilter] = useState('1h');
   const [alertsExpanded, setAlertsExpanded] = useState(true);
   const [showMoreActivity, setShowMoreActivity] = useState(false);
-  const [alerts, setAlerts] = useState(initialAlerts);
-  const [tasks, setTasks] = useState(mockTasks);
 
-  const activeAlerts = alerts.filter(a => !a.dismissed);
-  const budgetUsed = 142;
-  const budgetTotal = 200;
+  const budgetUsed = session.budgetUsed;
+  const budgetTotal = session.budgetTotal;
   const budgetPct = Math.round((budgetUsed / budgetTotal) * 100);
   const displayedActivity = showMoreActivity ? mockActivityFeed : mockActivityFeed.slice(0, 5);
 
   const dismissAlert = (id: string) => {
-    setAlerts(prev => prev.map(a => a.id === id ? { ...a, dismissed: true } : a));
+    ctxDismissAlert(id);
     toast.success('Alert dismissed');
   };
 
-  const handleAlertAction = (alert: DashAlert) => {
+  const handleAlertAction = (alert: AlertItem) => {
     if (alert.actionLabel === 'Extend Budget') {
       toast.success('Budget extended to $300');
     } else if (alert.actionLabel === 'Intervene') {
@@ -243,13 +225,16 @@ export default function Dashboard() {
   };
 
   const toggleTaskStatus = (id: string) => {
-    setTasks(prev => prev.map(t => {
-      if (t.id !== id) return t;
-      const next = t.status === 'queued' ? 'in-progress' : t.status === 'in-progress' ? 'completed' : t.status;
-      if (next !== t.status) toast.success(`Task "${t.title}" → ${next}`);
-      return { ...t, status: next };
-    }));
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    const next = task.status === 'queued' ? 'in-progress' : task.status === 'in-progress' ? 'completed' : task.status;
+    if (next !== task.status) {
+      updateTaskStatus(id, next);
+      toast.success(`Task "${task.title}" → ${next}`);
+    }
   };
+
+  const activeAlerts = alerts;
 
   return (
     <div className="p-6 space-y-6 animate-fade-in">
@@ -289,11 +274,11 @@ export default function Dashboard() {
       {/* Summary tiles */}
       <div className="grid grid-cols-5 gap-3">
         {[
-          { label: 'Health Score', value: '87', icon: Heart, color: 'text-success', sub: '+2 from last session', path: '/insights' },
+          { label: 'Health Score', value: String(healthScore), icon: Heart, color: 'text-success', sub: '+2 from last session', path: '/insights' },
           { label: 'Budget', value: `$${budgetUsed}/$${budgetTotal}`, icon: DollarSign, color: budgetPct > 80 ? 'text-warning' : 'text-foreground', sub: `${budgetPct}% consumed`, path: '/settings' },
           { label: 'Spec Completion', value: '73%', icon: FileCheck, color: 'text-info', sub: '22/30 requirements', path: '/spec' },
           { label: 'Test Coverage', value: '68%', icon: TestTube2, color: 'text-primary', sub: '87/94 passing', path: '/insights' },
-          { label: 'Active Agents', value: `${mockAgents.filter(a => a.status === 'working').length}/${mockAgents.length}`, icon: Bot, color: 'text-primary', sub: '1 blocked, 1 paused', path: '/hive-graph' },
+          { label: 'Active Agents', value: `${agents.filter(a => a.status === 'working').length}/${agents.length}`, icon: Bot, color: 'text-primary', sub: `${agents.filter(a => a.status === 'blocked').length} blocked, ${agents.filter(a => a.status === 'paused').length} paused`, path: '/hive-graph' },
         ].map((tile) => (
           <motion.div key={tile.label} whileHover={{ scale: 1.02 }} onClick={() => navigate(tile.path)}
             className="rounded-lg border border-border bg-card p-4 hover:border-primary/30 transition-colors cursor-pointer">
@@ -379,10 +364,10 @@ export default function Dashboard() {
           <div className="rounded-lg border border-border bg-card">
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
               <h3 className="text-sm font-semibold">Agents</h3>
-              <button onClick={() => navigate('/hive-graph')} className="text-micro text-primary hover:underline">{mockAgents.length} total</button>
+              <button onClick={() => navigate('/hive-graph')} className="text-micro text-primary hover:underline">{agents.length} total</button>
             </div>
             <div className="p-3 space-y-2 max-h-[360px] overflow-auto scrollbar-thin">
-              {mockAgents.map((agent) => (
+              {agents.map((agent) => (
                 <motion.div key={agent.id} whileHover={{ scale: 1.01 }}
                   onClick={() => navigate('/hive-graph')}
                   className={cn(
