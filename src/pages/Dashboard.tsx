@@ -274,11 +274,11 @@ export default function Dashboard() {
       {/* Summary tiles */}
       <div className="grid grid-cols-5 gap-3">
         {[
-          { label: 'Health Score', value: '87', icon: Heart, color: 'text-success', sub: '+2 from last session', path: '/insights' },
+          { label: 'Health Score', value: String(healthScore), icon: Heart, color: 'text-success', sub: '+2 from last session', path: '/insights' },
           { label: 'Budget', value: `$${budgetUsed}/$${budgetTotal}`, icon: DollarSign, color: budgetPct > 80 ? 'text-warning' : 'text-foreground', sub: `${budgetPct}% consumed`, path: '/settings' },
           { label: 'Spec Completion', value: '73%', icon: FileCheck, color: 'text-info', sub: '22/30 requirements', path: '/spec' },
           { label: 'Test Coverage', value: '68%', icon: TestTube2, color: 'text-primary', sub: '87/94 passing', path: '/insights' },
-          { label: 'Active Agents', value: `${mockAgents.filter(a => a.status === 'working').length}/${mockAgents.length}`, icon: Bot, color: 'text-primary', sub: '1 blocked, 1 paused', path: '/hive-graph' },
+          { label: 'Active Agents', value: `${agents.filter(a => a.status === 'working').length}/${agents.length}`, icon: Bot, color: 'text-primary', sub: `${agents.filter(a => a.status === 'blocked').length} blocked, ${agents.filter(a => a.status === 'paused').length} paused`, path: '/hive-graph' },
         ].map((tile) => (
           <motion.div key={tile.label} whileHover={{ scale: 1.02 }} onClick={() => navigate(tile.path)}
             className="rounded-lg border border-border bg-card p-4 hover:border-primary/30 transition-colors cursor-pointer">
@@ -364,10 +364,10 @@ export default function Dashboard() {
           <div className="rounded-lg border border-border bg-card">
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
               <h3 className="text-sm font-semibold">Agents</h3>
-              <button onClick={() => navigate('/hive-graph')} className="text-micro text-primary hover:underline">{mockAgents.length} total</button>
+              <button onClick={() => navigate('/hive-graph')} className="text-micro text-primary hover:underline">{agents.length} total</button>
             </div>
             <div className="p-3 space-y-2 max-h-[360px] overflow-auto scrollbar-thin">
-              {mockAgents.map((agent) => (
+              {agents.map((agent) => (
                 <motion.div key={agent.id} whileHover={{ scale: 1.01 }}
                   onClick={() => navigate('/hive-graph')}
                   className={cn(
