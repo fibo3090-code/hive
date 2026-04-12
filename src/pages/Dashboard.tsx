@@ -23,6 +23,31 @@ const severityConfig = {
   info: { icon: Info, border: 'border-l-muted-foreground', bg: 'bg-muted/5', text: 'text-muted-foreground' },
 };
 
+const statusTaskColors: Record<string, string> = {
+  'in-progress': 'text-success',
+  queued: 'text-muted-foreground',
+  completed: 'text-primary',
+  blocked: 'text-destructive',
+};
+
+const mockCommits = [
+  { hash: 'a3f2c1d', message: 'feat: implement dashboard summary tiles', author: 'Frontend Architect', time: '5 min ago' },
+  { hash: 'b8e4f2a', message: 'feat: add auth middleware with JWT', author: 'Backend Engineer', time: '12 min ago' },
+  { hash: 'c1d5e3b', message: 'test: add integration tests for auth', author: 'QA Sentinel', time: '18 min ago' },
+  { hash: 'd2f6a4c', message: 'docs: update API reference', author: 'Doc Writer', time: '25 min ago' },
+];
+
+const mockActivityFeed = [
+  { id: 'f1', icon: Bot, text: 'Frontend Architect started task: Build dashboard', time: '2 min ago', type: 'agent' },
+  { id: 'f2', icon: GitCommit, text: 'Backend Engineer committed: auth middleware', time: '12 min ago', type: 'commit' },
+  { id: 'f3', icon: AlertTriangle, text: 'Loop detected in Doc Writer — paused automatically', time: '15 min ago', type: 'alert' },
+  { id: 'f4', icon: TestTube2, text: 'QA Sentinel: 87/94 tests passing', time: '20 min ago', type: 'test' },
+  { id: 'f5', icon: FileText, text: 'Spec drift detected in section §3.3', time: '25 min ago', type: 'drift' },
+  { id: 'f6', icon: DollarSign, text: 'Budget checkpoint: $142/$200 consumed', time: '30 min ago', type: 'budget' },
+  { id: 'f7', icon: Eye, text: 'Planning Engine reviewed PR #12', time: '35 min ago', type: 'review' },
+  { id: 'f8', icon: Bot, text: 'Security Auditor paused — awaiting credentials', time: '40 min ago', type: 'agent' },
+];
+
 /* ─── Sprint Timeline (Redesigned) ─── */
 function SprintTimeline() {
   const totalDays = 14;
