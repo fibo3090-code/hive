@@ -199,24 +199,23 @@ function BackgroundSessionCard() {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { state, dismissAlert: ctxDismissAlert, updateTaskStatus } = useHive();
+  const { agents, tasks, alerts, session, healthScore } = state;
   const [timeFilter, setTimeFilter] = useState('1h');
   const [alertsExpanded, setAlertsExpanded] = useState(true);
   const [showMoreActivity, setShowMoreActivity] = useState(false);
-  const [alerts, setAlerts] = useState(initialAlerts);
-  const [tasks, setTasks] = useState(mockTasks);
 
-  const activeAlerts = alerts.filter(a => !a.dismissed);
-  const budgetUsed = 142;
-  const budgetTotal = 200;
+  const budgetUsed = session.budgetUsed;
+  const budgetTotal = session.budgetTotal;
   const budgetPct = Math.round((budgetUsed / budgetTotal) * 100);
   const displayedActivity = showMoreActivity ? mockActivityFeed : mockActivityFeed.slice(0, 5);
 
   const dismissAlert = (id: string) => {
-    setAlerts(prev => prev.map(a => a.id === id ? { ...a, dismissed: true } : a));
+    ctxDismissAlert(id);
     toast.success('Alert dismissed');
   };
 
-  const handleAlertAction = (alert: DashAlert) => {
+  const handleAlertAction = (alert: AlertItem) => {
     if (alert.actionLabel === 'Extend Budget') {
       toast.success('Budget extended to $300');
     } else if (alert.actionLabel === 'Intervene') {
@@ -226,13 +225,16 @@ export default function Dashboard() {
   };
 
   const toggleTaskStatus = (id: string) => {
-    setTasks(prev => prev.map(t => {
-      if (t.id !== id) return t;
-      const next = t.status === 'queued' ? 'in-progress' : t.status === 'in-progress' ? 'completed' : t.status;
-      if (next !== t.status) toast.success(`Task "${t.title}" → ${next}`);
-      return { ...t, status: next };
-    }));
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    const next = task.status === 'queued' ? 'in-progress' : task.status === 'in-progress' ? 'completed' : task.status;
+    if (next !== task.status) {
+      updateTaskStatus(id, next);
+      toast.success(`Task "${task.title}" → ${next}`);
+    }
   };
+
+  const activeAlerts = alerts;
 
   return (
     <div className="p-6 space-y-6 animate-fade-in">
