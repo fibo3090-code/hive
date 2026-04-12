@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { mockAgents, mockTasks } from '@/data/mockData';
+import { useHive } from '@/context/HiveContext';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ConfidenceBar } from '@/components/shared/ConfidenceBar';
 import {
@@ -14,8 +14,7 @@ import { Progress } from '@/components/ui/progress';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-
-type AlertSev = 'critical' | 'high' | 'medium' | 'info';
+import type { AlertItem } from '@/data/mockData';
 
 interface DashAlert {
   id: string;
