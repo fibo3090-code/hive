@@ -10,6 +10,7 @@ import { Slider } from '@/components/ui/slider';
 import { useWorkspace, type SettingsState } from '@/context/WorkspaceContext';
 import { useHive } from '@/context/HiveContext';
 import { toast } from 'sonner';
+import { ConfirmDeleteModal } from '@/components/modals/ConfirmDeleteModal';
 
 const settingsNav = [
   { id: 'general', label: 'General', icon: SettingsIcon },
@@ -398,15 +399,7 @@ export default function Settings() {
           </div>
         )}
 
-        {section === 'data' && (
-          <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-semibold">Data & Privacy</h2>
-            <Row label="Data Retention" desc="How long to keep session data"><SelectField value={draft.dataPrivacy.retention} options={['30 days', '90 days', '1 year']} onChange={(value) => patch('dataPrivacy', { ...draft.dataPrivacy, retention: value })} /></Row>
-            <Row label="Export Data" desc="Download all project data"><button className="text-xs text-primary bg-primary/10 px-3 py-1.5 rounded hover:bg-primary/20">Export</button></Row>
-            <Row label="Delete All Data" desc="Permanently delete all project data"><button className="text-xs text-destructive bg-destructive/10 px-3 py-1.5 rounded hover:bg-destructive/20">Delete</button></Row>
-            <Row label="Cookie Consent" desc="Manage cookie preferences"><Switch checked={draft.dataPrivacy.cookieConsent} onCheckedChange={(checked) => patch('dataPrivacy', { ...draft.dataPrivacy, cookieConsent: checked })} /></Row>
-          </div>
-        )}
+        {section === 'data' && <DataPrivacySection draft={draft} patch={patch} />}
 
         {section === 'about' && (
           <div className="space-y-4 max-w-xl">
