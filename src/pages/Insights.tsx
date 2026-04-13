@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils';
 import { mockAgents } from '@/data/mockData';
 import { BarChart3, Trophy, Brain, Activity, BookOpen, Bug, PlayCircle, Search, Download, Play, Pause, SkipBack, SkipForward, Plus } from 'lucide-react';
 import { useWorkspace } from '@/context/WorkspaceContext';
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, LineChart, Line, Cell } from 'recharts';
 
 const tabs = [
   { id: 'agent', label: 'Agent Metrics', icon: BarChart3 },
@@ -27,6 +28,22 @@ const replayEvents = [
   { time: '01:23', type: 'current', text: 'Current position', color: 'bg-primary' },
 ] as const;
 
+function ChartTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-md border border-border bg-card px-3 py-2 shadow-lg text-xs">
+      <div className="font-mono text-muted-foreground mb-1">{label}</div>
+      {payload.map((p: any) => (
+        <div key={p.dataKey} className="flex items-center gap-2">
+          <div className="h-2 w-2 rounded-full" style={{ backgroundColor: p.color || p.stroke }} />
+          <span className="text-muted-foreground capitalize">{p.dataKey}:</span>
+          <span className="font-mono font-semibold">{p.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Insights() {
   const [tab, setTab] = useState<(typeof tabs)[number]['id']>('agent');
 
@@ -40,10 +57,9 @@ export default function Insights() {
           </button>
         ))}
       </div>
-
       <div className="flex-1 overflow-auto scrollbar-thin p-6 space-y-6 animate-fade-in">
-        {tab === 'agent' && <MetricsGrid title="Agent Metrics" rows={[{ label: 'Avg Quality', value: '88%' }, { label: 'Total Tokens', value: '442K' }, { label: 'Avg Latency', value: '2.3s' }, { label: 'Success Rate', value: '94%' }]} />}
-        {tab === 'project' && <MetricsGrid title="Project Metrics" rows={[{ label: 'Total Cost', value: '$142' }, { label: 'Lines Written', value: '4,821' }, { label: 'Files Modified', value: '38' }, { label: 'Session Duration', value: '1h 23m' }]} actionLabel="Export CSV" />}
+        {tab === 'agent' && <AgentMetricsTab />}
+        {tab === 'project' && <ProjectMetricsTab />}
         {tab === 'leaderboard' && <Leaderboard />}
         {tab === 'traces' && <TraceList />}
         {tab === 'hivemind' && <HiveMindBoard />}
@@ -54,25 +70,165 @@ export default function Insights() {
   );
 }
 
-function MetricsGrid({ title, rows, actionLabel }: { title: string; rows: { label: string; value: string }[]; actionLabel?: string }) {
+/* ─── Agent Metrics with Charts ─── */
+const agentPerformanceData = mockAgents.map(a => ({
+  name: a.name.split(' ')[0],
+  quality: a.qualityScore,
+  tokens: Math.round(a.tokensUsed / 1000),
+}));
+
+const agentRadarData = [
+  { metric: 'Correctness', ...Object.fromEntries(mockAgents.slice(0, 3).map(a => [a.name.split(' ')[0], a.evalScores.correctness])) },
+  { metric: 'Style', ...Object.fromEntries(mockAgents.slice(0, 3).map(a => [a.name.split(' ')[0], a.evalScores.style])) },
+  { metric: 'Efficiency', ...Object.fromEntries(mockAgents.slice(0, 3).map(a => [a.name.split(' ')[0], a.evalScores.efficiency])) },
+  { metric: 'Test Quality', ...Object.fromEntries(mockAgents.slice(0, 3).map(a => [a.name.split(' ')[0], a.evalScores.testQuality])) },
+  { metric: 'Doc Quality', ...Object.fromEntries(mockAgents.slice(0, 3).map(a => [a.name.split(' ')[0], a.evalScores.docQuality])) },
+];
+
+function AgentMetricsTab() {
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">{title}</h2>
-        {actionLabel && <button className="flex items-center gap-1 text-xs text-primary hover:underline"><Download className="h-3.5 w-3.5" /> {actionLabel}</button>}
-      </div>
+      <h2 className="text-lg font-semibold">Agent Metrics</h2>
       <div className="grid grid-cols-4 gap-3">
-        {rows.map((row) => (
-          <div key={row.label} className="rounded-lg border border-border bg-card p-3">
-            <span className="text-micro text-muted-foreground">{row.label}</span>
-            <span className="block text-lg font-semibold font-mono mt-1">{row.value}</span>
+        {[
+          { label: 'Avg Quality', value: `${Math.round(mockAgents.reduce((s, a) => s + a.qualityScore, 0) / mockAgents.length)}%` },
+          { label: 'Total Tokens', value: `${Math.round(mockAgents.reduce((s, a) => s + a.tokensUsed, 0) / 1000)}K` },
+          { label: 'Avg Latency', value: '2.3s' },
+          { label: 'Success Rate', value: '94%' },
+        ].map(r => (
+          <div key={r.label} className="rounded-lg border border-border bg-card p-3">
+            <span className="text-micro text-muted-foreground">{r.label}</span>
+            <span className="block text-lg font-semibold font-mono mt-1">{r.value}</span>
           </div>
         ))}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        {/* Quality bar chart */}
+        <div className="rounded-lg border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold mb-3">Quality Score by Agent</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={agentPerformanceData}>
+              <XAxis dataKey="name" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+              <YAxis domain={[70, 100]} tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={30} />
+              <Tooltip content={<ChartTooltip />} />
+              <Bar dataKey="quality" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Eval radar chart */}
+        <div className="rounded-lg border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold mb-3">Eval Scores (Top 3 Agents)</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <RadarChart data={agentRadarData}>
+              <PolarGrid stroke="hsl(var(--border))" />
+              <PolarAngleAxis dataKey="metric" tick={{ fontSize: 9, fill: 'hsl(var(--muted-foreground))' }} />
+              <PolarRadiusAxis domain={[60, 100]} tick={false} axisLine={false} />
+              <Radar name="Planning" dataKey="Planning" stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.15} />
+              <Radar name="Frontend" dataKey="Frontend" stroke="hsl(var(--success))" fill="hsl(var(--success))" fillOpacity={0.1} />
+              <Radar name="Backend" dataKey="Backend" stroke="hsl(var(--info))" fill="hsl(var(--info))" fillOpacity={0.1} />
+              <Tooltip content={<ChartTooltip />} />
+            </RadarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Token usage bar */}
+      <div className="rounded-lg border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold mb-3">Token Consumption (K)</h3>
+        <ResponsiveContainer width="100%" height={140}>
+          <BarChart data={agentPerformanceData} layout="vertical">
+            <XAxis type="number" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+            <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={60} />
+            <Tooltip content={<ChartTooltip />} />
+            <Bar dataKey="tokens" fill="hsl(var(--warning))" radius={[0, 4, 4, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );
 }
 
+/* ─── Project Metrics with Charts ─── */
+const costTimelineData = [
+  { session: 'S1', cost: 45, tokens: 120, lines: 890 },
+  { session: 'S2', cost: 78, tokens: 210, lines: 1450 },
+  { session: 'S3', cost: 62, tokens: 175, lines: 1120 },
+  { session: 'S4', cost: 95, tokens: 280, lines: 2100 },
+  { session: 'S5', cost: 142, tokens: 342, lines: 4821 },
+];
+
+const coverageOverTime = [
+  { day: 'Day 1', coverage: 12, passing: 8 },
+  { day: 'Day 2', coverage: 28, passing: 24 },
+  { day: 'Day 3', coverage: 41, passing: 38 },
+  { day: 'Day 4', coverage: 55, passing: 52 },
+  { day: 'Day 5', coverage: 62, passing: 72 },
+  { day: 'Day 6', coverage: 68, passing: 87 },
+];
+
+function ProjectMetricsTab() {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Project Metrics</h2>
+        <button className="flex items-center gap-1 text-xs text-primary hover:underline"><Download className="h-3.5 w-3.5" /> Export CSV</button>
+      </div>
+      <div className="grid grid-cols-4 gap-3">
+        {[
+          { label: 'Total Cost', value: '$142' },
+          { label: 'Lines Written', value: '4,821' },
+          { label: 'Files Modified', value: '38' },
+          { label: 'Session Duration', value: '1h 23m' },
+        ].map(r => (
+          <div key={r.label} className="rounded-lg border border-border bg-card p-3">
+            <span className="text-micro text-muted-foreground">{r.label}</span>
+            <span className="block text-lg font-semibold font-mono mt-1">{r.value}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        {/* Cost per session */}
+        <div className="rounded-lg border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold mb-3">Cost & Token Trend</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={costTimelineData}>
+              <XAxis dataKey="session" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+              <YAxis tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={30} />
+              <Tooltip content={<ChartTooltip />} />
+              <Line type="monotone" dataKey="cost" stroke="hsl(var(--warning))" strokeWidth={2} dot={{ r: 3 }} />
+              <Line type="monotone" dataKey="lines" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Test coverage over time */}
+        <div className="rounded-lg border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold mb-3">Test Coverage & Passing</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <AreaChart data={coverageOverTime}>
+              <defs>
+                <linearGradient id="covGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(var(--success))" stopOpacity={0.3} />
+                  <stop offset="100%" stopColor="hsl(var(--success))" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="day" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+              <YAxis tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={30} />
+              <Tooltip content={<ChartTooltip />} />
+              <Area type="monotone" dataKey="coverage" stroke="hsl(var(--success))" fill="url(#covGrad)" strokeWidth={2} />
+              <Area type="monotone" dataKey="passing" stroke="hsl(var(--info))" fill="none" strokeWidth={1.5} strokeDasharray="4 2" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Leaderboard ─── */
 function Leaderboard() {
   const sorted = [...mockAgents].sort((left, right) => right.qualityScore - left.qualityScore);
   return (
@@ -80,32 +236,91 @@ function Leaderboard() {
       <h2 className="text-lg font-semibold">Eval Leaderboard</h2>
       <div className="rounded-lg border border-border bg-card">
         <table className="w-full text-xs">
-          <thead><tr className="border-b border-border text-muted-foreground"><th className="text-left px-4 py-2">#</th><th className="text-left px-4 py-2">Agent</th><th className="text-left px-4 py-2">Role</th><th className="text-left px-4 py-2">Quality</th></tr></thead>
+          <thead><tr className="border-b border-border text-muted-foreground"><th className="text-left px-4 py-2">#</th><th className="text-left px-4 py-2">Agent</th><th className="text-left px-4 py-2">Role</th><th className="text-left px-4 py-2">Quality</th><th className="text-left px-4 py-2">Correctness</th><th className="text-left px-4 py-2">Style</th><th className="text-left px-4 py-2">Efficiency</th></tr></thead>
           <tbody className="divide-y divide-border">
-            {sorted.map((agent, index) => <tr key={agent.id} className="hover:bg-surface-2/50"><td className="px-4 py-2 font-mono text-muted-foreground">{index + 1}</td><td className="px-4 py-2 font-medium">{agent.name}</td><td className="px-4 py-2 text-muted-foreground">{agent.role}</td><td className="px-4 py-2 font-mono text-primary">{agent.qualityScore}%</td></tr>)}
+            {sorted.map((agent, index) => (
+              <tr key={agent.id} className="hover:bg-surface-2/50">
+                <td className="px-4 py-2 font-mono text-muted-foreground">{index + 1}</td>
+                <td className="px-4 py-2 font-medium">{agent.name}</td>
+                <td className="px-4 py-2 text-muted-foreground">{agent.role}</td>
+                <td className="px-4 py-2 font-mono text-primary">{agent.qualityScore}%</td>
+                <td className="px-4 py-2 font-mono text-muted-foreground">{agent.evalScores.correctness}%</td>
+                <td className="px-4 py-2 font-mono text-muted-foreground">{agent.evalScores.style}%</td>
+                <td className="px-4 py-2 font-mono text-muted-foreground">{agent.evalScores.efficiency}%</td>
+              </tr>
+            ))}
           </tbody>
         </table>
+      </div>
+
+      {/* Radar comparison */}
+      <div className="rounded-lg border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold mb-3">Eval Score Radar</h3>
+        <ResponsiveContainer width="100%" height={250}>
+          <RadarChart data={agentRadarData}>
+            <PolarGrid stroke="hsl(var(--border))" />
+            <PolarAngleAxis dataKey="metric" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
+            <PolarRadiusAxis domain={[60, 100]} tick={false} axisLine={false} />
+            {mockAgents.slice(0, 3).map((a, i) => {
+              const colors = ['hsl(var(--primary))', 'hsl(var(--success))', 'hsl(var(--info))'];
+              return <Radar key={a.id} name={a.name.split(' ')[0]} dataKey={a.name.split(' ')[0]} stroke={colors[i]} fill={colors[i]} fillOpacity={0.1} />;
+            })}
+            <Tooltip content={<ChartTooltip />} />
+          </RadarChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );
 }
+
+/* ─── Traces ─── */
+const traceLatencyData = [
+  { trace: 'Sprint Plan', latency: 3.2, tokens: 4500 },
+  { trace: 'Dashboard', latency: 5.1, tokens: 8200 },
+  { trace: 'Test Exec', latency: 2.1, tokens: 3100 },
+  { trace: 'Auth Review', latency: 1.8, tokens: 2800 },
+  { trace: 'Doc Write', latency: 4.5, tokens: 6200 },
+];
 
 function TraceList() {
   const traces = [
     { id: 't1', name: 'Planning Engine → Sprint Planning', duration: '3.2s', tokens: 4500, status: 'success' },
     { id: 't2', name: 'Frontend Architect → Dashboard Build', duration: '5.1s', tokens: 8200, status: 'success' },
     { id: 't3', name: 'QA Sentinel → Test Execution', duration: '2.1s', tokens: 3100, status: 'error' },
+    { id: 't4', name: 'Backend Engineer → Auth Review', duration: '1.8s', tokens: 2800, status: 'success' },
+    { id: 't5', name: 'Doc Writer → Documentation', duration: '4.5s', tokens: 6200, status: 'success' },
   ];
   return (
     <div className="space-y-6">
       <h2 className="text-lg font-semibold">Langfuse Traces</h2>
       <div className="space-y-2">
-        {traces.map((trace) => <div key={trace.id} className="rounded-lg border border-border bg-card px-4 py-3 flex items-center gap-3"><div className={cn('h-2 w-2 rounded-full', trace.status === 'success' ? 'bg-success' : 'bg-destructive')} /><span className="text-sm font-medium flex-1">{trace.name}</span><span className="text-micro font-mono text-muted-foreground">{trace.duration}</span><span className="text-micro font-mono text-muted-foreground">{trace.tokens} tok</span></div>)}
+        {traces.map((trace) => (
+          <div key={trace.id} className="rounded-lg border border-border bg-card px-4 py-3 flex items-center gap-3">
+            <div className={cn('h-2 w-2 rounded-full', trace.status === 'success' ? 'bg-success' : 'bg-destructive')} />
+            <span className="text-sm font-medium flex-1">{trace.name}</span>
+            <span className="text-micro font-mono text-muted-foreground">{trace.duration}</span>
+            <span className="text-micro font-mono text-muted-foreground">{trace.tokens} tok</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Latency vs tokens scatter-like bar */}
+      <div className="rounded-lg border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold mb-3">Trace Latency & Token Usage</h3>
+        <ResponsiveContainer width="100%" height={180}>
+          <BarChart data={traceLatencyData}>
+            <XAxis dataKey="trace" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+            <YAxis tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={30} />
+            <Tooltip content={<ChartTooltip />} />
+            <Bar dataKey="latency" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );
 }
 
+/* ─── Hive Mind Board ─── */
 function HiveMindBoard() {
   const { hiveMindNotes, addHiveMindNote } = useWorkspace();
   const [category, setCategory] = useState('all');
@@ -122,24 +337,16 @@ function HiveMindBoard() {
         <h2 className="text-lg font-semibold">Hive Mind Board</h2>
         <button onClick={() => setCreating((value) => !value)} className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-1.5 text-xs text-primary hover:bg-primary/20"><Plus className="h-3.5 w-3.5" /> New Note</button>
       </div>
-
       {creating && (
         <div className="rounded-lg border border-border bg-card p-4 space-y-3">
           <input value={newTitle} onChange={(event) => setNewTitle(event.target.value)} placeholder="Note title" className="w-full h-9 rounded-md border border-border bg-surface-2 px-3 text-sm" />
           <textarea value={newContent} onChange={(event) => setNewContent(event.target.value)} placeholder="Add the key insight or decision..." className="w-full rounded-md border border-border bg-surface-2 p-3 text-sm h-24 resize-none" />
           <div className="flex justify-end gap-2">
             <button onClick={() => setCreating(false)} className="rounded-md border border-border px-3 py-2 text-xs">Cancel</button>
-            <button onClick={() => {
-              if (!newTitle.trim() || !newContent.trim()) return;
-              addHiveMindNote({ category: 'Decisions', title: newTitle.trim(), content: newContent.trim() });
-              setNewTitle('');
-              setNewContent('');
-              setCreating(false);
-            }} className="rounded-md bg-primary px-3 py-2 text-xs text-primary-foreground">Add Note</button>
+            <button onClick={() => { if (!newTitle.trim() || !newContent.trim()) return; addHiveMindNote({ category: 'Decisions', title: newTitle.trim(), content: newContent.trim() }); setNewTitle(''); setNewContent(''); setCreating(false); }} className="rounded-md bg-primary px-3 py-2 text-xs text-primary-foreground">Add Note</button>
           </div>
         </div>
       )}
-
       <div className="flex items-center gap-3">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
@@ -149,7 +356,6 @@ function HiveMindBoard() {
           {categories.map((item) => <button key={item} onClick={() => setCategory(item)} className={cn('rounded-full px-2.5 py-1 text-micro capitalize', category === item ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground')}>{item}</button>)}
         </div>
       </div>
-
       <div className="grid grid-cols-2 gap-4">
         {filtered.map((note) => (
           <div key={note.id} className={cn('rounded-lg border bg-card p-4 hover:border-primary/30 transition-colors', note.auto ? 'border-primary/20' : 'border-border')}>
@@ -168,6 +374,7 @@ function HiveMindBoard() {
   );
 }
 
+/* ─── Tech Debt Board ─── */
 function TechDebtBoard() {
   const { techDebtItems, moveTechDebtItem } = useWorkspace();
   const [draggedId, setDraggedId] = useState<string | null>(null);
@@ -183,13 +390,8 @@ function TechDebtBoard() {
             <h4 className={cn('text-xs font-semibold uppercase mb-3', colors[column])}>{column} Priority</h4>
             <div className="space-y-2 min-h-[220px] rounded-lg border border-dashed border-border/60 p-2">
               {techDebtItems.filter((item) => item.severity === column).map((item) => (
-                <div
-                  key={item.id}
-                  draggable
-                  onDragStart={() => setDraggedId(item.id)}
-                  onDragEnd={() => setDraggedId(null)}
-                  className="rounded-lg border border-border bg-card p-3 hover:border-primary/30 cursor-grab active:cursor-grabbing transition-colors"
-                >
+                <div key={item.id} draggable onDragStart={() => setDraggedId(item.id)} onDragEnd={() => setDraggedId(null)}
+                  className="rounded-lg border border-border bg-card p-3 hover:border-primary/30 cursor-grab active:cursor-grabbing transition-colors">
                   <h5 className="text-sm font-medium mb-1">{item.title}</h5>
                   <p className="text-micro text-muted-foreground mb-1">{item.description}</p>
                   <p className="text-micro text-muted-foreground italic mb-1">Impact: {item.impact}</p>
@@ -207,15 +409,14 @@ function TechDebtBoard() {
   );
 }
 
+/* ─── Session Replay ─── */
 function SessionReplay() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [index, setIndex] = useState(3);
 
   useEffect(() => {
-    if (!playing) {
-      return;
-    }
+    if (!playing) return;
     const timer = window.setInterval(() => {
       setIndex((current) => (current >= replayEvents.length - 1 ? current : current + 1));
     }, Math.max(250, 900 / speed));
@@ -233,7 +434,6 @@ function SessionReplay() {
           <option>Session Mar 31 (2:15:00)</option>
         </select>
       </div>
-
       <div className="rounded-lg border border-border bg-card p-4">
         <div className="flex items-center gap-3 mb-3">
           <button onClick={() => setIndex((current) => Math.max(0, current - 1))} className="text-muted-foreground hover:text-foreground"><SkipBack className="h-4 w-4" /></button>
@@ -246,7 +446,6 @@ function SessionReplay() {
           </div>
           <span className="text-xs font-mono text-muted-foreground ml-auto">{replayEvents[index]?.time ?? '00:00'} / 01:23</span>
         </div>
-
         <div className="relative h-6 bg-surface-2 rounded overflow-hidden cursor-pointer" onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           const ratio = (event.clientX - rect.left) / rect.width;
@@ -257,7 +456,6 @@ function SessionReplay() {
           <div className="absolute top-0 bottom-0 w-0.5 bg-primary" style={{ left: `${progress}%` }} />
         </div>
       </div>
-
       <div className="grid grid-cols-2 gap-4">
         <div className="rounded-lg border border-border bg-card p-4">
           <h4 className="text-xs font-semibold mb-3">Graph Snapshot at {replayEvents[index]?.time}</h4>
@@ -270,7 +468,6 @@ function SessionReplay() {
             </div>
           </div>
         </div>
-
         <div className="rounded-lg border border-border bg-card">
           <div className="px-4 py-2.5 border-b border-border text-xs font-semibold">Event Log</div>
           <div className="max-h-[240px] overflow-auto scrollbar-thin divide-y divide-border">

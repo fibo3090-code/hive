@@ -7,7 +7,7 @@ import {
   AlertTriangle, AlertCircle, Info, XCircle,
   ChevronDown, ChevronRight, GitCommit, Clock,
   Eye, FileText, Check, X, Play, Pause,
-  CheckCircle2, Circle,
+  CheckCircle2, Circle, Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
@@ -15,6 +15,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import type { AlertItem } from '@/data/mockData';
+import { WakeReportModal } from '@/components/modals/WakeReportModal';
+import { BudgetExtensionModal } from '@/components/modals/BudgetExtensionModal';
+import { LoopDetectionModal } from '@/components/modals/LoopDetectionModal';
+import { CostForecastModal } from '@/components/modals/CostForecastModal';
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
 const severityConfig = {
   critical: { icon: XCircle, border: 'border-l-destructive', bg: 'bg-destructive/5', text: 'text-destructive' },
@@ -48,12 +53,40 @@ const mockActivityFeed = [
   { id: 'f8', icon: Bot, text: 'Security Auditor paused — awaiting credentials', time: '40 min ago', type: 'agent' },
 ];
 
-/* ─── Sprint Timeline (Redesigned) ─── */
+/* ─── Token Usage Timeline ─── */
+const tokenTimelineData = [
+  { time: '00:00', tokens: 0, cost: 0 },
+  { time: '00:10', tokens: 28, cost: 12 },
+  { time: '00:20', tokens: 65, cost: 31 },
+  { time: '00:30', tokens: 112, cost: 52 },
+  { time: '00:40', tokens: 168, cost: 78 },
+  { time: '00:50', tokens: 215, cost: 98 },
+  { time: '01:00', tokens: 278, cost: 118 },
+  { time: '01:10', tokens: 310, cost: 130 },
+  { time: '01:20', tokens: 342, cost: 142 },
+];
+
+const agentTokenData = [
+  { name: 'Planning', tokens: 125, color: 'hsl(var(--primary))' },
+  { name: 'Frontend', tokens: 98, color: 'hsl(var(--success))' },
+  { name: 'Backend', tokens: 112, color: 'hsl(var(--info))' },
+  { name: 'QA', tokens: 45, color: 'hsl(var(--warning))' },
+  { name: 'Security', tokens: 34, color: 'hsl(var(--destructive))' },
+  { name: 'Docs', tokens: 28, color: 'hsl(var(--muted-foreground))' },
+];
+
+const taskStatusData = [
+  { name: 'Completed', value: 2, color: 'hsl(var(--success))' },
+  { name: 'In Progress', value: 3, color: 'hsl(var(--primary))' },
+  { name: 'Blocked', value: 1, color: 'hsl(var(--destructive))' },
+  { name: 'Queued', value: 2, color: 'hsl(var(--muted-foreground))' },
+];
+
+/* ─── Sprint Timeline ─── */
 function SprintTimeline() {
   const totalDays = 14;
   const currentDay = 6;
   const progressPct = (currentDay / totalDays) * 100;
-
   const tasks = [
     { name: 'Setup & Config', start: 0, end: 3, status: 'completed' as const, assignee: 'Planning Engine' },
     { name: 'Auth Middleware', start: 2, end: 7, status: 'in-progress' as const, assignee: 'Backend Engineer' },
@@ -63,34 +96,21 @@ function SprintTimeline() {
     { name: 'Security Audit', start: 8, end: 12, status: 'queued' as const, assignee: 'Security Auditor' },
     { name: 'Deploy & QA', start: 11, end: 14, status: 'queued' as const, assignee: 'Planning Engine' },
   ];
-
   const statusColors = {
     completed: 'bg-success/70 border-success/50',
     'in-progress': 'bg-primary/60 border-primary/40',
     blocked: 'bg-destructive/50 border-destructive/40',
     queued: 'bg-muted/40 border-border',
   };
-
-  const statusIcons = {
-    completed: CheckCircle2,
-    'in-progress': Play,
-    blocked: Pause,
-    queued: Circle,
-  };
-
-  const dates = Array.from({ length: 8 }, (_, i) => {
-    const d = new Date(2026, 3, 1 + i * 2);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  });
+  const statusIcons = { completed: CheckCircle2, 'in-progress': Play, blocked: Pause, queued: Circle };
+  const dates = Array.from({ length: 8 }, (_, i) => { const d = new Date(2026, 3, 1 + i * 2); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); });
 
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-3">
           <h3 className="text-sm font-semibold">Sprint 3 Timeline</h3>
-          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-micro font-medium text-primary">
-            Day {currentDay}/{totalDays}
-          </span>
+          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-micro font-medium text-primary">Day {currentDay}/{totalDays}</span>
         </div>
         <div className="flex items-center gap-3 text-micro text-muted-foreground">
           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-success/70" /> Done</span>
@@ -99,63 +119,36 @@ function SprintTimeline() {
           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-muted/40" /> Queued</span>
         </div>
       </div>
-
       <div className="px-4 py-4">
-        {/* Date axis */}
         <div className="flex ml-[140px] mb-2">
-          {dates.map((d, i) => (
-            <span key={i} className="text-micro text-muted-foreground/60 font-mono" style={{ width: `${100 / 8}%` }}>{d}</span>
-          ))}
+          {dates.map((d, i) => <span key={i} className="text-micro text-muted-foreground/60 font-mono" style={{ width: `${100 / 8}%` }}>{d}</span>)}
         </div>
-
-        {/* Task rows */}
         <div className="space-y-1.5">
           {tasks.map((task) => {
             const StatusIcon = statusIcons[task.status];
             const leftPct = (task.start / totalDays) * 100;
             const widthPct = ((task.end - task.start) / totalDays) * 100;
-
             return (
               <div key={task.name} className="flex items-center group">
                 <div className="w-[140px] shrink-0 flex items-center gap-2 pr-3">
-                  <StatusIcon className={cn('h-3 w-3 shrink-0',
-                    task.status === 'completed' ? 'text-success' :
-                    task.status === 'in-progress' ? 'text-primary' :
-                    task.status === 'blocked' ? 'text-destructive' : 'text-muted-foreground'
-                  )} />
+                  <StatusIcon className={cn('h-3 w-3 shrink-0', task.status === 'completed' ? 'text-success' : task.status === 'in-progress' ? 'text-primary' : task.status === 'blocked' ? 'text-destructive' : 'text-muted-foreground')} />
                   <span className="text-micro text-muted-foreground truncate">{task.name}</span>
                 </div>
                 <div className="flex-1 relative h-6">
-                  <div
-                    className={cn(
-                      'absolute top-0.5 bottom-0.5 rounded-sm border transition-all cursor-pointer',
-                      'hover:brightness-125 hover:shadow-sm',
-                      statusColors[task.status]
-                    )}
-                    style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                    title={`${task.name} — ${task.assignee}`}
-                  >
-                    <span className="text-[9px] font-medium text-foreground/80 px-1.5 leading-5 truncate block">
-                      {task.assignee}
-                    </span>
+                  <div className={cn('absolute top-0.5 bottom-0.5 rounded-sm border transition-all cursor-pointer hover:brightness-125 hover:shadow-sm', statusColors[task.status])} style={{ left: `${leftPct}%`, width: `${widthPct}%` }} title={`${task.name} — ${task.assignee}`}>
+                    <span className="text-[9px] font-medium text-foreground/80 px-1.5 leading-5 truncate block">{task.assignee}</span>
                   </div>
                 </div>
               </div>
             );
           })}
         </div>
-
-        {/* Now indicator line */}
         <div className="relative ml-[140px] mt-1">
           <div className="absolute top-0 h-1 w-px" style={{ left: `${progressPct}%` }}>
             <div className="absolute -top-[calc(100%+0.5rem)] bottom-0 w-px bg-primary" style={{ height: `${tasks.length * 28 + 8}px`, transform: 'translateY(-100%)' }} />
-            <span className="absolute -top-3 -translate-x-1/2 rounded bg-primary px-1.5 py-0.5 text-[9px] font-mono font-bold text-primary-foreground whitespace-nowrap">
-              Now
-            </span>
+            <span className="absolute -top-3 -translate-x-1/2 rounded bg-primary px-1.5 py-0.5 text-[9px] font-mono font-bold text-primary-foreground whitespace-nowrap">Now</span>
           </div>
         </div>
-
-        {/* Overall progress */}
         <div className="mt-4 ml-[140px] flex items-center gap-3">
           <Progress value={45} className="h-1.5 flex-1" />
           <span className="text-micro font-mono text-muted-foreground">45% complete</span>
@@ -166,19 +159,16 @@ function SprintTimeline() {
 }
 
 /* ─── Background Session Card ─── */
-function BackgroundSessionCard() {
+function BackgroundSessionCard({ onViewWakeReport }: { onViewWakeReport: () => void }) {
   const { state, toggleSession } = useHive();
   const { session, agents } = state;
   const workingCount = agents.filter(a => a.status === 'working').length;
-
   return (
     <div className={cn('rounded-lg border p-4 transition-colors', !session.isActive ? 'border-warning/20 bg-warning/5' : 'border-primary/20 bg-primary/5')}>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <div className={cn('h-2 w-2 rounded-full', !session.isActive ? 'bg-warning' : 'bg-primary animate-status-pulse')} />
-          <h3 className={cn('text-sm font-semibold', !session.isActive ? 'text-warning' : 'text-primary')}>
-            {!session.isActive ? 'Session Paused' : 'Background Session Active'}
-          </h3>
+          <h3 className={cn('text-sm font-semibold', !session.isActive ? 'text-warning' : 'text-primary')}>{!session.isActive ? 'Session Paused' : 'Background Session Active'}</h3>
         </div>
         <span className="text-micro font-mono text-primary">{session.elapsed}</span>
       </div>
@@ -188,11 +178,26 @@ function BackgroundSessionCard() {
         <span>${session.budgetUsed} spent</span>
       </div>
       <div className="flex gap-2 mt-3">
-        <button className="text-xs text-primary hover:underline">View Wake Report</button>
-        <button onClick={() => { toggleSession(); toast(!session.isActive ? 'Session resumed' : 'Session paused'); }} className={cn('text-xs hover:underline', !session.isActive ? 'text-success' : 'text-muted-foreground')}>
-          {!session.isActive ? 'Resume Session' : 'Pause Session'}
-        </button>
+        <button onClick={onViewWakeReport} className="text-xs text-primary hover:underline">View Wake Report</button>
+        <button onClick={() => { toggleSession(); toast(!session.isActive ? 'Session resumed' : 'Session paused'); }} className={cn('text-xs hover:underline', !session.isActive ? 'text-success' : 'text-muted-foreground')}>{!session.isActive ? 'Resume Session' : 'Pause Session'}</button>
       </div>
+    </div>
+  );
+}
+
+/* ─── Custom Tooltip ─── */
+function CustomTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-md border border-border bg-card px-3 py-2 shadow-lg text-xs">
+      <div className="font-mono text-muted-foreground mb-1">{label}</div>
+      {payload.map((p: any) => (
+        <div key={p.dataKey} className="flex items-center gap-2">
+          <div className="h-2 w-2 rounded-full" style={{ backgroundColor: p.color }} />
+          <span className="text-muted-foreground">{p.dataKey}:</span>
+          <span className="font-mono font-semibold">{p.value}{p.dataKey === 'tokens' ? 'K' : p.dataKey === 'cost' ? '$' : ''}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -205,6 +210,12 @@ export default function Dashboard() {
   const [alertsExpanded, setAlertsExpanded] = useState(true);
   const [showMoreActivity, setShowMoreActivity] = useState(false);
 
+  // Modal states
+  const [wakeReportOpen, setWakeReportOpen] = useState(false);
+  const [budgetModalOpen, setBudgetModalOpen] = useState(false);
+  const [loopModalOpen, setLoopModalOpen] = useState(false);
+  const [costForecastOpen, setCostForecastOpen] = useState(false);
+
   const budgetUsed = session.budgetUsed;
   const budgetTotal = session.budgetTotal;
   const budgetPct = Math.round((budgetUsed / budgetTotal) * 100);
@@ -212,34 +223,33 @@ export default function Dashboard() {
   const specCompletion = activeProject?.specCompletion ?? 73;
   const testCoverage = activeProject?.testCoverage ?? 68;
 
-  const dismissAlert = (id: string) => {
-    ctxDismissAlert(id);
-    toast.success('Alert dismissed');
-  };
+  const dismissAlert = (id: string) => { ctxDismissAlert(id); toast.success('Alert dismissed'); };
 
   const handleAlertAction = (alert: AlertItem) => {
     if (alert.actionLabel === 'Extend Budget') {
-      toast.success('Budget extended to $300');
+      setBudgetModalOpen(true);
     } else if (alert.actionLabel === 'Intervene') {
-      toast.success('Doc Writer agent paused and restarted');
+      setLoopModalOpen(true);
     }
-    dismissAlert(alert.id);
   };
 
   const toggleTaskStatus = (id: string) => {
     const task = tasks.find(t => t.id === id);
     if (!task) return;
     const next = task.status === 'queued' ? 'in-progress' : task.status === 'in-progress' ? 'completed' : task.status;
-    if (next !== task.status) {
-      updateTaskStatus(id, next);
-      toast.success(`Task "${task.title}" → ${next}`);
-    }
+    if (next !== task.status) { updateTaskStatus(id, next); toast.success(`Task "${task.title}" → ${next}`); }
   };
 
   const activeAlerts = alerts;
 
   return (
     <div className="p-6 space-y-6 animate-fade-in">
+      {/* Modals */}
+      <WakeReportModal open={wakeReportOpen} onOpenChange={setWakeReportOpen} />
+      <BudgetExtensionModal open={budgetModalOpen} onOpenChange={setBudgetModalOpen} />
+      <LoopDetectionModal open={loopModalOpen} onOpenChange={setLoopModalOpen} />
+      <CostForecastModal open={costForecastOpen} onOpenChange={setCostForecastOpen} />
+
       {/* Alert banners */}
       {activeAlerts.length > 0 && (
         <div className="space-y-2">
@@ -263,9 +273,7 @@ export default function Dashboard() {
                   {alert.actionLabel && (
                     <button onClick={() => handleAlertAction(alert)} className="text-xs font-medium text-primary hover:underline">{alert.actionLabel}</button>
                   )}
-                  <button onClick={() => dismissAlert(alert.id)} className="text-muted-foreground hover:text-foreground">
-                    <X className="h-3.5 w-3.5" />
-                  </button>
+                  <button onClick={() => dismissAlert(alert.id)} className="text-muted-foreground hover:text-foreground"><X className="h-3.5 w-3.5" /></button>
                 </motion.div>
               );
             })}
@@ -294,7 +302,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {/* Active alert chips */}
+      {/* Active alert chips + cost forecast button */}
       <div className="flex items-center gap-2 flex-wrap">
         {activeAlerts.filter(a => a.severity === 'critical' || a.severity === 'high').map(a => (
           <button key={a.id} onClick={() => handleAlertAction(a)}
@@ -303,6 +311,68 @@ export default function Dashboard() {
             {a.title}
           </button>
         ))}
+        <button onClick={() => setCostForecastOpen(true)} className="flex items-center gap-1 rounded-full px-2.5 py-1 text-micro font-medium bg-primary/10 text-primary hover:bg-primary/20">
+          <Zap className="h-3 w-3" /> Cost Forecast
+        </button>
+      </div>
+
+      {/* Charts Row */}
+      <div className="grid grid-cols-3 gap-4">
+        {/* Token usage over time */}
+        <div className="col-span-2 rounded-lg border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold mb-3">Token & Cost Timeline</h3>
+          <ResponsiveContainer width="100%" height={160}>
+            <AreaChart data={tokenTimelineData}>
+              <defs>
+                <linearGradient id="tokenGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                  <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="time" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+              <YAxis tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={30} />
+              <Tooltip content={<CustomTooltip />} />
+              <Area type="monotone" dataKey="tokens" stroke="hsl(var(--primary))" fill="url(#tokenGrad)" strokeWidth={2} />
+              <Area type="monotone" dataKey="cost" stroke="hsl(var(--warning))" fill="none" strokeWidth={1.5} strokeDasharray="4 2" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Task status pie */}
+        <div className="rounded-lg border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold mb-3">Task Distribution</h3>
+          <ResponsiveContainer width="100%" height={120}>
+            <PieChart>
+              <Pie data={taskStatusData} cx="50%" cy="50%" innerRadius={30} outerRadius={50} dataKey="value" paddingAngle={3}>
+                {taskStatusData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+              </Pie>
+              <Tooltip content={<CustomTooltip />} />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="flex flex-wrap gap-2 mt-2 justify-center">
+            {taskStatusData.map(d => (
+              <span key={d.name} className="flex items-center gap-1 text-micro text-muted-foreground">
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: d.color }} />
+                {d.name} ({d.value})
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Agent token bar chart */}
+      <div className="rounded-lg border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold mb-3">Token Usage by Agent (K)</h3>
+        <ResponsiveContainer width="100%" height={120}>
+          <BarChart data={agentTokenData} layout="vertical">
+            <XAxis type="number" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+            <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={70} />
+            <Tooltip content={<CustomTooltip />} />
+            <Bar dataKey="tokens" radius={[0, 4, 4, 0]}>
+              {agentTokenData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
       </div>
 
       {/* Sprint timeline */}
@@ -319,14 +389,12 @@ export default function Dashboard() {
             <div className="divide-y divide-border">
               {tasks.map((task) => (
                 <div key={task.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2/50 transition-colors group">
-                  <button
-                    onClick={() => toggleTaskStatus(task.id)}
+                  <button onClick={() => toggleTaskStatus(task.id)}
                     className={cn('h-4 w-4 rounded-sm border flex items-center justify-center shrink-0 transition-colors',
                       task.status === 'completed' ? 'bg-success/20 border-success text-success' :
                       task.status === 'in-progress' ? 'border-primary text-primary' :
                       task.status === 'blocked' ? 'border-destructive text-destructive' : 'border-border hover:border-primary'
-                    )}
-                  >
+                    )}>
                     {task.status === 'completed' && <Check className="h-3 w-3" />}
                     {task.status === 'in-progress' && <div className="h-1.5 w-1.5 rounded-full bg-primary" />}
                     {task.status === 'blocked' && <X className="h-3 w-3" />}
@@ -370,15 +438,10 @@ export default function Dashboard() {
             </div>
             <div className="p-3 space-y-2 max-h-[360px] overflow-auto scrollbar-thin">
               {agents.map((agent) => (
-                <motion.div key={agent.id} whileHover={{ scale: 1.01 }}
-                  onClick={() => navigate('/hive-graph')}
-                  className={cn(
-                    'rounded-md border bg-surface-2 p-3 cursor-pointer hover:border-primary/30 transition-colors',
-                    agent.status === 'working' ? 'border-success/30' :
-                    agent.status === 'blocked' ? 'border-destructive/30' :
-                    agent.status === 'paused' ? 'border-warning/30' : 'border-border'
-                  )}
-                >
+                <motion.div key={agent.id} whileHover={{ scale: 1.01 }} onClick={() => navigate('/hive-graph')}
+                  className={cn('rounded-md border bg-surface-2 p-3 cursor-pointer hover:border-primary/30 transition-colors',
+                    agent.status === 'working' ? 'border-success/30' : agent.status === 'blocked' ? 'border-destructive/30' : agent.status === 'paused' ? 'border-warning/30' : 'border-border'
+                  )}>
                   <div className="flex items-center gap-2 mb-1.5">
                     <StatusDot status={agent.status} size="sm" />
                     <span className="text-sm font-medium truncate">{agent.name}</span>
@@ -393,9 +456,7 @@ export default function Dashboard() {
               ))}
             </div>
           </div>
-
-          {/* Background session */}
-          <BackgroundSessionCard />
+          <BackgroundSessionCard onViewWakeReport={() => setWakeReportOpen(true)} />
         </div>
       </div>
 
@@ -405,9 +466,7 @@ export default function Dashboard() {
           <h3 className="text-sm font-semibold">Activity Feed</h3>
           <div className="flex gap-1">
             {['1h', '6h', '24h'].map((t) => (
-              <button key={t} onClick={() => setTimeFilter(t)} className={cn('rounded px-2 py-0.5 text-micro transition-colors', t === timeFilter ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground')}>
-                {t}
-              </button>
+              <button key={t} onClick={() => setTimeFilter(t)} className={cn('rounded px-2 py-0.5 text-micro transition-colors', t === timeFilter ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground')}>{t}</button>
             ))}
           </div>
         </div>
