@@ -423,3 +423,23 @@ export default function Settings() {
     </div>
   );
 }
+
+function DataPrivacySection({ draft, patch }: { draft: SettingsState; patch: <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => void }) {
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  return (
+    <div className="space-y-6 max-w-xl">
+      <h2 className="text-lg font-semibold">Data & Privacy</h2>
+      <ConfirmDeleteModal
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title="Delete All Data"
+        description="This will permanently delete all project data, session history, and settings. This action cannot be undone."
+        onConfirm={() => { toast.success('All data deleted'); setDeleteOpen(false); }}
+      />
+      <Row label="Data Retention" desc="How long to keep session data"><SelectField value={draft.dataPrivacy.retention} options={['30 days', '90 days', '1 year']} onChange={(value) => patch('dataPrivacy', { ...draft.dataPrivacy, retention: value })} /></Row>
+      <Row label="Export Data" desc="Download all project data"><button onClick={() => toast.success('Data export started — download will begin shortly')} className="text-xs text-primary bg-primary/10 px-3 py-1.5 rounded hover:bg-primary/20">Export</button></Row>
+      <Row label="Delete All Data" desc="Permanently delete all project data"><button onClick={() => setDeleteOpen(true)} className="text-xs text-destructive bg-destructive/10 px-3 py-1.5 rounded hover:bg-destructive/20">Delete</button></Row>
+      <Row label="Cookie Consent" desc="Manage cookie preferences"><Switch checked={draft.dataPrivacy.cookieConsent} onCheckedChange={(checked) => patch('dataPrivacy', { ...draft.dataPrivacy, cookieConsent: checked })} /></Row>
+    </div>
+  );
+}
