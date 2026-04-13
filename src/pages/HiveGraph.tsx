@@ -10,6 +10,7 @@ import '@xyflow/react/dist/style.css';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { useWorkspace } from '@/context/WorkspaceContext';
+import { AgentSpawnModal } from '@/components/modals/AgentSpawnModal';
 
 const lockedAgents = new Set(['be-001', 'fe-001']);
 const nodeTypes = { agentNode: AgentNode };
@@ -168,6 +169,7 @@ export default function HiveGraph() {
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [showLocks, setShowLocks] = useState(false);
+  const [spawnModalOpen, setSpawnModalOpen] = useState(false);
   const graph = useMemo(() => buildGraph(), []);
 
   useEffect(() => {
@@ -192,10 +194,7 @@ export default function HiveGraph() {
         dimmed: (!filteredIds.has(node.id) || (searchLower !== '' && !matchesSearch)),
         locked: lockedAgents.has(node.id),
         showLock: showLocks,
-        onMessage: (agentId: string) => {
-          setChatTargetAgentId(agentId);
-          navigate('/chat');
-        },
+        onMessage: (agentId: string) => { setChatTargetAgentId(agentId); navigate('/chat'); },
         onOpen: (agentId: string) => setSelectedAgentId(agentId),
         onTogglePause: (agentId: string) => setSelectedAgentId(agentId),
       },
@@ -206,6 +205,8 @@ export default function HiveGraph() {
 
   return (
     <div className="flex flex-col h-full">
+      <AgentSpawnModal open={spawnModalOpen} onOpenChange={setSpawnModalOpen} />
+
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <div className="flex items-center gap-2">
           <div className="flex rounded-md border border-border bg-surface-2">
@@ -233,7 +234,7 @@ export default function HiveGraph() {
           <button onClick={() => setShowLocks((value) => !value)} className={cn('rounded-md border p-1 text-muted-foreground hover:text-foreground', showLocks && 'border-primary bg-primary/10 text-primary')}>
             <Lock className="h-3.5 w-3.5" />
           </button>
-          <button className="flex items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-xs text-primary hover:bg-primary/20"><Plus className="h-3.5 w-3.5" /> Spawn</button>
+          <button onClick={() => setSpawnModalOpen(true)} className="flex items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-xs text-primary hover:bg-primary/20"><Plus className="h-3.5 w-3.5" /> Spawn</button>
         </div>
       </div>
 
@@ -241,19 +242,10 @@ export default function HiveGraph() {
         {view === 'org' ? (
           <OrgChartView agents={visibleAgents.length > 0 ? visibleAgents : mockAgents} onSelect={setSelectedAgentId} />
         ) : (
-          <ReactFlow
-            nodes={nodes}
-            edges={graph.edges}
-            nodeTypes={nodeTypes}
-            fitView
+          <ReactFlow nodes={nodes} edges={graph.edges} nodeTypes={nodeTypes} fitView
             onNodeClick={(_, node) => setSelectedAgentId(node.id)}
-            onNodeDoubleClick={(_, node) => {
-              setChatTargetAgentId(node.id);
-              navigate('/chat');
-            }}
-            proOptions={{ hideAttribution: true }}
-            className="bg-background"
-          >
+            onNodeDoubleClick={(_, node) => { setChatTargetAgentId(node.id); navigate('/chat'); }}
+            proOptions={{ hideAttribution: true }} className="bg-background">
             <Background gap={24} size={1} color="hsl(var(--border))" />
             <Controls className="!bg-card !border-border !rounded-md [&>button]:!bg-card [&>button]:!border-border [&>button]:!text-foreground [&>button:hover]:!bg-surface-2" />
             <MiniMap nodeColor={(node) => lockedAgents.has(node.id) ? 'hsl(var(--info))' : 'hsl(var(--primary))'} maskColor="hsl(var(--background) / 0.8)" className="!bg-surface-2 !border-border !rounded-md" />
@@ -269,14 +261,8 @@ export default function HiveGraph() {
 
         <AnimatePresence>
           {selectedAgent && (
-            <AgentDetailDrawer
-              agent={selectedAgent}
-              onClose={() => setSelectedAgentId(null)}
-              onMessage={() => {
-                setChatTargetAgentId(selectedAgent.id);
-                navigate('/chat');
-              }}
-            />
+            <AgentDetailDrawer agent={selectedAgent} onClose={() => setSelectedAgentId(null)}
+              onMessage={() => { setChatTargetAgentId(selectedAgent.id); navigate('/chat'); }} />
           )}
         </AnimatePresence>
       </div>
