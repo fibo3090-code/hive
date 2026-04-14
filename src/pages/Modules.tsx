@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { Boxes, Download, Star, Package, Cpu, Search, Plus, ChevronRight, ChevronDown, Layers, Check, Loader2, X, Settings, Eye } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
