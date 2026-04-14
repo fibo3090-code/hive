@@ -10,8 +10,13 @@ import {
   Boxes,
   Settings,
   Hexagon,
+  Sparkles,
+  Clock,
+  PanelLeftClose,
+  PanelLeft,
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useState } from 'react';
 
 const navItems = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' },
@@ -21,28 +26,52 @@ const navItems = [
   { icon: BarChart3, label: 'Insights', path: '/insights' },
   { icon: FileText, label: 'Spec & Plan', path: '/spec' },
   { icon: Boxes, label: 'Modules', path: '/modules' },
+  { icon: Sparkles, label: 'Agent Forge', path: '/agent-forge' },
+  { icon: Clock, label: 'Session History', path: '/session-history' },
   { icon: Settings, label: 'Settings', path: '/settings' },
 ];
 
 export function HiveSidebar() {
   const location = useLocation();
   const navigate = useNavigate();
+  const [expanded, setExpanded] = useState(false);
 
   return (
-    <aside className="flex h-screen w-12 flex-col items-center border-r border-border bg-sidebar py-3 relative">
+    <aside className={cn(
+      'flex h-screen flex-col border-r border-border bg-sidebar py-3 relative transition-all duration-200',
+      expanded ? 'w-48' : 'w-12',
+      'items-center',
+    )}>
       {/* HIVE logo */}
       <button
         onClick={() => navigate('/')}
-        className="mb-4 flex h-8 w-8 items-center justify-center rounded-md text-primary hover:glow-amber transition-all"
+        className="mb-4 flex h-8 w-8 items-center justify-center rounded-md text-primary hover:glow-amber transition-all shrink-0"
       >
         <Hexagon className="h-6 w-6" fill="currentColor" />
       </button>
 
       {/* Nav items */}
-      <nav className="flex flex-1 flex-col items-center gap-1">
+      <nav className="flex flex-1 flex-col items-center gap-1 w-full px-1.5">
         {navItems.map((item) => {
           const isActive = location.pathname.startsWith(item.path);
-          return (
+          return expanded ? (
+            <button
+              key={item.path}
+              onClick={() => navigate(item.path)}
+              className={cn(
+                'relative flex items-center gap-2.5 w-full rounded-md px-2.5 py-2 text-xs transition-all',
+                isActive
+                  ? 'text-primary bg-primary/10'
+                  : 'text-sidebar-foreground hover:text-foreground hover:bg-sidebar-accent'
+              )}
+            >
+              {isActive && (
+                <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-r bg-primary" />
+              )}
+              <item.icon className="h-[18px] w-[18px] shrink-0" />
+              <span className="truncate">{item.label}</span>
+            </button>
+          ) : (
             <Tooltip key={item.path} delayDuration={0}>
               <TooltipTrigger asChild>
                 <button
@@ -67,6 +96,14 @@ export function HiveSidebar() {
           );
         })}
       </nav>
+
+      {/* Collapse/expand button */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-sidebar-accent transition-colors shrink-0"
+      >
+        {expanded ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeft className="h-4 w-4" />}
+      </button>
 
       {/* Session glow indicator */}
       <div className="absolute right-0 top-0 h-full w-px bg-gradient-to-b from-primary/0 via-primary/20 to-primary/0" />
