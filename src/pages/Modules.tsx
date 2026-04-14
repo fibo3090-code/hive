@@ -29,6 +29,7 @@ const synthesizerSteps = [
 ];
 
 export default function Modules() {
+  const navigate = useNavigate();
   const [category, setCategory] = useState('All');
   const [expandedModule, setExpandedModule] = useState<string | null>(null);
   const [showSynthesizer, setShowSynthesizer] = useState(false);
