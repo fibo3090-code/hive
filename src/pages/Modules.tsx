@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { Boxes, Download, Star, Package, Cpu, Search, Plus, ChevronRight, ChevronDown, Layers, Check, Loader2, X, Settings, Eye } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
@@ -28,6 +29,7 @@ const synthesizerSteps = [
 ];
 
 export default function Modules() {
+  const navigate = useNavigate();
   const [category, setCategory] = useState('All');
   const [expandedModule, setExpandedModule] = useState<string | null>(null);
   const [showSynthesizer, setShowSynthesizer] = useState(false);
@@ -106,7 +108,7 @@ export default function Modules() {
 
             <div className="grid grid-cols-2 gap-4">
               {filtered.map(mod => (
-                <div key={mod.id} className="rounded-lg border border-border bg-card hover:border-primary/30 cursor-pointer transition-colors overflow-hidden">
+                <div key={mod.id} onClick={() => navigate(`/modules/${mod.id}`)} className="rounded-lg border border-border bg-card hover:border-primary/30 cursor-pointer transition-colors overflow-hidden">
                   <div className="p-4">
                     <div className="flex items-start justify-between mb-2">
                       <div className="flex items-center gap-2">
