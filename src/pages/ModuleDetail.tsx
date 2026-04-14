@@ -129,11 +129,11 @@ export default function ModuleDetail() {
             </div>
             <div className="rounded-lg border border-border bg-card p-3">
               <span className="text-micro text-muted-foreground">Total Files</span>
-              <span className="block text-lg font-semibold font-mono mt-1">{mod.layers.reduce((s, l) => s + l.files, 0)}</span>
+              <span className="block text-lg font-semibold font-mono mt-1">{mod.layers.reduce((s: number, l) => s + l.files, 0)}</span>
             </div>
             <div className="rounded-lg border border-border bg-card p-3">
               <span className="text-micro text-muted-foreground">Total Lines</span>
-              <span className="block text-lg font-semibold font-mono mt-1">{mod.layers.reduce((s, l) => s + l.lines, 0).toLocaleString()}</span>
+              <span className="block text-lg font-semibold font-mono mt-1">{mod.layers.reduce((s: number, l) => s + l.lines, 0).toLocaleString()}</span>
             </div>
           </div>
         </div>
