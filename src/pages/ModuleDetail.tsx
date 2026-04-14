@@ -123,18 +123,16 @@ export default function ModuleDetail() {
         <div className="space-y-4 max-w-2xl">
           <p className="text-sm text-muted-foreground leading-relaxed">{mod.longDescription}</p>
           <div className="grid grid-cols-3 gap-3">
-            <div className="rounded-lg border border-border bg-card p-3">
-              <span className="text-micro text-muted-foreground">Layers</span>
-              <span className="block text-lg font-semibold font-mono mt-1">{mod.layers.length}</span>
-            </div>
-            <div className="rounded-lg border border-border bg-card p-3">
-              <span className="text-micro text-muted-foreground">Total Files</span>
-              <span className="block text-lg font-semibold font-mono mt-1">{mod.layers.reduce<number>((s, l) => s + l.files, 0)}</span>
-            </div>
-            <div className="rounded-lg border border-border bg-card p-3">
-              <span className="text-micro text-muted-foreground">Total Lines</span>
-              <span className="block text-lg font-semibold font-mono mt-1">{mod.layers.reduce<number>((s, l) => s + l.lines, 0).toLocaleString()}</span>
-            </div>
+            {[
+              { label: 'Layers', value: String(mod.layers.length) },
+              { label: 'Total Files', value: String(mod.layers.map(l => l.files).reduce((a, b) => a + b, 0)) },
+              { label: 'Total Lines', value: mod.layers.map(l => l.lines).reduce((a, b) => a + b, 0).toLocaleString() },
+            ].map(tile => (
+              <div key={tile.label} className="rounded-lg border border-border bg-card p-3">
+                <span className="text-micro text-muted-foreground">{tile.label}</span>
+                <span className="block text-lg font-semibold font-mono mt-1">{tile.value}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
