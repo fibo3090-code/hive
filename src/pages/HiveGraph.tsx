@@ -29,6 +29,10 @@ type AgentNodeData = {
 };
 
 function buildGraph(agents: Agent[]): { nodes: Node[]; edges: Edge[] } {
+  if (agents.length === 0) {
+    return { nodes: [], edges: [] };
+  }
+
   const root = agents[0];
   const children = agents.slice(1);
   const spacing = 220;
@@ -52,6 +56,19 @@ function buildGraph(agents: Agent[]): { nodes: Node[]; edges: Edge[] } {
       markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--border))' },
     })),
   };
+}
+
+function EmptyGraphState() {
+  return (
+    <div className="flex h-full items-center justify-center p-8">
+      <div className="max-w-md rounded-lg border border-dashed border-border bg-card/60 p-8 text-center">
+        <h3 className="text-sm font-semibold mb-1">No agents in this project yet</h3>
+        <p className="text-xs text-muted-foreground">
+          This project does not have any active agents to render in the graph yet. Create one from Agent Forge or switch to a seeded project.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function AgentNode({ data }: { data: AgentNodeData }) {
@@ -130,6 +147,10 @@ function AgentDetailDrawer({ agent, onClose, onMessage }: { agent: Agent; onClos
 }
 
 function OrgChartView({ agents, onSelect }: { agents: Agent[]; onSelect: (id: string) => void }) {
+  if (agents.length === 0) {
+    return <EmptyGraphState />;
+  }
+
   const root = agents[0];
   const children = agents.slice(1);
   return (
@@ -182,7 +203,7 @@ export default function HiveGraph() {
   }, [graphFocusAgentId, setGraphFocusAgentId]);
 
   const visibleAgents = useMemo(() => state.agents.filter((agent) => !statusFilter || agent.status === statusFilter), [state.agents, statusFilter]);
-  const filteredIds = new Set(visibleAgents.map((agent) => agent.id));
+  const filteredIds = useMemo(() => new Set(visibleAgents.map((agent) => agent.id)), [visibleAgents]);
   const searchLower = search.toLowerCase();
 
   const nodes = useMemo<Node[]>(() => graph.nodes.map((node) => {
@@ -201,7 +222,7 @@ export default function HiveGraph() {
         onTogglePause: (agentId: string) => setSelectedAgentId(agentId),
       },
     };
-  }), [filteredIds, graph.nodes, navigate, searchLower, setChatTargetAgentId, showLocks]);
+  }), [filteredIds, graph.nodes, navigate, searchLower, setChatTargetAgentId, showLocks, state.agents]);
 
   const selectedAgent = selectedAgentId ? state.agents.find((agent) => agent.id === selectedAgentId) ?? null : null;
 
@@ -241,7 +262,9 @@ export default function HiveGraph() {
       </div>
 
       <div className="flex-1 relative overflow-hidden">
-        {view === 'org' ? (
+        {state.agents.length === 0 ? (
+          <EmptyGraphState />
+        ) : view === 'org' ? (
           <OrgChartView agents={visibleAgents.length > 0 ? visibleAgents : state.agents} onSelect={setSelectedAgentId} />
         ) : (
           <ReactFlow nodes={nodes} edges={graph.edges} nodeTypes={nodeTypes} fitView

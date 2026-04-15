@@ -6,9 +6,10 @@ import { motion } from 'framer-motion';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useInstallModule, useModuleData } from '@/api/queries/useServerData';
+import type { ModuleCatalogItem, ModuleChangelogEntry, ModuleDependency } from '@/types/domain';
 import { toast } from 'sonner';
 
-const fallbackModule = {
+const fallbackModule: ModuleCatalogItem = {
   id: 'unknown',
   name: 'Unknown Module',
   version: '0.0.0',
@@ -121,11 +122,11 @@ export default function ModuleDetail() {
 
       {tab === 'layers' && (
         <div className="space-y-3 max-w-2xl">
-          {(mod.layers ?? []).map((layer: any, index: number) => {
-            const layerName = typeof layer === 'string' ? layer : layer.name;
-            const layerDescription = typeof layer === 'string' ? 'Generated module layer' : layer.description;
-            const fileCount = typeof layer === 'string' ? null : layer.files;
-            const lineCount = typeof layer === 'string' ? null : layer.lines;
+          {(mod.layers ?? []).map((layer: string, index: number) => {
+            const layerName = layer;
+            const layerDescription = 'Generated module layer';
+            const fileCount = null;
+            const lineCount = null;
             return (
               <motion.div
                 key={`${layerName}-${index}`}
@@ -167,7 +168,7 @@ export default function ModuleDetail() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {(mod.dependencies ?? []).map((dependency: any) => (
+                {(mod.dependencies ?? []).map((dependency: ModuleDependency) => (
                   <tr key={dependency.name} className="hover:bg-surface-2/50">
                     <td className="px-4 py-2 font-mono">{dependency.name}</td>
                     <td className="px-4 py-2 font-mono text-muted-foreground">{dependency.version ?? '—'}</td>
@@ -188,7 +189,7 @@ export default function ModuleDetail() {
 
       {tab === 'changelog' && (
         <div className="max-w-xl space-y-4">
-          {(mod.changelog ?? []).map((entry: any, index: number) => (
+          {(mod.changelog ?? []).map((entry: ModuleChangelogEntry, index: number) => (
             <div key={`${entry.version}-${entry.date}`} className="relative pl-6">
               <div className="absolute left-0 top-1 flex flex-col items-center">
                 <div className={cn('h-3 w-3 rounded-full border-2', index === 0 ? 'border-primary bg-primary/20' : 'border-border bg-surface-2')} />
@@ -222,12 +223,12 @@ export default function ModuleDetail() {
             <p>
               This will add <span className="font-mono text-foreground">{mod.name} v{mod.version}</span> to your project.
             </p>
-            {(mod.dependencies ?? []).filter((dependency: any) => dependency.required).length > 0 && (
+            {(mod.dependencies ?? []).filter((dependency: ModuleDependency) => dependency.required).length > 0 && (
               <div className="rounded-md border border-border bg-surface-2 p-3">
                 <span className="text-micro font-semibold text-foreground block mb-1">Required dependencies:</span>
                 {(mod.dependencies ?? [])
-                  .filter((dependency: any) => dependency.required)
-                  .map((dependency: any) => (
+                  .filter((dependency: ModuleDependency) => dependency.required)
+                  .map((dependency: ModuleDependency) => (
                     <span key={dependency.name} className="text-micro font-mono block">
                       {dependency.name} {dependency.version}
                     </span>

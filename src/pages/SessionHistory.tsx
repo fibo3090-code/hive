@@ -6,13 +6,29 @@ import { Area, AreaChart, Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAx
 import { motion, AnimatePresence } from 'framer-motion';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useSessionHistoryData } from '@/api/queries/useServerData';
+import type { AgentBreakdownItem, SessionHistoryItem, SessionHistoryPoint } from '@/types/domain';
 
-function ChartTooltip({ active, payload, label }: any) {
+type ChartTooltipEntry = {
+  dataKey: string;
+  value: number | string;
+  color?: string;
+  stroke?: string;
+};
+
+function ChartTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: ChartTooltipEntry[];
+  label?: string;
+}) {
   if (!active || !payload?.length) return null;
   return (
     <div className="rounded-md border border-border bg-card px-3 py-2 shadow-lg text-xs">
       <div className="font-mono text-muted-foreground mb-1">{label}</div>
-      {payload.map((entry: any) => (
+      {payload.map((entry) => (
         <div key={entry.dataKey} className="flex items-center gap-2">
           <div className="h-2 w-2 rounded-full" style={{ backgroundColor: entry.color || entry.stroke }} />
           <span className="text-muted-foreground">{entry.dataKey}:</span>
@@ -35,15 +51,15 @@ function EmptyState() {
 export default function SessionHistory() {
   const { activeProject } = useHiveData();
   const historyQuery = useSessionHistoryData(activeProject?.id);
-  const sessions = historyQuery.data ?? [];
+  const sessions: SessionHistoryItem[] = historyQuery.data ?? [];
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const totalCost = sessions.reduce((sum, session: any) => sum + (session.cost ?? 0), 0);
+  const totalCost = sessions.reduce((sum, session: SessionHistoryItem) => sum + (session.cost ?? 0), 0);
   const averageHealth =
     sessions.length > 0
-      ? Math.round(sessions.reduce((sum, session: any) => sum + (session.healthScore ?? 0), 0) / sessions.length)
+      ? Math.round(sessions.reduce((sum, session: SessionHistoryItem) => sum + (session.healthScore ?? 0), 0) / sessions.length)
       : 0;
-  const totalTasks = sessions.reduce((sum, session: any) => sum + (session.tasksCompleted ?? 0), 0);
+  const totalTasks = sessions.reduce((sum, session: SessionHistoryItem) => sum + (session.tasksCompleted ?? 0), 0);
 
   return (
     <div className="p-6 space-y-6 animate-fade-in">
@@ -77,7 +93,7 @@ export default function SessionHistory() {
           </div>
 
           <div className="space-y-3">
-            {sessions.map((session: any) => (
+            {sessions.map((session: SessionHistoryItem) => (
               <div
                 key={session.id}
                 className={cn(
@@ -171,7 +187,7 @@ export default function SessionHistory() {
                                 <XAxis type="number" tick={{ fontSize: 9 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
                                 <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={55} />
                                 <Bar dataKey="tokens" radius={[0, 4, 4, 0]}>
-                                  {(session.agentBreakdown ?? []).map((entry: any, index: number) => (
+                                  {(session.agentBreakdown ?? []).map((entry: AgentBreakdownItem, index: number) => (
                                     <Cell key={`${entry.name}-${index}`} fill={entry.color} />
                                   ))}
                                 </Bar>

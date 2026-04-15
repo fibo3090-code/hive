@@ -8,6 +8,7 @@ import { useAgentBlueprintsData } from '@/api/queries/useServerData';
 import { api } from '@/api/client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
+import type { AgentBlueprint } from '@/types/domain';
 
 const conversationSteps = [
   { question: 'What role should this agent fill?', options: ['Frontend', 'Backend', 'Testing', 'DevOps', 'Security', 'Documentation', 'Custom'] },
@@ -66,7 +67,7 @@ export default function AgentForge() {
   const { activeProject } = useHiveData();
   const { data: blueprints = [] } = useAgentBlueprintsData();
   const [tab, setTab] = useState<'blueprints' | 'create'>('blueprints');
-  const [dnaTarget, setDnaTarget] = useState<any | null>(null);
+  const [dnaTarget, setDnaTarget] = useState<AgentBlueprint | null>(null);
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
   const [created, setCreated] = useState(false);
@@ -162,7 +163,7 @@ export default function AgentForge() {
               </button>
             </div>
             <div className="grid grid-cols-3 gap-4">
-              {blueprints.map((blueprint: any) => (
+              {blueprints.map((blueprint) => (
                 <div key={blueprint.id} className="rounded-lg border border-border bg-card p-4 hover:border-primary/30 transition-colors group">
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2">

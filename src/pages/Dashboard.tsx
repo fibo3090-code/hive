@@ -10,12 +10,13 @@ import {
   Eye, FileText, Check, X, Play, Pause,
   CheckCircle2, Circle, Zap,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import type { AlertItem } from '@/types/domain';
+import type { ActivityFeedItem, AlertItem } from '@/types/domain';
 import { WakeReportModal } from '@/components/modals/WakeReportModal';
 import { BudgetExtensionModal } from '@/components/modals/BudgetExtensionModal';
 import { LoopDetectionModal } from '@/components/modals/LoopDetectionModal';
@@ -172,12 +173,27 @@ function BackgroundSessionCard({ onViewWakeReport }: { onViewWakeReport: () => v
 }
 
 /* ─── Custom Tooltip ─── */
-function CustomTooltip({ active, payload, label }: any) {
+type ChartTooltipEntry = {
+  dataKey: string;
+  value: number | string;
+  color?: string;
+  stroke?: string;
+};
+
+function CustomTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: ChartTooltipEntry[];
+  label?: string;
+}) {
   if (!active || !payload?.length) return null;
   return (
     <div className="rounded-md border border-border bg-card px-3 py-2 shadow-lg text-xs">
       <div className="font-mono text-muted-foreground mb-1">{label}</div>
-      {payload.map((p: any) => (
+      {payload.map((p) => (
         <div key={p.dataKey} className="flex items-center gap-2">
           <div className="h-2 w-2 rounded-full" style={{ backgroundColor: p.color }} />
           <span className="text-muted-foreground">{p.dataKey}:</span>
@@ -206,7 +222,7 @@ export default function Dashboard() {
   const budgetUsed = session.budgetUsed;
   const budgetTotal = session.budgetTotal;
   const budgetPct = Math.round((budgetUsed / budgetTotal) * 100);
-  const activityFeed = activityFeedRaw.map((item: any) => ({
+  const activityFeed: Array<ActivityFeedItem & { icon: LucideIcon }> = activityFeedRaw.map((item) => ({
     ...item,
     icon: activityIcons[item.icon as keyof typeof activityIcons] ?? Bot,
   }));

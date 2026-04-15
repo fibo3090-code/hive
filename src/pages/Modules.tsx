@@ -18,6 +18,7 @@ import { Progress } from '@/components/ui/progress';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useInstallModule, useModulesData } from '@/api/queries/useServerData';
+import type { ModuleCatalogItem } from '@/types/domain';
 import { toast } from 'sonner';
 
 const categories = ['All', 'Installed', 'Core', 'Community', 'Project', 'Synthesizer'];
@@ -44,9 +45,9 @@ export default function Modules() {
   const [synthRunning, setSynthRunning] = useState(false);
   const [search, setSearch] = useState('');
 
-  const modules = modulesQuery.data ?? [];
+  const modules = useMemo<ModuleCatalogItem[]>(() => modulesQuery.data ?? [], [modulesQuery.data]);
   const filtered = useMemo(() => {
-    return modules.filter((module: any) => {
+    return modules.filter((module: ModuleCatalogItem) => {
       const categoryMatch =
         category === 'All'
           ? true
@@ -175,7 +176,7 @@ export default function Modules() {
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              {filtered.map((module: any) => (
+              {filtered.map((module: ModuleCatalogItem) => (
                 <div
                   key={module.id}
                   onClick={() => navigate(`/modules/${module.id}`)}

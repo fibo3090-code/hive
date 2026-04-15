@@ -144,7 +144,7 @@ export default function Settings() {
       next.general.sovereigntyTier = activeProject.sovereigntyTier;
     }
     return next;
-  }, [activeProject, settings]);
+  }, [activeProject, draft, settings]);
 
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
 

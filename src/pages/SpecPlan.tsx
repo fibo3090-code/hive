@@ -21,6 +21,7 @@ import {
   useSprintsData,
   useUserStoriesData,
 } from '@/api/queries/useServerData';
+import type { RequirementItem, SprintPlanItem, UserStoryItem } from '@/types/domain';
 import { toast } from 'sonner';
 
 const tabs = [
@@ -117,7 +118,7 @@ function PRDTab() {
         <span className="text-xs text-muted-foreground">{items.length} tracked requirements</span>
       </div>
       <div className="space-y-2">
-        {items.map((req: any) => {
+        {items.map((req: RequirementItem) => {
           const drift = Boolean(req.driftDetected ?? req.drift);
           const status = req.status ?? 'planned';
           return (
@@ -173,7 +174,7 @@ function StoriesTab() {
     <div className="space-y-4">
       <h2 className="text-lg font-semibold">User Stories</h2>
       <div className="space-y-3">
-        {items.map((story: any) => {
+        {items.map((story: UserStoryItem) => {
           const criteria = Array.isArray(story.acceptanceCriteria) ? story.acceptanceCriteria : [];
           return (
             <div key={story.id} className="rounded-lg border border-border bg-card p-4">
@@ -226,7 +227,7 @@ function SprintTab() {
     <div className="space-y-4">
       <h2 className="text-lg font-semibold">Sprint Plan</h2>
       <div className="space-y-3">
-        {items.map((sprint: any) => (
+        {items.map((sprint: SprintPlanItem) => (
           <div
             key={sprint.id}
             draggable
@@ -271,7 +272,7 @@ function SprintTab() {
 function DriftTab() {
   const { requirements } = usePlanningData();
   const driftItems = useMemo(
-    () => (requirements.data ?? []).filter((item: any) => Boolean(item.driftDetected ?? item.drift)),
+    () => (requirements.data ?? []).filter((item: RequirementItem) => Boolean(item.driftDetected ?? item.drift)),
     [requirements.data]
   );
 
@@ -283,7 +284,7 @@ function DriftTab() {
     <div className="space-y-4">
       <h2 className="text-lg font-semibold">Spec Drift Alerts</h2>
       <div className="space-y-3">
-        {driftItems.map((item: any) => (
+        {driftItems.map((item: RequirementItem) => (
           <div key={item.id} className="rounded-lg border border-warning/40 bg-warning/5 p-4">
             <div className="flex items-center gap-3 mb-2">
               <AlertTriangle className="h-4 w-4 text-warning" />
@@ -345,7 +346,7 @@ function StatusTab() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {items.map((req: any) => (
+              {items.map((req: RequirementItem) => (
                 <tr key={req.id} className="hover:bg-surface-2/50">
                   <td className="px-4 py-2 font-medium">{req.title}</td>
                   <td className="px-4 py-2 font-mono text-muted-foreground">§{req.section ?? '—'}</td>
@@ -373,8 +374,8 @@ function StatusTab() {
               <h4 className={cn('text-xs font-semibold uppercase mb-3', statusColors[status] ?? 'text-muted-foreground')}>{status}</h4>
               <div className="space-y-2">
                 {items
-                  .filter((req: any) => req.status === status)
-                  .map((req: any) => (
+                  .filter((req: RequirementItem) => req.status === status)
+                  .map((req: RequirementItem) => (
                     <div key={req.id} className="rounded-lg border border-border bg-card p-3">
                       <div className="text-micro font-mono text-muted-foreground mb-1">{req.code ?? req.id}</div>
                       <div className="text-sm font-medium">{req.title}</div>

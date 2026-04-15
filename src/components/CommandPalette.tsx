@@ -65,7 +65,7 @@ export function CommandPalette() {
     return normalized === ''
       ? items
       : items.filter((item) => item.label.toLowerCase().includes(normalized) || item.preview.toLowerCase().includes(normalized) || item.meta?.toLowerCase().includes(normalized));
-  }, [query]);
+  }, [items, query]);
 
   const current = filtered[selectedIndex] ?? filtered[0] ?? null;
   const groups = [...new Set(filtered.map((item) => item.group))];

@@ -24,6 +24,7 @@ import {
   useTaskThroughputData,
   useTechDebtData,
 } from '@/api/queries/useServerData';
+import type { ActivityFeedItem, NoteItem, TechDebtItem, TimelinePoint } from '@/types/domain';
 import {
   Area,
   AreaChart,
@@ -56,13 +57,28 @@ const tabs = [
   { id: 'replay', label: 'Session Replay', icon: PlayCircle },
 ] as const;
 
-function ChartTooltip({ active, payload, label }: any) {
+type ChartTooltipEntry = {
+  dataKey: string;
+  value: number | string;
+  color?: string;
+  stroke?: string;
+};
+
+function ChartTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: ChartTooltipEntry[];
+  label?: string;
+}) {
   if (!active || !payload?.length) return null;
 
   return (
     <div className="rounded-md border border-border bg-card px-3 py-2 shadow-lg text-xs">
       <div className="font-mono text-muted-foreground mb-1">{label}</div>
-      {payload.map((entry: any) => (
+      {payload.map((entry) => (
         <div key={entry.dataKey} className="flex items-center gap-2">
           <div className="h-2 w-2 rounded-full" style={{ backgroundColor: entry.color || entry.stroke }} />
           <span className="text-muted-foreground capitalize">{entry.dataKey}:</span>
@@ -378,7 +394,7 @@ function RuntimeFeedTab() {
     <div className="space-y-6">
       <h2 className="text-lg font-semibold">Runtime Feed</h2>
       <div className="space-y-2">
-        {activity.data.map((entry: any) => (
+        {activity.data.map((entry: ActivityFeedItem) => (
           <div key={entry.id} className="rounded-lg border border-border bg-card px-4 py-3 flex items-center gap-3">
             <div className="h-2 w-2 rounded-full bg-primary" />
             <span className="text-sm font-medium flex-1">{entry.text ?? entry.title ?? 'Activity event'}</span>
@@ -402,7 +418,7 @@ function HiveMindBoard() {
   const categories = ['all', 'Architecture', 'Decisions', 'Patterns', 'Issues', 'Auto-generated'];
 
   const notes = notesQuery.data ?? [];
-  const filtered = notes.filter((note: any) => {
+  const filtered = notes.filter((note: NoteItem) => {
     const categoryMatch = category === 'all' || note.category === category;
     const searchMatch =
       search === '' ||
@@ -499,7 +515,7 @@ function HiveMindBoard() {
         <EmptyState title="No matching notes" message="Create a note or adjust the filters to see saved Hive Mind entries." />
       ) : (
         <div className="grid grid-cols-2 gap-4">
-          {filtered.map((note: any) => (
+          {filtered.map((note: NoteItem) => (
             <div
               key={note.id}
               className={cn(
@@ -558,8 +574,8 @@ function TechDebtBoard() {
               <h4 className={cn('text-xs font-semibold uppercase mb-3', colors[column])}>{column} Priority</h4>
               <div className="space-y-2 min-h-[220px] rounded-lg border border-dashed border-border/60 p-2">
                 {items
-                  .filter((item: any) => item.severity === column)
-                  .map((item: any) => (
+                  .filter((item: TechDebtItem) => item.severity === column)
+                  .map((item: TechDebtItem) => (
                     <div
                       key={item.id}
                       draggable
@@ -588,7 +604,7 @@ function TechDebtBoard() {
 function SessionReplayTab() {
   const { activeProject } = useHiveData();
   const activityQuery = useActivityFeedData(activeProject?.id);
-  const events = activityQuery.data ?? [];
+  const events = useMemo<ActivityFeedItem[]>(() => activityQuery.data ?? [], [activityQuery.data]);
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
@@ -623,7 +639,7 @@ function SessionReplayTab() {
         </div>
         <div className="relative h-5 rounded bg-surface-2 overflow-hidden">
           <div className="absolute top-0 left-0 h-full bg-primary/15" style={{ width: `${progress}%` }} />
-          {events.map((event: any, eventIndex: number) => (
+          {events.map((event: ActivityFeedItem, eventIndex: number) => (
             <button
               key={event.id ?? eventIndex}
               onClick={() => setIndex(eventIndex)}
@@ -652,7 +668,7 @@ function SessionReplayTab() {
         <div className="rounded-lg border border-border bg-card">
           <div className="px-4 py-2.5 border-b border-border text-xs font-semibold">Event Log</div>
           <div className="max-h-[240px] overflow-auto scrollbar-thin divide-y divide-border">
-            {events.map((event: any, eventIndex: number) => (
+            {events.map((event: ActivityFeedItem, eventIndex: number) => (
               <button
                 key={event.id ?? eventIndex}
                 onClick={() => setIndex(eventIndex)}
