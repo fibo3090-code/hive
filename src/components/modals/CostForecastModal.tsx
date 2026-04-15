@@ -1,5 +1,5 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { useHive } from '@/context/HiveContext';
+import { useHiveData } from '@/api/queries/useHiveData';
 import { DollarSign, Bot, Clock, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -10,7 +10,7 @@ interface CostForecastModalProps {
 }
 
 export function CostForecastModal({ open, onOpenChange }: CostForecastModalProps) {
-  const { state } = useHive();
+  const { state, toggleSession } = useHiveData();
 
   const agentCosts = state.agents.filter(a => a.status !== 'deprecated').map(a => ({
     name: a.name,
@@ -71,7 +71,7 @@ export function CostForecastModal({ open, onOpenChange }: CostForecastModalProps
 
         <DialogFooter>
           <button onClick={() => onOpenChange(false)} className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground hover:text-foreground">Close</button>
-          <button onClick={() => { toast.success('Session started'); onOpenChange(false); }} className="rounded-md bg-primary px-4 py-2 text-xs text-primary-foreground hover:bg-primary/90">Start Session</button>
+          <button onClick={() => { toggleSession(); toast.success('Session started'); onOpenChange(false); }} className="rounded-md bg-primary px-4 py-2 text-xs text-primary-foreground hover:bg-primary/90">Start Session</button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

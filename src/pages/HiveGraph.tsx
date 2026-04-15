@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { mockAgents } from '@/data/mockData';
+import { useHiveData } from '@/api/queries/useHiveData';
+import type { Agent } from '@/types/domain';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ConfidenceBar } from '@/components/shared/ConfidenceBar';
 import { Network, Search, Lock, Plus, LayoutGrid, X, MessageSquare, Pause, Settings, Trash2 } from 'lucide-react';
@@ -16,7 +17,7 @@ const lockedAgents = new Set(['be-001', 'fe-001']);
 const nodeTypes = { agentNode: AgentNode };
 
 type AgentNodeData = {
-  agent: typeof mockAgents[number];
+  agent: Agent;
   isRoot: boolean;
   highlighted: boolean;
   dimmed: boolean;
@@ -27,9 +28,9 @@ type AgentNodeData = {
   onTogglePause: (agentId: string) => void;
 };
 
-function buildGraph(): { nodes: Node[]; edges: Edge[] } {
-  const root = mockAgents[0];
-  const children = mockAgents.slice(1);
+function buildGraph(agents: Agent[]): { nodes: Node[]; edges: Edge[] } {
+  const root = agents[0];
+  const children = agents.slice(1);
   const spacing = 220;
   const startX = -((children.length - 1) * spacing) / 2;
   return {
@@ -81,7 +82,7 @@ function AgentNode({ data }: { data: AgentNodeData }) {
   );
 }
 
-function AgentDetailDrawer({ agent, onClose, onMessage }: { agent: typeof mockAgents[number]; onClose: () => void; onMessage: () => void }) {
+function AgentDetailDrawer({ agent, onClose, onMessage }: { agent: Agent; onClose: () => void; onMessage: () => void }) {
   return (
     <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 30, stiffness: 260 }} className="absolute right-0 top-0 h-full w-[380px] border-l border-border bg-card z-50 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -128,7 +129,7 @@ function AgentDetailDrawer({ agent, onClose, onMessage }: { agent: typeof mockAg
   );
 }
 
-function OrgChartView({ agents, onSelect }: { agents: typeof mockAgents; onSelect: (id: string) => void }) {
+function OrgChartView({ agents, onSelect }: { agents: Agent[]; onSelect: (id: string) => void }) {
   const root = agents[0];
   const children = agents.slice(1);
   return (
@@ -147,7 +148,7 @@ function OrgChartView({ agents, onSelect }: { agents: typeof mockAgents; onSelec
   );
 }
 
-function Card({ agent, isRoot }: { agent: typeof mockAgents[number]; isRoot?: boolean }) {
+function Card({ agent, isRoot }: { agent: Agent; isRoot?: boolean }) {
   return (
     <div className={cn('rounded-lg border bg-card px-4 py-3 hover:border-primary/40 transition-all min-w-[160px]', isRoot ? 'border-primary/30 glow-amber' : 'border-border')}>
       <div className="flex items-center gap-2 mb-1">
@@ -163,6 +164,7 @@ function Card({ agent, isRoot }: { agent: typeof mockAgents[number]; isRoot?: bo
 
 export default function HiveGraph() {
   const navigate = useNavigate();
+  const { state } = useHiveData();
   const { setChatTargetAgentId, graphFocusAgentId, setGraphFocusAgentId } = useWorkspace();
   const [view, setView] = useState<'org' | 'graph'>('graph');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -170,7 +172,7 @@ export default function HiveGraph() {
   const [search, setSearch] = useState('');
   const [showLocks, setShowLocks] = useState(false);
   const [spawnModalOpen, setSpawnModalOpen] = useState(false);
-  const graph = useMemo(() => buildGraph(), []);
+  const graph = useMemo(() => buildGraph(state.agents), [state.agents]);
 
   useEffect(() => {
     if (graphFocusAgentId) {
@@ -179,12 +181,12 @@ export default function HiveGraph() {
     }
   }, [graphFocusAgentId, setGraphFocusAgentId]);
 
-  const visibleAgents = useMemo(() => mockAgents.filter((agent) => !statusFilter || agent.status === statusFilter), [statusFilter]);
+  const visibleAgents = useMemo(() => state.agents.filter((agent) => !statusFilter || agent.status === statusFilter), [state.agents, statusFilter]);
   const filteredIds = new Set(visibleAgents.map((agent) => agent.id));
   const searchLower = search.toLowerCase();
 
   const nodes = useMemo<Node[]>(() => graph.nodes.map((node) => {
-    const agent = mockAgents.find((candidate) => candidate.id === node.id)!;
+    const agent = state.agents.find((candidate) => candidate.id === node.id)!;
     const matchesSearch = searchLower === '' || agent.name.toLowerCase().includes(searchLower) || agent.role.toLowerCase().includes(searchLower);
     return {
       ...node,
@@ -201,7 +203,7 @@ export default function HiveGraph() {
     };
   }), [filteredIds, graph.nodes, navigate, searchLower, setChatTargetAgentId, showLocks]);
 
-  const selectedAgent = selectedAgentId ? mockAgents.find((agent) => agent.id === selectedAgentId) ?? null : null;
+  const selectedAgent = selectedAgentId ? state.agents.find((agent) => agent.id === selectedAgentId) ?? null : null;
 
   return (
     <div className="flex flex-col h-full">
@@ -240,7 +242,7 @@ export default function HiveGraph() {
 
       <div className="flex-1 relative overflow-hidden">
         {view === 'org' ? (
-          <OrgChartView agents={visibleAgents.length > 0 ? visibleAgents : mockAgents} onSelect={setSelectedAgentId} />
+          <OrgChartView agents={visibleAgents.length > 0 ? visibleAgents : state.agents} onSelect={setSelectedAgentId} />
         ) : (
           <ReactFlow nodes={nodes} edges={graph.edges} nodeTypes={nodeTypes} fitView
             onNodeClick={(_, node) => setSelectedAgentId(node.id)}

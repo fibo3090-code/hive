@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { NotificationDropdown } from './NotificationDropdown';
-import { useHive } from '@/context/HiveContext';
+import { useHiveData } from '@/api/queries/useHiveData';
 import { cn } from '@/lib/utils';
 
 const routeNames: Record<string, string> = {
@@ -20,7 +20,7 @@ const routeNames: Record<string, string> = {
 export function TopBar() {
   const location = useLocation();
   const currentRoute = routeNames[location.pathname] || 'HIVE';
-  const { state, activeProject, toggleSession } = useHive();
+  const { state, activeProject, toggleSession } = useHiveData();
   const { session, agents, healthScore } = state;
 
   const workingCount = agents.filter(a => a.status === 'working').length;

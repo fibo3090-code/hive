@@ -7,8 +7,9 @@ import {
 } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
-import { useWorkspace, type SettingsState } from '@/context/WorkspaceContext';
-import { useHive } from '@/context/HiveContext';
+import { defaultSettings, useWorkspace, type SettingsState } from '@/context/WorkspaceContext';
+import { useHiveData } from '@/api/queries/useHiveData';
+import { useSettingsData } from '@/api/queries/useServerData';
 import { toast } from 'sonner';
 import { ConfirmDeleteModal } from '@/components/modals/ConfirmDeleteModal';
 
@@ -112,10 +113,11 @@ function SelectField<T extends string>({
 
 export default function Settings() {
   const [section, setSection] = useState<(typeof settingsNav)[number]['id']>('general');
-  const { settings, updateSettings, accentPresets } = useWorkspace();
-  const { activeProject, updateProject } = useHive();
+  const { accentPresets } = useWorkspace();
+  const { activeProject } = useHiveData();
+  const { data: settings, saveSettings } = useSettingsData();
   const [draft, setDraft] = useState<SettingsState>(() => {
-    const next = cloneSettings(settings);
+    const next = cloneSettings((settings as SettingsState | undefined) ?? defaultSettings);
     if (activeProject) {
       next.general.projectName = activeProject.name;
       next.general.sovereigntyTier = activeProject.sovereigntyTier;
@@ -125,6 +127,7 @@ export default function Settings() {
   const [pendingFile, setPendingFile] = useState('');
 
   useEffect(() => {
+    if (!settings) return;
     const next = cloneSettings(settings);
     if (activeProject) {
       next.general.projectName = activeProject.name;
@@ -134,6 +137,7 @@ export default function Settings() {
   }, [activeProject, settings]);
 
   const baseline = useMemo(() => {
+    if (!settings) return draft;
     const next = cloneSettings(settings);
     if (activeProject) {
       next.general.projectName = activeProject.name;
@@ -149,13 +153,7 @@ export default function Settings() {
   };
 
   const save = () => {
-    updateSettings(draft);
-    if (activeProject) {
-      updateProject(activeProject.id, {
-        name: draft.general.projectName,
-        sovereigntyTier: draft.general.sovereigntyTier,
-      });
-    }
+    void saveSettings(draft);
     toast.success('Settings saved');
   };
 

@@ -1,15 +1,14 @@
-import { mockProjects } from '@/data/mockData';
 import { SovereigntyBadge } from '@/components/shared/SovereigntyBadge';
 import { Hexagon, Plus, Bot, ArrowRight } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
-import { useHive } from '@/context/HiveContext';
+import { useHiveData } from '@/api/queries/useHiveData';
 
 export default function Projects() {
   const navigate = useNavigate();
-  const { activeProject, setActiveProject } = useHive();
+  const { state, activeProject, setActiveProject } = useHiveData();
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background p-8">
@@ -24,13 +23,13 @@ export default function Projects() {
 
       {/* Project cards grid */}
       <div className="grid w-full max-w-4xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-8 animate-fade-in" style={{ animationDelay: '100ms' }}>
-        {mockProjects.map((project) => {
+        {state.projects.map((project) => {
           const budgetPct = Math.round((project.budget.used / project.budget.total) * 100);
           return (
             <button
               key={project.id}
               onClick={() => {
-                setActiveProject(project.id);
+                void setActiveProject(project.id);
                 navigate('/dashboard');
               }}
               className={cn(

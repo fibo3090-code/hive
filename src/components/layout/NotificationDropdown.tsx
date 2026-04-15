@@ -2,7 +2,7 @@ import { Bell, Check, X, AlertTriangle, XCircle, AlertCircle, Info, Clock } from
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useState } from 'react';
-import { useHive } from '@/context/HiveContext';
+import { useHiveData } from '@/api/queries/useHiveData';
 
 const typeConfig = {
   critical: { icon: XCircle, color: 'text-destructive', bg: 'bg-destructive/10', dot: 'bg-destructive' },
@@ -13,7 +13,7 @@ const typeConfig = {
 
 export function NotificationDropdown() {
   const [open, setOpen] = useState(false);
-  const { state, markNotificationRead, markAllNotificationsRead, dismissNotification } = useHive();
+  const { state, markNotificationRead, markAllNotificationsRead, dismissNotification } = useHiveData();
   const { notifications } = state;
   const unreadCount = notifications.filter(n => !n.read).length;
 

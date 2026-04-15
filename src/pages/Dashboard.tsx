@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { useHive } from '@/context/HiveContext';
+import { useHiveData } from '@/api/queries/useHiveData';
+import { useActivityFeedData } from '@/api/queries/useServerData';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ConfidenceBar } from '@/components/shared/ConfidenceBar';
 import {
@@ -14,7 +15,7 @@ import { Progress } from '@/components/ui/progress';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import type { AlertItem } from '@/data/mockData';
+import type { AlertItem } from '@/types/domain';
 import { WakeReportModal } from '@/components/modals/WakeReportModal';
 import { BudgetExtensionModal } from '@/components/modals/BudgetExtensionModal';
 import { LoopDetectionModal } from '@/components/modals/LoopDetectionModal';
@@ -35,23 +36,8 @@ const statusTaskColors: Record<string, string> = {
   blocked: 'text-destructive',
 };
 
-const mockCommits = [
-  { hash: 'a3f2c1d', message: 'feat: implement dashboard summary tiles', author: 'Frontend Architect', time: '5 min ago' },
-  { hash: 'b8e4f2a', message: 'feat: add auth middleware with JWT', author: 'Backend Engineer', time: '12 min ago' },
-  { hash: 'c1d5e3b', message: 'test: add integration tests for auth', author: 'QA Sentinel', time: '18 min ago' },
-  { hash: 'd2f6a4c', message: 'docs: update API reference', author: 'Doc Writer', time: '25 min ago' },
-];
-
-const mockActivityFeed = [
-  { id: 'f1', icon: Bot, text: 'Frontend Architect started task: Build dashboard', time: '2 min ago', type: 'agent' },
-  { id: 'f2', icon: GitCommit, text: 'Backend Engineer committed: auth middleware', time: '12 min ago', type: 'commit' },
-  { id: 'f3', icon: AlertTriangle, text: 'Loop detected in Doc Writer — paused automatically', time: '15 min ago', type: 'alert' },
-  { id: 'f4', icon: TestTube2, text: 'QA Sentinel: 87/94 tests passing', time: '20 min ago', type: 'test' },
-  { id: 'f5', icon: FileText, text: 'Spec drift detected in section §3.3', time: '25 min ago', type: 'drift' },
-  { id: 'f6', icon: DollarSign, text: 'Budget checkpoint: $142/$200 consumed', time: '30 min ago', type: 'budget' },
-  { id: 'f7', icon: Eye, text: 'Planning Engine reviewed PR #12', time: '35 min ago', type: 'review' },
-  { id: 'f8', icon: Bot, text: 'Security Auditor paused — awaiting credentials', time: '40 min ago', type: 'agent' },
-];
+const commitFeed: Array<{ hash: string; message: string; author: string; time: string }> = [];
+const activityIcons = { Bot, GitCommit, AlertTriangle, TestTube2, FileText, DollarSign, Eye } as const;
 
 /* ─── Token Usage Timeline ─── */
 const tokenTimelineData = [
@@ -160,7 +146,7 @@ function SprintTimeline() {
 
 /* ─── Background Session Card ─── */
 function BackgroundSessionCard({ onViewWakeReport }: { onViewWakeReport: () => void }) {
-  const { state, toggleSession } = useHive();
+  const { state, toggleSession } = useHiveData();
   const { session, agents } = state;
   const workingCount = agents.filter(a => a.status === 'working').length;
   return (
@@ -204,7 +190,8 @@ function CustomTooltip({ active, payload, label }: any) {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { state, activeProject, dismissAlert: ctxDismissAlert, updateTaskStatus } = useHive();
+  const { state, activeProject, dismissAlert: ctxDismissAlert, updateTaskStatus } = useHiveData();
+  const { data: activityFeedRaw = [] } = useActivityFeedData(activeProject?.id);
   const { agents, tasks, alerts, session, healthScore } = state;
   const [timeFilter, setTimeFilter] = useState('1h');
   const [alertsExpanded, setAlertsExpanded] = useState(true);
@@ -219,7 +206,11 @@ export default function Dashboard() {
   const budgetUsed = session.budgetUsed;
   const budgetTotal = session.budgetTotal;
   const budgetPct = Math.round((budgetUsed / budgetTotal) * 100);
-  const displayedActivity = showMoreActivity ? mockActivityFeed : mockActivityFeed.slice(0, 5);
+  const activityFeed = activityFeedRaw.map((item: any) => ({
+    ...item,
+    icon: activityIcons[item.icon as keyof typeof activityIcons] ?? Bot,
+  }));
+  const displayedActivity = showMoreActivity ? activityFeed : activityFeed.slice(0, 5);
   const specCompletion = activeProject?.specCompletion ?? 73;
   const testCoverage = activeProject?.testCoverage ?? 68;
 
@@ -416,7 +407,9 @@ export default function Dashboard() {
               <button onClick={() => navigate('/code')} className="text-micro text-primary hover:underline">View all</button>
             </div>
             <div className="divide-y divide-border">
-              {mockCommits.map(c => (
+              {commitFeed.length === 0 ? (
+                <div className="px-4 py-4 text-xs text-muted-foreground">Git integration not configured</div>
+              ) : commitFeed.map(c => (
                 <div key={c.hash} onClick={() => navigate('/code')} className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2/50 transition-colors cursor-pointer">
                   <GitCommit className="h-3.5 w-3.5 text-primary shrink-0" />
                   <span className="text-sm flex-1 truncate">{c.message}</span>
@@ -482,9 +475,9 @@ export default function Dashboard() {
             );
           })}
         </div>
-        {!showMoreActivity && mockActivityFeed.length > 5 && (
+        {!showMoreActivity && activityFeed.length > 5 && (
           <button onClick={() => setShowMoreActivity(true)} className="w-full py-2 text-xs text-primary hover:underline border-t border-border">
-            Load more ({mockActivityFeed.length - 5} more)
+            Load more ({activityFeed.length - 5} more)
           </button>
         )}
       </div>

@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 import { Shield, Cloud, Server } from 'lucide-react';
-import type { SovereigntyTier } from '@/data/mockData';
+import type { SovereigntyTier } from '@/types/domain';
 
 const tierConfig: Record<SovereigntyTier, { icon: typeof Shield; label: string; className: string }> = {
   local: { icon: Server, label: 'Local', className: 'text-success border-success/30 bg-success/10' },

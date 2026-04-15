@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { useHive } from '@/context/HiveContext';
+import { useHiveData } from '@/api/queries/useHiveData';
 import { DollarSign } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 import { Progress } from '@/components/ui/progress';
@@ -13,7 +13,7 @@ interface BudgetExtensionModalProps {
 }
 
 export function BudgetExtensionModal({ open, onOpenChange }: BudgetExtensionModalProps) {
-  const { state, extendBudget, dismissAlert } = useHive();
+  const { state, extendBudget, dismissAlert } = useHiveData();
   const { session } = state;
   const [newTotal, setNewTotal] = useState(session.budgetTotal + 100);
 

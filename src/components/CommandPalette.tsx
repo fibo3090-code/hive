@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bot, FileText, GitCommit, Brain, Settings, LayoutDashboard, Network, MessageSquare, GitBranch, BarChart3, Boxes } from 'lucide-react';
-import { mockAgents } from '@/data/mockData';
+import { useHiveData } from '@/api/queries/useHiveData';
+import type { Agent } from '@/types/domain';
 import { cn } from '@/lib/utils';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
@@ -18,7 +19,7 @@ type PaletteItem = {
   kind: 'navigation' | 'agent';
 };
 
-const items: PaletteItem[] = [
+const commandItems: PaletteItem[] = [
   { id: 'nav-dash', group: 'Commands', label: 'Go to Dashboard', preview: 'Open the summary view with alerts, tasks, commits, and budget status.', path: '/dashboard', kind: 'navigation' },
   { id: 'nav-graph', group: 'Commands', label: 'Go to Hive Graph', preview: 'Open the agent graph with status filters, lock overlay, and context menu actions.', path: '/hive-graph', kind: 'navigation' },
   { id: 'nav-chat', group: 'Commands', label: 'Go to Chat Central', preview: 'Open the coordination thread with mentions, attachments, and typing indicators.', path: '/chat', kind: 'navigation' },
@@ -27,19 +28,6 @@ const items: PaletteItem[] = [
   { id: 'nav-spec', group: 'Commands', label: 'Go to Spec & Plan', preview: 'View sprint ordering, stories, and implementation status.', path: '/spec', kind: 'navigation' },
   { id: 'nav-modules', group: 'Commands', label: 'Go to Modules', preview: 'Browse installed and generated HCM modules.', path: '/modules', kind: 'navigation' },
   { id: 'nav-settings', group: 'Commands', label: 'Go to Settings', preview: 'Edit persisted preferences, appearance, integrations, and security.', path: '/settings', kind: 'navigation' },
-  ...mockAgents.map((agent) => ({
-    id: `agent-${agent.id}`,
-    group: 'Agents' as const,
-    label: agent.name,
-    meta: agent.model,
-    preview: `${agent.role} agent currently ${agent.status}. Current task: ${agent.currentTask}`,
-    path: '/hive-graph',
-    kind: 'agent' as const,
-  })),
-  { id: 'file-1', group: 'Files', label: 'src/components/Dashboard.tsx', meta: 'Modified', preview: 'Dashboard summary grid file with active project metrics and agent activity.', path: '/code', kind: 'navigation' },
-  { id: 'file-2', group: 'Files', label: 'src/lib/auth.ts', meta: 'Locked', preview: 'Authentication helper currently targeted by PR #11 and lock overlay activity.', path: '/code', kind: 'navigation' },
-  { id: 'commit-1', group: 'Commits', label: 'feat: implement dashboard summary tiles', meta: 'a3f2c1d', preview: 'Recent Frontend Architect commit related to dashboard tile wiring.', path: '/code', kind: 'navigation' },
-  { id: 'memory-1', group: 'Memory', label: 'Authentication Flow — JWT + httpOnly', preview: 'Saved Hive Mind note describing the current auth flow and rotation policy.', path: '/insights', kind: 'navigation' },
 ];
 
 const iconMap = {
@@ -53,10 +41,24 @@ const iconMap = {
 export function CommandPalette() {
   const navigate = useNavigate();
   const { setChatTargetAgentId, setGraphFocusAgentId, selectedCommandId, setSelectedCommandId } = useWorkspace();
+  const { state } = useHiveData();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [drawerAgent, setDrawerAgent] = useState<typeof mockAgents[number] | null>(null);
+  const [drawerAgent, setDrawerAgent] = useState<Agent | null>(null);
+
+  const items = useMemo<PaletteItem[]>(() => [
+    ...commandItems,
+    ...state.agents.map((agent) => ({
+      id: `agent-${agent.id}`,
+      group: 'Agents' as const,
+      label: agent.name,
+      meta: agent.model,
+      preview: `${agent.role} agent currently ${agent.status}. Current task: ${agent.currentTask ?? 'No active task'}`,
+      path: '/hive-graph',
+      kind: 'agent' as const,
+    })),
+  ], [state.agents]);
 
   const filtered = useMemo(() => {
     const normalized = query.toLowerCase();
@@ -103,7 +105,7 @@ export function CommandPalette() {
 
     if (item.kind === 'agent') {
       const agentId = item.id.replace('agent-', '');
-      const agent = mockAgents.find((candidate) => candidate.id === agentId) ?? null;
+      const agent = state.agents.find((candidate) => candidate.id === agentId) ?? null;
       setDrawerAgent(agent);
       return;
     }

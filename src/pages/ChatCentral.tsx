@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { mockAgents } from '@/data/mockData';
+import { useHiveData } from '@/api/queries/useHiveData';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { Send, Paperclip, AtSign, Hexagon, Copy, Eye, Code, AlertTriangle, ArrowDown, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -26,7 +26,7 @@ const initialMessages: Message[] = [
   { id: 'm6', type: 'widget', content: 'Cost Tracker', timestamp: '01:14:00', widgetType: 'cost' },
 ];
 
-const mockFiles = ['src/components/Dashboard.tsx', 'src/lib/auth.ts', 'src/lib/api.ts', 'docs/architecture.md'];
+const fileSuggestions = ['src/components/Dashboard.tsx', 'src/lib/auth.ts', 'src/lib/api.ts', 'docs/architecture.md'];
 
 function DeploymentWidget() {
   const items = [
@@ -113,6 +113,7 @@ function TypingIndicator({ agentName }: { agentName: string }) {
 }
 
 export default function ChatCentral() {
+  const { state } = useHiveData();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
   const [input, setInput] = useState('');
@@ -133,9 +134,9 @@ export default function ChatCentral() {
   const tokenEstimate = Math.max(1, Math.round((input.length + attachments.join('').length) * 1.3));
   const mentionMatch = input.match(/(?:^|\s)@([\w-]*)$/);
   const mentionQuery = mentionMatch?.[1]?.toLowerCase() ?? '';
-  const mentionOptions = mentionMatch ? mockAgents.filter((agent) => agent.name.toLowerCase().includes(mentionQuery) || agent.id.toLowerCase().includes(mentionQuery)) : [];
+  const mentionOptions = mentionMatch ? state.agents.filter((agent) => agent.name.toLowerCase().includes(mentionQuery) || agent.id.toLowerCase().includes(mentionQuery)) : [];
 
-  const activeAgent = selectedAgent === 'all' ? mockAgents[0] : mockAgents.find((agent) => agent.id === selectedAgent) ?? mockAgents[0];
+  const activeAgent = selectedAgent === 'all' ? state.agents[0] : state.agents.find((agent) => agent.id === selectedAgent) ?? state.agents[0];
 
   const appendResponse = (author = activeAgent) => {
     setTypingAgentId(author.id);
@@ -206,7 +207,7 @@ export default function ChatCentral() {
         <button onClick={() => setSelectedAgent('all')} className={cn('rounded-full px-3 py-1 text-xs whitespace-nowrap transition-colors', selectedAgent === 'all' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground')}>
           Coordinator
         </button>
-        {mockAgents.map((agent) => (
+        {state.agents.map((agent) => (
           <button key={agent.id} onClick={() => setSelectedAgent(agent.id)} className={cn('flex items-center gap-1.5 rounded-full px-3 py-1 text-xs whitespace-nowrap transition-colors', selectedAgent === agent.id ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground')}>
             <StatusDot status={agent.status} size="sm" />
             {agent.name}
@@ -222,7 +223,7 @@ export default function ChatCentral() {
           if (message.type === 'widget') {
             return <motion.div key={message.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex justify-center">{message.widgetType === 'deployment' ? <DeploymentWidget /> : <CostWidget />}</motion.div>;
           }
-          const agent = message.agentId ? mockAgents.find((candidate) => candidate.id === message.agentId) : null;
+          const agent = message.agentId ? state.agents.find((candidate) => candidate.id === message.agentId) : null;
           const isUser = message.type === 'user';
           return (
             <motion.div key={message.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={cn('flex gap-3 max-w-[80%]', isUser ? 'ml-auto flex-row-reverse' : '')}>
@@ -240,7 +241,7 @@ export default function ChatCentral() {
           );
         })}
 
-        {typingAgentId && <TypingIndicator agentName={mockAgents.find((agent) => agent.id === typingAgentId)?.name ?? 'Coordinator'} />}
+        {typingAgentId && <TypingIndicator agentName={state.agents.find((agent) => agent.id === typingAgentId)?.name ?? 'Coordinator'} />}
 
         <AnimatePresence>
           {showNewPill && (
@@ -262,7 +263,7 @@ export default function ChatCentral() {
           <div className="absolute bottom-full mb-2 left-4 right-4 rounded-lg border border-border bg-card p-3 shadow-xl">
             <div className="text-xs font-semibold text-foreground mb-2">Mock file picker</div>
             <div className="space-y-1">
-              {mockFiles.map((file) => (
+              {fileSuggestions.map((file) => (
                 <button key={file} onClick={() => { setAttachments((current) => current.includes(file) ? current : [...current, file]); setShowFilePicker(false); }} className="w-full text-left rounded px-2 py-1 text-xs text-muted-foreground hover:bg-surface-2 hover:text-foreground">
                   {file}
                 </button>

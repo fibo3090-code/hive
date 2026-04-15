@@ -1,5 +1,5 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { useHive } from '@/context/HiveContext';
+import { useHiveData } from '@/api/queries/useHiveData';
 import { Check, X, RotateCcw, DollarSign, Bot, FileCheck, TestTube2, AlertTriangle } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
@@ -11,7 +11,7 @@ interface WakeReportModalProps {
 }
 
 export function WakeReportModal({ open, onOpenChange }: WakeReportModalProps) {
-  const { state } = useHive();
+  const { state } = useHiveData();
   const { session, agents, tasks } = state;
 
   const completedTasks = tasks.filter(t => t.status === 'completed').length;

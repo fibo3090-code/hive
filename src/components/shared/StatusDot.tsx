@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import type { AgentStatus } from '@/data/mockData';
+import type { AgentStatus } from '@/types/domain';
 
 const statusColors: Record<AgentStatus, string> = {
   working: 'bg-success',
