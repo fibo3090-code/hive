@@ -9,6 +9,9 @@ jobs:
   check:
     name: lint + typecheck + build + test
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: front-end
     steps:
       - uses: actions/checkout@v4
 
