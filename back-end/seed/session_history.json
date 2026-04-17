@@ -1,0 +1,40 @@
+[
+  {
+    "id": "ses-005",
+    "date": "Apr 14, 2026",
+    "startTime": "09:15 AM",
+    "duration": "1h 23m",
+    "status": "active",
+    "agentsUsed": 4,
+    "tokensUsed": 342000,
+    "cost": 142,
+    "budget": 200,
+    "filesModified": 38,
+    "linesWritten": 4821,
+    "tasksCompleted": 5,
+    "tasksTotal": 12,
+    "healthScore": 87,
+    "highlights": ["Dashboard UI completed", "Auth middleware PR opened", "Loop detected in Doc Writer"],
+    "costTimeline": [{ "t": "0m", "cost": 0 }, { "t": "15m", "cost": 28 }, { "t": "30m", "cost": 52 }, { "t": "45m", "cost": 78 }, { "t": "60m", "cost": 118 }, { "t": "75m", "cost": 135 }, { "t": "83m", "cost": 142 }],
+    "agentBreakdown": [{ "name": "Planning", "tokens": 125, "color": "hsl(var(--primary))" }, { "name": "Frontend", "tokens": 98, "color": "hsl(var(--success))" }, { "name": "Backend", "tokens": 112, "color": "hsl(var(--info))" }, { "name": "QA", "tokens": 45, "color": "hsl(var(--warning))" }]
+  },
+  {
+    "id": "ses-004",
+    "date": "Apr 13, 2026",
+    "startTime": "02:30 PM",
+    "duration": "2h 15m",
+    "status": "completed",
+    "agentsUsed": 5,
+    "tokensUsed": 510000,
+    "cost": 185,
+    "budget": 200,
+    "filesModified": 52,
+    "linesWritten": 7340,
+    "tasksCompleted": 8,
+    "tasksTotal": 10,
+    "healthScore": 82,
+    "highlights": ["API gateway refactored", "Test coverage reached 68%", "Security audit initiated"],
+    "costTimeline": [{ "t": "0m", "cost": 0 }, { "t": "20m", "cost": 35 }, { "t": "40m", "cost": 72 }, { "t": "60m", "cost": 105 }, { "t": "80m", "cost": 138 }, { "t": "100m", "cost": 162 }, { "t": "135m", "cost": 185 }],
+    "agentBreakdown": [{ "name": "Planning", "tokens": 140, "color": "hsl(var(--primary))" }, { "name": "Frontend", "tokens": 85, "color": "hsl(var(--success))" }, { "name": "Backend", "tokens": 155, "color": "hsl(var(--info))" }]
+  }
+]

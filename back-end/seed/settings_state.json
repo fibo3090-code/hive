@@ -1,0 +1,32 @@
+{
+  "general": {
+    "projectName": "HIVE Dashboard",
+    "autoSave": true,
+    "sessionTimeout": 30,
+    "sovereigntyTier": "hybrid",
+    "telemetry": false,
+    "language": "English"
+  },
+  "llmProviders": [
+    { "name": "OpenAI", "connected": true, "apiKey": "sk-demo-openai-1234", "maskedKey": "••••••••••sk-1234", "revealKey": false },
+    { "name": "Anthropic", "connected": true, "apiKey": "ant-demo-anthropic-5678", "maskedKey": "••••••••••ant-5678", "revealKey": false },
+    { "name": "Google", "connected": false, "apiKey": "gemini-demo-key-2468", "maskedKey": "••••••••••gem-2468", "revealKey": false },
+    { "name": "Local (Ollama)", "connected": false, "revealKey": false }
+  ],
+  "router": { "enabled": true, "explorationRate": 10 },
+  "modules": { "Auth Module": true, "Database ORM": true, "Eval Engine": true },
+  "git": { "autoCommit": true, "commitPrefix": "[hive]", "branchStrategy": "Feature branches", "squashCommits": true },
+  "github": { "autoPush": true, "autoCreatePr": true, "requireChecks": true },
+  "integrations": { "Slack": "connected", "Linear": "connected", "Sentry": "disconnected", "Datadog": "disconnected", "PagerDuty": "disconnected" },
+  "fileProtection": { "files": ["src/lib/auth.ts", "src/config/env.ts", ".env", "package.json"] },
+  "security": { "outboundPromptWarning": true, "apiRiskApproval": true, "secretScanning": true, "auditLogRetention": "30 days", "ipAllowlist": false },
+  "notifications": [
+    { "label": "Budget warnings", "email": true, "slack": true, "inApp": true },
+    { "label": "Agent errors", "email": true, "slack": true, "inApp": true },
+    { "label": "Spec drift", "email": false, "slack": true, "inApp": true },
+    { "label": "PR updates", "email": false, "slack": false, "inApp": true },
+    { "label": "Session summaries", "email": true, "slack": false, "inApp": true }
+  ],
+  "appearance": { "theme": "dark", "accent": "amber", "fontSize": 14, "reduceMotion": false, "compactMode": false },
+  "dataPrivacy": { "retention": "90 days", "cookieConsent": true }
+}

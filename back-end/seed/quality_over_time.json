@@ -1,0 +1,6 @@
+[
+  { "day": "Apr 10", "planning": 92, "frontend": 90, "backend": 88 },
+  { "day": "Apr 11", "planning": 93, "frontend": 91, "backend": 87 },
+  { "day": "Apr 12", "planning": 94, "frontend": 92, "backend": 89 },
+  { "day": "Apr 13", "planning": 95, "frontend": 93, "backend": 90 }
+]

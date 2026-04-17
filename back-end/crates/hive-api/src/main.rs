@@ -1,0 +1,1199 @@
+use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::{
+        sse::{Event, KeepAlive},
+        IntoResponse, Response, Sse,
+    },
+    routing::{get, post},
+    Json, Router,
+};
+use clap::{Parser, Subcommand};
+use hive_db::{
+    repos::{agents, alerts, audit, cost_events, notes, notifications, projects, sessions, settings, sprints, tasks, tech_debt},
+    seed::seed_demo,
+    Db,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tokio::sync::{broadcast, RwLock};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tracing::info;
+
+#[derive(Parser)]
+#[command(author, version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Serve,
+    Migrate,
+    Seed,
+}
+
+#[derive(Clone)]
+struct AppState {
+    inner: Arc<RwLock<RuntimeState>>,
+    events: broadcast::Sender<DomainEvent>,
+    workspace_root: PathBuf,
+}
+
+#[derive(Clone)]
+struct RuntimeState {
+    db: Db,
+    database_url: String,
+    engine: String,
+    data_dir: PathBuf,
+    needs_setup: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DomainEvent {
+    event: String,
+    data: Value,
+}
+
+#[derive(Debug)]
+enum AppError {
+    NotFound(String),
+    BadRequest(String),
+    Internal(String),
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, error, code) = match self {
+            Self::NotFound(message) => (StatusCode::NOT_FOUND, message, "not_found"),
+            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message, "bad_request"),
+            Self::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message, "internal"),
+        };
+        (status, Json(json!({ "error": error, "code": code }))).into_response()
+    }
+}
+
+impl From<sea_orm::DbErr> for AppError {
+    fn from(value: sea_orm::DbErr) -> Self {
+        Self::Internal(value.to_string())
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SetupStatus {
+    needs_setup: bool,
+    engine: String,
+    data_dir: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetupDatabaseBody {
+    engine: String,
+    url: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateProjectBody {
+    name: String,
+    description: Option<String>,
+    sovereignty_tier: String,
+    budget_total_cents: i32,
+    status: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProjectBody {
+    name: Option<String>,
+    description: Option<Option<String>>,
+    sovereignty_tier: Option<String>,
+    budget_total_cents: Option<i32>,
+    status: Option<String>,
+    health_score: Option<i32>,
+    spec_completion: Option<i32>,
+    test_coverage: Option<i32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateAgentBody {
+    slug: Option<String>,
+    name: String,
+    role: String,
+    model: String,
+    status: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusBody {
+    status: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateNoteBody {
+    category: String,
+    title: String,
+    content: String,
+    auto: Option<bool>,
+    author: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoveTechDebtBody {
+    severity: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReorderSprintsBody {
+    from_id: String,
+    to_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtendBudgetBody {
+    new_total_cents: i32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsPatchBody {
+    settings: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EntityAuditQuery {
+    entity_type: Option<String>,
+    entity_id: Option<String>,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt().with_env_filter("info").init();
+    dotenvy::dotenv().ok();
+
+    let cli = Cli::parse();
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()?;
+
+    match cli.command.unwrap_or(Command::Serve) {
+        Command::Serve => serve(workspace_root).await,
+        Command::Migrate => {
+            let _ = bootstrap_runtime(&workspace_root).await?;
+            Ok(())
+        }
+        Command::Seed => {
+            let runtime = bootstrap_runtime(&workspace_root).await?;
+            seed_demo(runtime.db.conn()).await?;
+            Ok(())
+        }
+    }
+}
+
+async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
+    let runtime = bootstrap_runtime(&workspace_root).await?;
+    let (events, _) = broadcast::channel(256);
+
+    let state = AppState {
+        inner: Arc::new(RwLock::new(runtime)),
+        events,
+        workspace_root,
+    };
+
+    let app = Router::new()
+        .route("/v1/healthz", get(healthz))
+        .route("/v1/readyz", get(healthz))
+        .route("/v1/setup/status", get(setup_status))
+        .route("/v1/setup/database", post(setup_database))
+        .route("/v1/setup/seed", post(seed_database))
+        .route("/v1/events", get(events_stream))
+        .route("/v1/openapi.json", get(openapi_json))
+        .route("/v1/projects", get(list_projects).post(create_project))
+        .route("/v1/projects/active", get(get_active_project))
+        .route("/v1/projects/:project_id", get(get_project).patch(update_project))
+        .route("/v1/projects/:project_id/activate", post(activate_project))
+        .route("/v1/projects/:project_id/agents", get(list_agents).post(create_agent))
+        .route("/v1/agents/:agent_id/set-status", post(set_agent_status))
+        .route("/v1/agents/:agent_id/messages", get(get_agent_messages))
+        .route("/v1/projects/:project_id/tasks", get(list_tasks))
+        .route("/v1/tasks/:task_id/set-status", post(set_task_status))
+        .route("/v1/projects/:project_id/alerts", get(list_alerts))
+        .route("/v1/alerts/:alert_id/dismiss", post(dismiss_alert))
+        .route("/v1/notifications", get(list_notifications))
+        .route("/v1/notifications/:notification_id/read", post(mark_notification_read))
+        .route("/v1/notifications/read-all", post(mark_all_notifications_read))
+        .route("/v1/notifications/:notification_id/dismiss", post(dismiss_notification))
+        .route("/v1/projects/:project_id/notes", get(list_notes).post(create_note))
+        .route("/v1/projects/:project_id/tech-debt", get(list_tech_debt))
+        .route("/v1/tech-debt/:item_id/move", post(move_tech_debt_item))
+        .route("/v1/projects/:project_id/sprints", get(list_sprints))
+        .route("/v1/projects/:project_id/sprints/reorder", post(reorder_sprints))
+        .route("/v1/projects/:project_id/session", get(get_project_session))
+        .route("/v1/projects/:project_id/session/toggle", post(toggle_project_session))
+        .route("/v1/projects/:project_id/budget/extend", post(extend_project_budget))
+        .route("/v1/projects/:project_id/activity", get(get_project_activity))
+        .route("/v1/projects/:project_id/sessions/history", get(get_project_session_history))
+        .route("/v1/projects/:project_id/requirements", get(get_project_requirements))
+        .route("/v1/projects/:project_id/user-stories", get(get_project_user_stories))
+        .route("/v1/projects/:project_id/insights/quality-over-time", get(get_project_quality_over_time))
+        .route("/v1/projects/:project_id/insights/spend", get(get_project_spend))
+        .route("/v1/projects/:project_id/insights/task-throughput", get(get_project_task_throughput))
+        .route("/v1/projects/:project_id/modules", get(list_modules))
+        .route("/v1/modules/:module_id", get(get_module))
+        .route("/v1/projects/:project_id/modules/:module_id/install", post(install_module))
+        .route("/v1/agent-blueprints", get(get_agent_blueprints))
+        .route("/v1/settings", get(get_settings).patch(update_settings))
+        .route("/v1/audit-log", get(get_audit_log))
+        .with_state(state)
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http());
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8787));
+    info!("listening on http://{}", addr);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn bootstrap_runtime(workspace_root: &PathBuf) -> anyhow::Result<RuntimeState> {
+    let config_path = workspace_root.join("config").join("local.toml");
+    let data_dir = workspace_root.join("data");
+    fs::create_dir_all(&data_dir)?;
+
+    let (database_url, engine, needs_setup) = if config_path.exists() {
+        let raw = fs::read_to_string(&config_path)?;
+        let value: toml::Value = toml::from_str(&raw)?;
+        let url = value
+            .get("database")
+            .and_then(|db| db.get("url"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let engine = if url.starts_with("postgres") { "postgres" } else { "sqlite" }.to_owned();
+        (url, engine, false)
+    } else {
+        (
+            sqlite_url(data_dir.join("hive.db")),
+            "sqlite".to_owned(),
+            true,
+        )
+    };
+
+    let db = Db::connect(&database_url, true).await?;
+    // Only seed demo data on an empty DB. Avoids re-adding global notifications
+    // and clobbering manual edits on every process restart. Use the `Seed` CLI
+    // command or `POST /v1/setup/seed` to force a reseed.
+    if projects::list(db.conn()).await?.is_empty() {
+        seed_demo(db.conn()).await?;
+    }
+
+    Ok(RuntimeState {
+        db,
+        database_url,
+        engine,
+        data_dir,
+        needs_setup,
+    })
+}
+
+async fn db(state: &AppState) -> Db {
+    state.inner.read().await.db.clone()
+}
+
+async fn emit(state: &AppState, event: &str, data: Value) {
+    let _ = state.events.send(DomainEvent {
+        event: event.to_owned(),
+        data,
+    });
+}
+
+async fn active_project_id(state: &AppState) -> Result<Option<String>, AppError> {
+    let database = db(state).await;
+    if let Some(value) = settings::get_value(database.conn(), "global", "activeProjectId").await? {
+        if let Some(id) = value.as_str() {
+            return Ok(Some(id.to_owned()));
+        }
+    }
+
+    Ok(projects::list(database.conn())
+        .await?
+        .into_iter()
+        .next()
+        .map(|project| project.id))
+}
+
+async fn read_setting_json(state: &AppState, scope: &str, key: &str, fallback: Value) -> Result<Value, AppError> {
+    let database = db(state).await;
+    Ok(settings::get_value(database.conn(), scope, key).await?.unwrap_or(fallback))
+}
+
+fn cents_to_dollars(cents: i64) -> i64 {
+    cents / 100
+}
+
+fn sqlite_url(path: PathBuf) -> String {
+    let mut normalized = path.to_string_lossy().replace('\\', "/");
+    if let Some(stripped) = normalized.strip_prefix("//?/") {
+        normalized = stripped.to_owned();
+    }
+
+    let prefix = if normalized.as_bytes().get(1) == Some(&b':') {
+        "sqlite:///"
+    } else {
+        "sqlite://"
+    };
+
+    format!("{prefix}{normalized}?mode=rwc")
+}
+
+fn relative_time(timestamp: &str) -> String {
+    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp) else {
+        return "just now".to_owned();
+    };
+    let parsed = parsed.with_timezone(&chrono::Utc);
+    let diff = chrono::Utc::now().signed_duration_since(parsed);
+    if diff.num_seconds() < 60 {
+        "just now".to_owned()
+    } else if diff.num_minutes() < 60 {
+        format!("{} min ago", diff.num_minutes())
+    } else if diff.num_hours() < 24 {
+        format!("{} hr ago", diff.num_hours())
+    } else {
+        format!("{} days ago", diff.num_days())
+    }
+}
+
+fn format_elapsed(started_at: &str, ended_at: Option<&str>) -> String {
+    let Ok(start) = chrono::DateTime::parse_from_rfc3339(started_at) else {
+        return "00:00:00".to_owned();
+    };
+    let end = ended_at
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .unwrap_or_else(|| chrono::Utc::now().into());
+    let diff = end.signed_duration_since(start);
+    let total_seconds = diff.num_seconds().max(0);
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+async fn project_payload(database: &Db, project: hive_db::entities::project::Model) -> Result<Value, AppError> {
+    let agent_count = agents::count_by_project(database.conn(), &project.id).await?;
+    let used_cents = cost_events::total_cost_cents_for_project(database.conn(), &project.id).await?;
+    Ok(json!({
+        "id": project.id,
+        "name": project.name,
+        "description": project.description,
+        "healthScore": project.health_score,
+        "specCompletion": project.spec_completion,
+        "testCoverage": project.test_coverage,
+        "sovereigntyTier": project.sovereignty_tier,
+        "status": project.status,
+        "agentCount": agent_count,
+        "lastActivity": relative_time(project.last_activity_at.as_deref().unwrap_or(&project.updated_at)),
+        "lastActivityAt": project.last_activity_at,
+        "budget": {
+            "used": cents_to_dollars(used_cents),
+            "total": cents_to_dollars(i64::from(project.budget_total_cents))
+        },
+        "createdAt": project.created_at,
+        "updatedAt": project.updated_at
+    }))
+}
+
+async fn session_payload(database: &Db, project_id: &str) -> Result<Value, AppError> {
+    let project = projects::get(database.conn(), project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    let active = sessions::get_active_by_project(database.conn(), project_id).await?;
+    let latest = if active.is_some() {
+        active
+    } else {
+        sessions::list_by_project(database.conn(), project_id).await?.into_iter().next()
+    };
+
+    let agent_count = agents::count_by_project(database.conn(), project_id).await?;
+    if let Some(session) = latest {
+        let budget_cents = cost_events::total_cost_cents_for_session(database.conn(), &session.id).await?;
+        let tokens_used = cost_events::total_tokens_for_session(database.conn(), &session.id).await?;
+        Ok(json!({
+            "id": session.id,
+            "isActive": session.is_active,
+            "startedAt": session.started_at,
+            "endedAt": session.ended_at,
+            "elapsed": format_elapsed(&session.started_at, session.ended_at.as_deref()),
+            "tokensUsed": tokens_used,
+            "budgetUsed": cents_to_dollars(budget_cents),
+            "budgetTotal": cents_to_dollars(i64::from(project.budget_total_cents)),
+            "agentCount": agent_count
+        }))
+    } else {
+        Ok(json!({
+            "id": null,
+            "isActive": false,
+            "startedAt": null,
+            "endedAt": null,
+            "elapsed": "00:00:00",
+            "tokensUsed": 0,
+            "budgetUsed": 0,
+            "budgetTotal": cents_to_dollars(i64::from(project.budget_total_cents)),
+            "agentCount": agent_count
+        }))
+    }
+}
+
+async fn healthz(State(state): State<AppState>) -> Json<Value> {
+    let current = state.inner.read().await;
+    Json(json!({ "ok": true, "db": current.engine }))
+}
+
+async fn setup_status(State(state): State<AppState>) -> Json<SetupStatus> {
+    let current = state.inner.read().await;
+    Json(SetupStatus {
+        needs_setup: current.needs_setup,
+        engine: current.engine.clone(),
+        data_dir: current.data_dir.display().to_string(),
+    })
+}
+
+async fn setup_database(
+    State(state): State<AppState>,
+    Json(body): Json<SetupDatabaseBody>,
+) -> Result<Json<SetupStatus>, AppError> {
+    let config_path = state.workspace_root.join("config").join("local.toml");
+    let data_dir = state.workspace_root.join("data");
+    fs::create_dir_all(&data_dir).map_err(|err| AppError::Internal(err.to_string()))?;
+
+    let database_url = if body.engine == "postgres" {
+        body.url.clone().ok_or_else(|| AppError::BadRequest("postgres url is required".into()))?
+    } else {
+        body.url
+            .clone()
+            .unwrap_or_else(|| sqlite_url(data_dir.join("hive.db")))
+    };
+
+    let db = Db::connect(&database_url, true).await?;
+    // Only seed demo data on an empty database. `seed_demo` is mostly idempotent
+    // via its `ensure_*` helpers, but re-running it on an already-populated DB
+    // re-adds global notifications and clobbers manual project edits. The explicit
+    // `POST /v1/setup/seed` handler remains for operators who want to force a reseed.
+    if projects::list(db.conn()).await?.is_empty() {
+        seed_demo(db.conn()).await?;
+    }
+
+    let config_toml = format!("[database]\nurl = \"{}\"\n", database_url.replace('\\', "\\\\"));
+    fs::write(&config_path, config_toml).map_err(|err| AppError::Internal(err.to_string()))?;
+
+    {
+        let mut current = state.inner.write().await;
+        current.db = db;
+        current.database_url = database_url;
+        current.engine = body.engine.clone();
+        current.needs_setup = false;
+    }
+
+    Ok(Json(SetupStatus {
+        needs_setup: false,
+        engine: body.engine,
+        data_dir: data_dir.display().to_string(),
+    }))
+}
+
+async fn seed_database(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    seed_demo(database.conn()).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn events_stream(
+    State(state): State<AppState>,
+) -> Sse<impl futures_core::Stream<Item = Result<Event, axum::Error>>> {
+    let mut receiver = state.events.subscribe();
+    let stream = async_stream::stream! {
+        loop {
+            match receiver.recv().await {
+                Ok(message) => yield Ok(Event::default().event(message.event).json_data(message.data).unwrap()),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+}
+
+async fn openapi_json(State(_state): State<AppState>) -> Result<(StatusCode, [(axum::http::HeaderName, &'static str); 1], String), AppError> {
+    // The OpenAPI document is not yet generated from the real route handlers.
+    // BACKEND_PLAN.md calls for utoipa-driven generation; that work is tracked
+    // in HANDOFF_ISSUES.md §1.3. Until then, we must NOT serve the stub
+    // `openapi/openapi.json` as if it described the API — clients that trust
+    // it would get 404/422s on every route. Return 501 with a structured body
+    // so callers fail loudly instead of silently.
+    let body = json!({
+        "error": {
+            "code": "openapi_not_generated",
+            "message": "OpenAPI document is not yet generated. See HANDOFF_ISSUES.md §1.3.",
+        }
+    })
+    .to_string();
+    Ok((
+        StatusCode::NOT_IMPLEMENTED,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    ))
+}
+
+async fn list_projects(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let mut payload = Vec::new();
+    for project in projects::list(database.conn()).await? {
+        payload.push(project_payload(&database, project).await?);
+    }
+    Ok(Json(json!(payload)))
+}
+
+async fn get_active_project(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let Some(project_id) = active_project_id(&state).await? else {
+        return Ok(Json(Value::Null));
+    };
+    let database = db(&state).await;
+    let project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    Ok(Json(project_payload(&database, project).await?))
+}
+
+async fn get_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    Ok(Json(project_payload(&database, project).await?))
+}
+
+async fn create_project(
+    State(state): State<AppState>,
+    Json(body): Json<CreateProjectBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let project = projects::create(
+        database.conn(),
+        projects::CreateProject {
+            name: body.name,
+            description: body.description,
+            sovereignty_tier: body.sovereignty_tier,
+            budget_total_cents: body.budget_total_cents,
+            status: body.status.unwrap_or_else(|| "active".to_owned()),
+        },
+    )
+    .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "project.create",
+        "project",
+        &project.id,
+        None,
+        Some(serde_json::to_value(&project).unwrap_or(Value::Null)),
+    )
+    .await?;
+    if active_project_id(&state).await?.is_none() {
+        projects::activate(database.conn(), &project.id).await?;
+    }
+    let payload = project_payload(&database, project).await?;
+    emit(&state, "project.updated", payload.clone()).await;
+    Ok(Json(payload))
+}
+
+async fn update_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<UpdateProjectBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let before = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    let updated = projects::update(
+        database.conn(),
+        &project_id,
+        projects::UpdateProject {
+            name: body.name,
+            description: body.description,
+            sovereignty_tier: body.sovereignty_tier,
+            budget_total_cents: body.budget_total_cents,
+            status: body.status,
+            health_score: body.health_score,
+            spec_completion: body.spec_completion,
+            test_coverage: body.test_coverage,
+        },
+    )
+    .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "project.update",
+        "project",
+        &project_id,
+        Some(serde_json::to_value(&before).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
+    let payload = project_payload(&database, updated).await?;
+    emit(&state, "project.updated", payload.clone()).await;
+    Ok(Json(payload))
+}
+
+async fn activate_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    projects::activate(database.conn(), &project_id).await?;
+    emit(&state, "project.updated", json!({ "id": project_id })).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn list_agents(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(agents::list_by_project(database.conn(), &project_id).await?)))
+}
+
+async fn create_agent(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<CreateAgentBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let slug = body
+        .slug
+        .unwrap_or_else(|| format!("{}-{}", body.role.to_lowercase().chars().take(2).collect::<String>(), chrono::Utc::now().timestamp() % 1000));
+    let agent = agents::create(
+        database.conn(),
+        agents::CreateAgent {
+            project_id,
+            slug,
+            name: body.name,
+            role: body.role,
+            model: body.model,
+            status: body.status.unwrap_or_else(|| "idle".to_owned()),
+        },
+    )
+    .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.create",
+        "agent",
+        &agent.id,
+        None,
+        Some(serde_json::to_value(&agent).unwrap_or(Value::Null)),
+    )
+    .await?;
+    emit(&state, "agent.status", json!({ "id": agent.id, "status": agent.status })).await;
+    Ok(Json(json!(agent)))
+}
+
+async fn set_agent_status(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<StatusBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let before = agents::get(database.conn(), &agent_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
+    let updated = agents::set_status(database.conn(), &agent_id, &body.status).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.set_status",
+        "agent",
+        &agent_id,
+        Some(serde_json::to_value(&before).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
+    emit(&state, "agent.status", json!({ "id": updated.id, "status": updated.status })).await;
+    Ok(Json(json!(updated)))
+}
+
+async fn get_agent_messages(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let scope = format!("project:{}", active_project_id(&state).await?.unwrap_or_default());
+    let messages = settings::get_value(database.conn(), &scope, "agentMessages").await?.unwrap_or_else(|| json!({}));
+    let result = messages.get(&agent_id).cloned().unwrap_or_else(|| json!([]));
+    Ok(Json(result))
+}
+
+async fn list_tasks(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(tasks::list_by_project(database.conn(), &project_id).await?)))
+}
+
+async fn set_task_status(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+    Json(body): Json<StatusBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let before = tasks::get(database.conn(), &task_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("task {task_id} not found")))?;
+    let updated = tasks::set_status(database.conn(), &task_id, &body.status).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "task.set_status",
+        "task",
+        &task_id,
+        Some(serde_json::to_value(&before).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
+    emit(&state, "task.status", json!({ "id": updated.id, "status": updated.status })).await;
+    Ok(Json(json!(updated)))
+}
+
+async fn list_alerts(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let payload: Vec<Value> = alerts::list_by_project(database.conn(), &project_id)
+        .await?
+        .into_iter()
+        .map(|alert| {
+            json!({
+                "id": alert.id,
+                "projectId": alert.project_id,
+                "severity": alert.severity,
+                "title": alert.title,
+                "message": alert.message,
+                "source": alert.source,
+                "actionLabel": alert.action_label,
+                "actionKind": alert.action_kind,
+                "timestamp": relative_time(&alert.created_at),
+                "createdAt": alert.created_at
+            })
+        })
+        .collect();
+    Ok(Json(json!(payload)))
+}
+
+async fn dismiss_alert(
+    State(state): State<AppState>,
+    Path(alert_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    alerts::dismiss(database.conn(), &alert_id).await?;
+    emit(&state, "alert.dismissed", json!({ "id": alert_id })).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn list_notifications(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let payload: Vec<Value> = notifications::list_all(database.conn())
+        .await?
+        .into_iter()
+        .map(|notification| {
+            json!({
+                "id": notification.id,
+                "projectId": notification.project_id,
+                "type": notification.r#type,
+                "title": notification.title,
+                "message": notification.message,
+                "actionable": notification.actionable,
+                "actionLabel": notification.action_label,
+                "read": notification.read_at.is_some(),
+                "readAt": notification.read_at,
+                "dismissedAt": notification.dismissed_at,
+                "time": relative_time(&notification.created_at),
+                "createdAt": notification.created_at
+            })
+        })
+        .collect();
+    Ok(Json(json!(payload)))
+}
+
+async fn mark_notification_read(
+    State(state): State<AppState>,
+    Path(notification_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    notifications::mark_read(database.conn(), &notification_id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn mark_all_notifications_read(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    notifications::mark_all_read(database.conn()).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn dismiss_notification(
+    State(state): State<AppState>,
+    Path(notification_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    notifications::dismiss(database.conn(), &notification_id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn list_notes(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let payload: Vec<Value> = notes::list_by_project(database.conn(), &project_id)
+        .await?
+        .into_iter()
+        .map(|note| {
+            json!({
+                "id": note.id,
+                "projectId": note.project_id,
+                "category": note.category,
+                "title": note.title,
+                "content": note.content,
+                "auto": note.auto,
+                "author": note.author,
+                "time": relative_time(&note.created_at),
+                "createdAt": note.created_at,
+                "updatedAt": note.updated_at
+            })
+        })
+        .collect();
+    Ok(Json(json!(payload)))
+}
+
+async fn create_note(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<CreateNoteBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let note = notes::create(
+        database.conn(),
+        notes::CreateNote {
+            project_id,
+            category: body.category,
+            title: body.title,
+            content: body.content,
+            auto: body.auto.unwrap_or(false),
+            author: body.author.unwrap_or_else(|| "Operator".to_owned()),
+        },
+    )
+    .await?;
+    Ok(Json(json!(note)))
+}
+
+async fn list_tech_debt(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(tech_debt::list_by_project(database.conn(), &project_id).await?)))
+}
+
+async fn move_tech_debt_item(
+    State(state): State<AppState>,
+    Path(item_id): Path<String>,
+    Json(body): Json<MoveTechDebtBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let updated = tech_debt::move_item(database.conn(), &item_id, &body.severity).await?;
+    Ok(Json(json!(updated)))
+}
+
+async fn list_sprints(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(sprints::list_by_project(database.conn(), &project_id).await?)))
+}
+
+async fn reorder_sprints(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<ReorderSprintsBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let reordered = sprints::reorder(
+        database.conn(),
+        &project_id,
+        &body.from_id,
+        &body.to_id,
+    )
+    .await?;
+    Ok(Json(json!(reordered)))
+}
+
+async fn get_project_session(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(session_payload(&database, &project_id).await?))
+}
+
+async fn toggle_project_session(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let toggled = sessions::toggle_for_project(database.conn(), &project_id).await?;
+    let agent_list = agents::list_by_project(database.conn(), &project_id).await?;
+    for agent in agent_list {
+        let next_status = if toggled.is_active {
+            if agent.status == "paused" { Some("working") } else { None }
+        } else if agent.status == "working" {
+            Some("paused")
+        } else {
+            None
+        };
+
+        if let Some(status) = next_status {
+            let _ = agents::set_status(database.conn(), &agent.id, status).await?;
+        }
+    }
+
+    let payload = session_payload(&database, &project_id).await?;
+    emit(&state, "session.toggled", json!({ "projectId": project_id, "isActive": toggled.is_active })).await;
+    if !toggled.is_active {
+        emit(&state, "session.closed", json!({ "projectId": toggled.project_id, "sessionId": toggled.id })).await;
+    }
+    Ok(Json(payload))
+}
+
+async fn extend_project_budget(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<ExtendBudgetBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let updated = projects::update(
+        database.conn(),
+        &project_id,
+        projects::UpdateProject {
+            name: None,
+            description: None,
+            sovereignty_tier: None,
+            budget_total_cents: Some(body.new_total_cents),
+            status: None,
+            health_score: None,
+            spec_completion: None,
+            test_coverage: None,
+        },
+    )
+    .await?;
+    emit(&state, "project.updated", json!({ "id": updated.id, "changedFields": ["budget"] })).await;
+    Ok(Json(project_payload(&database, updated).await?))
+}
+
+async fn get_project_activity(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let scope = format!("project:{project_id}");
+    Ok(Json(read_setting_json(&state, &scope, "activityFeed", json!([])).await?))
+}
+
+async fn get_project_session_history(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let scope = format!("project:{project_id}");
+    Ok(Json(read_setting_json(&state, &scope, "sessionHistory", json!([])).await?))
+}
+
+async fn get_project_requirements(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let scope = format!("project:{project_id}");
+    Ok(Json(read_setting_json(&state, &scope, "requirements", json!([])).await?))
+}
+
+async fn get_project_user_stories(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let scope = format!("project:{project_id}");
+    Ok(Json(read_setting_json(&state, &scope, "userStories", json!([])).await?))
+}
+
+async fn get_project_quality_over_time(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let scope = format!("project:{project_id}");
+    Ok(Json(read_setting_json(&state, &scope, "insights.qualityOverTime", json!([])).await?))
+}
+
+async fn get_project_spend(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let scope = format!("project:{project_id}");
+    Ok(Json(read_setting_json(&state, &scope, "insights.spend", json!([])).await?))
+}
+
+async fn get_project_task_throughput(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let scope = format!("project:{project_id}");
+    Ok(Json(read_setting_json(&state, &scope, "insights.taskThroughput", json!([])).await?))
+}
+
+async fn list_modules(
+    State(state): State<AppState>,
+    Path(_project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    Ok(Json(read_setting_json(&state, "global", "moduleCatalog", json!([])).await?))
+}
+
+async fn get_module(
+    State(state): State<AppState>,
+    Path(module_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let modules = read_setting_json(&state, "global", "moduleCatalog", json!([])).await?;
+    let Some(module) = modules
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item.get("id").and_then(Value::as_str) == Some(module_id.as_str())))
+        .cloned()
+    else {
+        return Err(AppError::NotFound(format!("module {module_id} not found")));
+    };
+    Ok(Json(module))
+}
+
+async fn install_module(
+    State(state): State<AppState>,
+    Path((_project_id, module_id)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let mut modules = settings::get_value(database.conn(), "global", "moduleCatalog").await?.unwrap_or_else(|| json!([]));
+    let mut installed = None;
+    if let Some(items) = modules.as_array_mut() {
+        for item in items {
+            if item.get("id").and_then(Value::as_str) == Some(module_id.as_str()) {
+                item["status"] = json!("installed");
+                installed = Some(item.clone());
+            }
+        }
+    }
+    settings::put_value(database.conn(), "global", "moduleCatalog", modules).await?;
+    let result = installed.ok_or_else(|| AppError::NotFound(format!("module {module_id} not found")))?;
+    emit(&state, "module.installed", result.clone()).await;
+    Ok(Json(result))
+}
+
+async fn get_agent_blueprints(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    Ok(Json(read_setting_json(&state, "global", "agentBlueprints", json!([])).await?))
+}
+
+async fn get_settings(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let mut settings_state = settings::get_value(database.conn(), "global", "settingsState")
+        .await?
+        .unwrap_or_else(|| json!({}));
+
+    if let Some(project_id) = active_project_id(&state).await? {
+        if let Some(project) = projects::get(database.conn(), &project_id).await? {
+            if let Some(general) = settings_state.get_mut("general").and_then(Value::as_object_mut) {
+                general.insert("projectName".to_owned(), Value::String(project.name));
+                general.insert("sovereigntyTier".to_owned(), Value::String(project.sovereignty_tier));
+            }
+        }
+    }
+
+    Ok(Json(settings_state))
+}
+
+async fn update_settings(
+    State(state): State<AppState>,
+    Json(body): Json<SettingsPatchBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let mut next_settings = body.settings;
+
+    if let Some(project_id) = active_project_id(&state).await? {
+        let project_name = next_settings
+            .get("general")
+            .and_then(|v| v.get("projectName"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let sovereignty_tier = next_settings
+            .get("general")
+            .and_then(|v| v.get("sovereigntyTier"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        if project_name.is_some() || sovereignty_tier.is_some() {
+            let _ = projects::update(
+                database.conn(),
+                &project_id,
+                projects::UpdateProject {
+                    name: project_name.clone(),
+                    description: None,
+                    sovereignty_tier: sovereignty_tier.clone(),
+                    budget_total_cents: None,
+                    status: None,
+                    health_score: None,
+                    spec_completion: None,
+                    test_coverage: None,
+                },
+            )
+            .await?;
+        }
+
+        if let Some(project) = projects::get(database.conn(), &project_id).await? {
+            if let Some(general) = next_settings.get_mut("general").and_then(Value::as_object_mut) {
+                general.insert("projectName".to_owned(), Value::String(project.name));
+                general.insert("sovereigntyTier".to_owned(), Value::String(project.sovereignty_tier));
+            }
+        }
+    }
+
+    settings::put_value(database.conn(), "global", "settingsState", next_settings.clone()).await?;
+    emit(&state, "project.updated", json!({ "kind": "settings" })).await;
+    Ok(Json(next_settings))
+}
+
+async fn get_audit_log(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<EntityAuditQuery>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let payload = if let (Some(entity_type), Some(entity_id)) = (query.entity_type, query.entity_id) {
+        json!(audit::list_for_entity(database.conn(), &entity_type, &entity_id).await?)
+    } else {
+        json!([])
+    };
+    Ok(Json(payload))
+}

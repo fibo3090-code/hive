@@ -1,0 +1,4 @@
+# Copy this file to local.toml and customize
+
+[database]
+url = "sqlite://./hive.db?mode=rwc"

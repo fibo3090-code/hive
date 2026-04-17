@@ -1,0 +1,10 @@
+[server]
+host = "0.0.0.0"
+port = 3001
+
+[database]
+# Set to "sqlite://./hive.db?mode=rwc" for local mode
+# Set to "postgres://user:pass@host:5432/hive" for cloud mode
+# Leave empty to trigger setup flow
+url = "sqlite://./hive.db?mode=rwc"
+auto_migrate = true

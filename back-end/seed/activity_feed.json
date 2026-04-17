@@ -1,0 +1,7 @@
+[
+  { "id": "f1", "icon": "Bot", "text": "Frontend Architect started task: Build dashboard", "time": "2 min ago", "type": "agent" },
+  { "id": "f2", "icon": "GitCommit", "text": "Backend Engineer committed: auth middleware", "time": "12 min ago", "type": "commit" },
+  { "id": "f3", "icon": "AlertTriangle", "text": "Loop detected in Doc Writer - paused automatically", "time": "15 min ago", "type": "alert" },
+  { "id": "f4", "icon": "TestTube2", "text": "QA Sentinel: 87/94 tests passing", "time": "20 min ago", "type": "test" },
+  { "id": "f5", "icon": "FileText", "text": "Spec drift detected in section §3.3", "time": "25 min ago", "type": "drift" }
+]

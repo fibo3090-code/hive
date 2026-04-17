@@ -1,0 +1,5 @@
+[
+  { "id": "US-001", "title": "As a user, I can create a new project", "points": 5, "status": "done", "sprint": "Sprint 2", "acceptanceCriteria": ["Form validates inputs", "Project appears in list", "Onboarding wizard launches"] },
+  { "id": "US-002", "title": "As a user, I can view agent status in real-time", "points": 8, "status": "in-progress", "sprint": "Sprint 3", "acceptanceCriteria": ["Status dots update live", "Agent card shows current task", "Eval scores visible"] },
+  { "id": "US-003", "title": "As a user, I can message agents via Chat Central", "points": 13, "status": "in-progress", "sprint": "Sprint 3", "acceptanceCriteria": ["Messages render with agent avatar", "Code blocks highlighted", "Token count shown"] }
+]

@@ -49,3 +49,55 @@ lerna-debug.log*
 .LSOverride
 *.sublime-workspace
 *.sublime-project
+
+# Rust build artifacts
+*/target/*
+# Cargo.lock is intentionally committed for binary crates — keep it in git.
+
+# Local SQLite database and journals (must never be committed)
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.iml
+
+# Editor files
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Testing
+coverage/
+*.profdata
+
+# Debug files
+*.pdb
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# RustRover
+.fleet/

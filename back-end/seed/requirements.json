@@ -1,0 +1,6 @@
+[
+  { "id": "REQ-001", "title": "User Authentication", "status": "implemented", "drift": false, "section": "3.1", "description": "Users must be able to sign up, log in, and manage sessions." },
+  { "id": "REQ-002", "title": "Agent CRUD Operations", "status": "in-progress", "drift": false, "section": "3.2", "description": "Support creating, reading, updating, and deprecating agents." },
+  { "id": "REQ-003", "title": "Real-time Chat Interface", "status": "in-progress", "drift": true, "section": "3.3", "description": "Support code blocks, agent-specific channels, and token counting." },
+  { "id": "REQ-004", "title": "Budget Management", "status": "planned", "drift": false, "section": "3.4", "description": "Per-session budget caps with real-time tracking and alerts." }
+]
