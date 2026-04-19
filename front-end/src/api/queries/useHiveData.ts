@@ -162,6 +162,14 @@ export function useHiveData() {
     onSuccess: invalidateProject,
   });
 
+  const deleteProjectMutation = useMutation({
+    mutationFn: (projectIdToDelete: string) =>
+      api<{ ok: true }>(`/v1/projects/${projectIdToDelete}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: invalidateProject,
+  });
+
   const toggleSessionMutation = useMutation({
     mutationFn: () => api<SessionInfo>(`/v1/projects/${projectId}/session/toggle`, { method: 'POST' }),
     onSuccess: invalidateProject,
@@ -249,5 +257,7 @@ export function useHiveData() {
       createProjectMutation.mutateAsync(project),
     updateProject: (projectIdToUpdate: string, changes: Partial<Project>) =>
       updateProjectMutation.mutateAsync({ projectId: projectIdToUpdate, changes }),
+    deleteProject: (projectIdToDelete: string) =>
+      deleteProjectMutation.mutateAsync(projectIdToDelete),
   };
 }

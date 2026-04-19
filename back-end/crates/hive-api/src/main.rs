@@ -253,7 +253,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route("/v1/projects/active", get(get_active_project))
         .route(
             "/v1/projects/:project_id",
-            get(get_project).patch(update_project),
+            get(get_project).patch(update_project).delete(delete_project),
         )
         .route("/v1/projects/:project_id/activate", post(activate_project))
         .route(
@@ -783,6 +783,44 @@ async fn update_project(
     let payload = project_payload(&database, updated).await?;
     emit(&state, "project.updated", payload.clone()).await;
     Ok(Json(payload))
+}
+
+async fn delete_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+
+    projects::delete(database.conn(), &project_id).await?;
+
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "project.delete",
+        "project",
+        &project_id,
+        Some(serde_json::to_value(&project).unwrap_or(Value::Null)),
+        None,
+    )
+    .await?;
+
+    // If we deleted the active project, clear it
+    if active_project_id(&state).await? == Some(project_id.clone()) {
+        let now = chrono::Utc::now().to_rfc3339();
+        settings::put_value(
+            database.conn(),
+            "global",
+            "activeProjectId",
+            Value::Null,
+        )
+        .await?;
+    }
+
+    emit(&state, "project.deleted", json!({ "id": project_id })).await;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn activate_project(

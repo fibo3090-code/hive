@@ -1,13 +1,27 @@
 import { SovereigntyBadge } from '@/components/shared/SovereigntyBadge';
-import { Hexagon, Plus, Bot } from 'lucide-react';
+import { Hexagon, Plus, Bot, Trash2 } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { useHiveData } from '@/api/queries/useHiveData';
+import { useState } from 'react';
+import { ConfirmDeleteModal } from '@/components/modals/ConfirmDeleteModal';
 
 export default function Projects() {
   const navigate = useNavigate();
-  const { state, activeProject, setActiveProject } = useHiveData();
+  const { state, activeProject, setActiveProject, deleteProject } = useHiveData();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const handleDelete = async () => {
+    if (deletingId) {
+      try {
+        await deleteProject(deletingId);
+        setDeletingId(null);
+      } catch (error) {
+        console.error('Failed to delete project', error);
+      }
+    }
+  };
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background p-8">
@@ -25,24 +39,36 @@ export default function Projects() {
         {state.projects.map((project) => {
           const budgetPct = Math.round((project.budget.used / project.budget.total) * 100);
           return (
-            <button
+            <div
               key={project.id}
+              className={cn(
+                'group relative rounded-xl border border-border bg-card p-5 text-left hover:border-primary/40 hover:glow-amber transition-all cursor-pointer',
+                activeProject?.id === project.id && 'border-primary/40 glow-amber'
+              )}
               onClick={() => {
                 setActiveProject(project.id).catch(console.error);
                 navigate('/dashboard');
               }}
-              className={cn(
-                'group rounded-xl border border-border bg-card p-5 text-left hover:border-primary/40 hover:glow-amber transition-all',
-                activeProject?.id === project.id && 'border-primary/40 glow-amber'
-              )}
             >
               <div className="flex items-start justify-between mb-3">
-                <div>
+                <div className="pr-6">
                   <h3 className="text-sm font-semibold text-foreground group-hover:text-primary transition-colors">{project.name}</h3>
-                  <p className="text-xs text-muted-foreground mt-0.5">{project.description}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{project.description}</p>
                 </div>
                 <SovereigntyBadge tier={project.sovereigntyTier} />
               </div>
+
+              {/* Delete button (absolute) */}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDeletingId(project.id);
+                }}
+                className="absolute top-2 right-2 p-1.5 rounded-md text-muted-foreground/0 group-hover:text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
+                title="Delete project"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
 
               {/* Health bar */}
               <div className="mb-3">
@@ -73,7 +99,7 @@ export default function Projects() {
               <div className="mt-2">
                 <Progress value={budgetPct} className="h-1" />
               </div>
-            </button>
+            </div>
           );
         })}
 
@@ -90,6 +116,14 @@ export default function Projects() {
       <p className="text-micro text-muted-foreground animate-fade-in" style={{ animationDelay: '200ms' }}>
         HIVE v6.0 — Select a project to enter, or create a new one
       </p>
+
+      <ConfirmDeleteModal
+        isOpen={!!deletingId}
+        onClose={() => setDeletingId(null)}
+        onConfirm={handleDelete}
+        title="Delete Project"
+        description="Are you sure you want to delete this project? This action follows GDPR right to erasure and will permanently wipe all associated agents, memory, and history."
+      />
     </div>
   );
 }
