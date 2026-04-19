@@ -1,6 +1,6 @@
 # Hive Frontend
 
-A modern, feature-rich React TypeScript application built with Vite and Bun, providing a comprehensive dashboard and management interface for project coordination, agent orchestration, and real-time monitoring.
+A modern, feature-rich React TypeScript application built with Vite and Bun, providing a comprehensive dashboard and management interface for project coordination, agent orchestration, and real-time pro monitoring.
 
 ## Overview
 
