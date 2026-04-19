@@ -966,7 +966,10 @@ dependencies = [
  "clap",
  "dotenvy",
  "futures-core",
+ "hive-crypto",
  "hive-db",
+ "hive-llm",
+ "reqwest",
  "sea-orm",
  "serde",
  "serde_json",
@@ -1506,6 +1509,8 @@ dependencies = [
 name = "migration"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "sea-orm-migration",
 ]
 

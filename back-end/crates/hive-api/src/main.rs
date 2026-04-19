@@ -1,4 +1,4 @@
-use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::{Duration, Instant}};
 
 use axum::{
     extract::{Path, State},
@@ -7,20 +7,22 @@ use axum::{
         sse::{Event, KeepAlive},
         IntoResponse, Response, Sse,
     },
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use clap::{Parser, Subcommand};
+use hive_crypto::{mask_key, Crypto};
 use hive_db::{
-    repos::{agents, alerts, audit, cost_events, notes, notifications, projects, sessions, settings, sprints, tasks, tech_debt},
+    repos::{agents, alerts, audit, cost_events, llm_providers, notes, notifications, projects, sessions, settings, sprints, tasks, tech_debt},
     seed::seed_demo,
     Db,
 };
+use hive_llm::{client_for, ModelInfo, ProviderConfig, ProviderKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, RwLock};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -41,6 +43,10 @@ struct AppState {
     inner: Arc<RwLock<RuntimeState>>,
     events: broadcast::Sender<DomainEvent>,
     workspace_root: PathBuf,
+    crypto: Crypto,
+    #[allow(dead_code)]
+    http: reqwest::Client,
+    model_cache: Arc<RwLock<HashMap<String, (Instant, Vec<ModelInfo>)>>>,
 }
 
 #[derive(Clone)]
@@ -205,11 +211,21 @@ async fn main() -> anyhow::Result<()> {
 async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     let runtime = bootstrap_runtime(&workspace_root).await?;
     let (events, _) = broadcast::channel(256);
+    let crypto = Crypto::load_or_init()?;
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+
+    // Probe local Ollama for a seamless zero-config experience.
+    probe_ollama(&runtime.db, &http).await;
 
     let state = AppState {
         inner: Arc::new(RwLock::new(runtime)),
         events,
         workspace_root,
+        crypto,
+        http,
+        model_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
     let app = Router::new()
@@ -256,6 +272,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route("/v1/agent-blueprints", get(get_agent_blueprints))
         .route("/v1/settings", get(get_settings).patch(update_settings))
         .route("/v1/audit-log", get(get_audit_log))
+        .route("/v1/llm-providers", get(list_llm_providers))
+        .route("/v1/llm-providers/:id", patch(update_llm_provider))
+        .route("/v1/llm-providers/:id/test", post(test_llm_provider))
+        .route("/v1/llm-providers/:id/models", get(list_llm_provider_models))
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
@@ -1183,6 +1203,192 @@ async fn update_settings(
     settings::put_value(database.conn(), "global", "settingsState", next_settings.clone()).await?;
     emit(&state, "project.updated", json!({ "kind": "settings" })).await;
     Ok(Json(next_settings))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateLlmProviderBody {
+    api_key: Option<String>,
+    base_url: Option<String>,
+}
+
+fn provider_to_json(p: &hive_db::entities::llm_provider::Model) -> Value {
+    json!({
+        "id": p.id,
+        "name": p.name,
+        "kind": p.kind,
+        "connected": p.connected,
+        "baseUrl": p.base_url,
+        "maskedKey": p.masked_key,
+        "hasKey": p.api_key_ciphertext.is_some(),
+        "createdAt": p.created_at,
+        "updatedAt": p.updated_at,
+    })
+}
+
+fn provider_kind(p: &hive_db::entities::llm_provider::Model) -> Result<ProviderKind, AppError> {
+    ProviderKind::from_str(&p.kind)
+        .map_err(|e| AppError::BadRequest(format!("unknown provider kind '{}': {e}", p.kind)))
+}
+
+async fn build_provider_config(
+    state: &AppState,
+    p: &hive_db::entities::llm_provider::Model,
+) -> Result<ProviderConfig, AppError> {
+    let kind = provider_kind(p)?;
+    let api_key = match &p.api_key_ciphertext {
+        Some(ct) => {
+            let bytes = state
+                .crypto
+                .open(ct)
+                .map_err(|e| AppError::Internal(format!("decrypt key: {e}")))?;
+            Some(String::from_utf8(bytes).map_err(|e| AppError::Internal(e.to_string()))?)
+        }
+        None => None,
+    };
+    let base_url = p
+        .base_url
+        .clone()
+        .unwrap_or_else(|| kind.default_base_url().to_owned());
+    Ok(ProviderConfig::new(kind, api_key, Some(base_url)))
+}
+
+async fn list_llm_providers(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let items: Vec<Value> = llm_providers::list(database.conn())
+        .await?
+        .iter()
+        .map(provider_to_json)
+        .collect();
+    Ok(Json(json!(items)))
+}
+
+async fn update_llm_provider(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateLlmProviderBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let existing = llm_providers::get(database.conn(), &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("llm provider {id} not found")))?;
+
+    let (ciphertext, masked) = if let Some(key) = body.api_key.as_ref() {
+        let trimmed = key.trim();
+        if trimmed.is_empty() {
+            (Some(Vec::new()), Some(String::new()))
+        } else {
+            let sealed = state
+                .crypto
+                .seal(trimmed.as_bytes())
+                .map_err(|e| AppError::Internal(format!("seal key: {e}")))?;
+            (Some(sealed), Some(mask_key(trimmed)))
+        }
+    } else {
+        (None, None)
+    };
+
+    let patch = llm_providers::UpdateKey {
+        api_key_ciphertext: ciphertext,
+        masked_key: masked,
+        base_url: body.base_url,
+        connected: None,
+    };
+    let updated = llm_providers::update_key(database.conn(), &id, patch).await?;
+
+    // Invalidate cache entry
+    state.model_cache.write().await.remove(&id);
+
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "llm_provider.update",
+        "llm_provider",
+        &id,
+        Some(serde_json::to_value(&existing).unwrap_or(Value::Null)),
+        Some(provider_to_json(&updated)),
+    )
+    .await?;
+
+    emit(&state, "llm_provider.updated", provider_to_json(&updated)).await;
+    Ok(Json(provider_to_json(&updated)))
+}
+
+async fn test_llm_provider(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let provider = llm_providers::get(database.conn(), &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("llm provider {id} not found")))?;
+    let config = build_provider_config(&state, &provider).await?;
+    let client = client_for(config);
+    let outcome = client.test_connection().await;
+    let _ = llm_providers::set_connected(database.conn(), &id, outcome.ok).await?;
+    if outcome.ok {
+        state.model_cache.write().await.remove(&id);
+    }
+    emit(
+        &state,
+        "llm_provider.tested",
+        json!({ "id": id, "ok": outcome.ok }),
+    )
+    .await;
+    Ok(Json(serde_json::to_value(&outcome).unwrap_or(Value::Null)))
+}
+
+async fn list_llm_provider_models(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    const TTL: Duration = Duration::from_secs(5 * 60);
+    {
+        let cache = state.model_cache.read().await;
+        if let Some((at, models)) = cache.get(&id) {
+            if at.elapsed() < TTL {
+                return Ok(Json(json!(models)));
+            }
+        }
+    }
+
+    let database = db(&state).await;
+    let provider = llm_providers::get(database.conn(), &id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("llm provider {id} not found")))?;
+    let config = build_provider_config(&state, &provider).await?;
+    let client = client_for(config);
+    let models = client
+        .list_models()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("list models: {e}")))?;
+
+    state
+        .model_cache
+        .write()
+        .await
+        .insert(id.clone(), (Instant::now(), models.clone()));
+
+    let _ = llm_providers::set_connected(database.conn(), &id, true).await?;
+
+    Ok(Json(json!(models)))
+}
+
+async fn probe_ollama(db: &Db, http: &reqwest::Client) {
+    let url = "http://localhost:11434/api/tags";
+    let req = http.get(url).timeout(Duration::from_secs(1)).send().await;
+    match req {
+        Ok(r) if r.status().is_success() => {
+            info!("Ollama: detected at {url}");
+            let _ = llm_providers::set_connected(db.conn(), "ollama", true).await;
+        }
+        Ok(r) => {
+            warn!(status = %r.status(), "Ollama probe returned non-2xx");
+        }
+        Err(_) => {
+            info!("Ollama: not detected (skip)");
+        }
+    }
 }
 
 async fn get_audit_log(
