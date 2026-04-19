@@ -26,6 +26,21 @@ struct Entry {
     display_name: Option<String>,
 }
 
+pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
+    let parsed: ListResponse = serde_json::from_str(body).map_err(|e| LlmError::Parse(e.to_string()))?;
+    Ok(parsed
+        .data
+        .into_iter()
+        .map(|e| ModelInfo {
+            label: e.display_name.clone().unwrap_or_else(|| e.id.clone()),
+            id: e.id,
+            context_window: None,
+            supports_tools: true,
+            supports_streaming: true,
+        })
+        .collect())
+}
+
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     fn kind(&self) -> ProviderKind {
@@ -48,17 +63,35 @@ impl LlmProvider for AnthropicProvider {
             let body = response.text().await.unwrap_or_default();
             return Err(LlmError::ProviderStatus { status: status.as_u16(), body });
         }
-        let parsed: ListResponse = response.json().await?;
-        Ok(parsed
-            .data
-            .into_iter()
-            .map(|e| ModelInfo {
-                label: e.display_name.clone().unwrap_or_else(|| e.id.clone()),
-                id: e.id,
-                context_window: None,
-                supports_tools: true,
-                supports_streaming: true,
-            })
-            .collect())
+        let body = response.text().await?;
+        parse_models(&body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uses_display_name_when_present_falls_back_to_id() {
+        let body = r#"{"data":[
+            {"id":"claude-sonnet-4-6","display_name":"Claude Sonnet 4.6"},
+            {"id":"claude-opus-4-7"}
+        ]}"#;
+        let models = parse_models(body).unwrap();
+        assert_eq!(models[0].id, "claude-sonnet-4-6");
+        assert_eq!(models[0].label, "Claude Sonnet 4.6");
+        assert_eq!(models[1].id, "claude-opus-4-7");
+        assert_eq!(models[1].label, "claude-opus-4-7");
+    }
+
+    #[test]
+    fn empty_data_ok() {
+        assert!(parse_models(r#"{"data":[]}"#).unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_json_is_parse_error() {
+        assert!(matches!(parse_models("{"), Err(LlmError::Parse(_))));
     }
 }
