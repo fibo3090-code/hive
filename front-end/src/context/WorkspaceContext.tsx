@@ -233,7 +233,11 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
       return;
     }
 
-    globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    try {
+      globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (error) {
+      console.error('Failed to save workspace state', error);
+    }
   }, [state]);
 
   useEffect(() => {

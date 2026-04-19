@@ -196,7 +196,11 @@ function CustomTooltip({
     <div className="rounded-md border border-border bg-card px-3 py-2 shadow-lg text-xs">
       <div className="font-mono text-muted-foreground mb-1">{label}</div>
       {payload.map((p) => {
-        const unitSuffix = p.dataKey === 'tokens' ? 'K' : p.dataKey === 'cost' ? '$' : '';
+        const unitSuffix = (() => {
+          if (p.dataKey === 'tokens') return 'K';
+          if (p.dataKey === 'cost') return '$';
+          return '';
+        })();
         return (
           <div key={p.dataKey} className="flex items-center gap-2">
             <div className="h-2 w-2 rounded-full" style={{ backgroundColor: p.color }} />
@@ -435,20 +439,18 @@ export default function Dashboard() {
               {commitFeed.length === 0 ? (
                 <div className="px-4 py-4 text-xs text-muted-foreground">Git integration not configured</div>
               ) : commitFeed.map(c => (
-                <div
+                <button
+                  type="button"
                   key={c.hash}
-                  role="button"
-                  tabIndex={0}
                   onClick={() => navigate('/code')}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate('/code'); }}
-                  className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2/50 transition-colors cursor-pointer"
+                  className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2/50 transition-colors cursor-pointer w-full text-left"
                 >
                   <GitCommit className="h-3.5 w-3.5 text-primary shrink-0" />
                   <span className="text-sm flex-1 truncate">{c.message}</span>
                   <span className="text-micro font-mono text-muted-foreground">{c.hash}</span>
                   <span className="text-micro text-muted-foreground">{c.author}</span>
                   <span className="text-micro text-muted-foreground">{c.time}</span>
-                </div>
+                </button>
               ))}
             </div>
           </div>

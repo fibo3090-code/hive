@@ -19,10 +19,20 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
+  let payload: T | null = null;
+
+  if (text) {
+    try {
+      payload = JSON.parse(text) as T;
+    } catch {
+      if (!response.ok) {
+        throw new ApiError(`Request failed (${response.status}): Invalid JSON response`, 'invalid_json');
+      }
+    }
+  }
 
   if (!response.ok) {
-    throw new ApiError(payload?.error ?? `Request failed (${response.status})`, payload?.code);
+    throw new ApiError(payload ? (payload as { error?: string })?.error ?? `Request failed (${response.status})` : `Request failed (${response.status})`, payload ? (payload as { code?: string })?.code : 'request_failed');
   }
 
   return payload as T;

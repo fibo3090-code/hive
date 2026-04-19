@@ -1,4 +1,4 @@
-import { useMemo, useState, type MouseEvent } from 'react';
+import { useMemo, useRef, useState, useEffect, type MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import {
@@ -95,7 +95,10 @@ export default function Modules() {
             }}
             className={cn(
               'flex items-center gap-2 w-full px-4 py-2 text-xs transition-colors',
-              (item === 'Synthesizer' ? showSynthesizer : category === item && !showSynthesizer)
+              (() => {
+                if (item === 'Synthesizer') return showSynthesizer;
+                return category === item && !showSynthesizer;
+              })()
                 ? 'bg-primary/10 text-primary border-r-2 border-primary'
                 : 'text-muted-foreground hover:text-foreground'
             )}
@@ -130,13 +133,16 @@ export default function Modules() {
               <div className="space-y-2">
                 <Progress value={(synthStep / synthesizerSteps.length) * 100} className="h-2" />
                 {synthesizerSteps.map((step, index) => {
-                  const stepColorIfCurrent = index === synthStep && synthRunning ? 'text-foreground' : 'text-muted-foreground/40';
-                  const stepColor = index < synthStep ? 'text-success' : stepColorIfCurrent;
-                  const stepIcon = index < synthStep
-                    ? <Check className="h-3.5 w-3.5" />
-                    : index === synthStep && synthRunning
-                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      : <div className="h-3.5 w-3.5" />;
+                  const stepColor = (() => {
+                    if (index < synthStep) return 'text-success';
+                    if (index === synthStep && synthRunning) return 'text-foreground';
+                    return 'text-muted-foreground/40';
+                  })();
+                  const stepIcon = (() => {
+                    if (index < synthStep) return <Check className="h-3.5 w-3.5" />;
+                    if (index === synthStep && synthRunning) return <Loader2 className="h-3.5 w-3.5 animate-spin" />;
+                    return <div className="h-3.5 w-3.5" />;
+                  })();
                   return (
                     <div
                       key={step}
@@ -190,7 +196,8 @@ export default function Modules() {
                         <span className="text-micro text-success bg-success/10 px-2 py-0.5 rounded-full">Installed</span>
                       ) : (
                         <button
-                          onClick={(event) => void handleInstall(event, module.id)}
+                          type="button"
+                          onClick={(event) => { event.stopPropagation(); void handleInstall(event, module.id); }}
                           className="text-micro text-primary bg-primary/10 px-2 py-0.5 rounded-full hover:bg-primary/20"
                         >
                           {installModule.isPending ? 'Installing' : 'Install'}
@@ -216,6 +223,7 @@ export default function Modules() {
                   </div>
 
                   <button
+                    type="button"
                     onClick={(event) => {
                       event.stopPropagation();
                       setExpandedModule(expandedModule === module.id ? null : module.id);

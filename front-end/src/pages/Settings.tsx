@@ -155,9 +155,13 @@ export default function Settings() {
     setDraft((current) => ({ ...current, [key]: value }));
   };
 
-  const save = () => {
-    saveSettings(draft).catch(console.error);
-    toast.success('Settings saved');
+  const save = async () => {
+    try {
+      await saveSettings(draft);
+      toast.success('Settings saved');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to save settings');
+    }
   };
 
   return (

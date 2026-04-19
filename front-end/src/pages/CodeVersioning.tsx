@@ -165,7 +165,11 @@ export default function CodeVersioning() {
         <div className="flex items-center border-b border-border">
           <div className="flex">
             {(['editor', 'diff', 'git'] as const).map((item) => {
-              const tabLabel = item === 'git' ? 'Git Graph' : item === 'editor' ? 'Editor' : 'Diff View';
+              const tabLabel = (() => {
+                if (item === 'git') return 'Git Graph';
+                if (item === 'editor') return 'Editor';
+                return 'Diff View';
+              })();
               return (
                 <button key={item} onClick={() => setTab(item)} className={cn('px-4 py-2 text-xs capitalize border-b-2 transition-colors', tab === item ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground')}>
                   {tabLabel}
@@ -348,30 +352,20 @@ function FileTree({
         const folderChevron = collapsed[item.path] ? <ChevronRight className="h-3 w-3 text-muted-foreground" /> : <ChevronDown className="h-3 w-3 text-muted-foreground" />;
         const chevronOrSpacer = item.type === 'folder' ? folderChevron : <span className="w-3" />;
         const folderOrFileIcon = item.type === 'folder' ? <FolderOpen className="h-3.5 w-3.5 text-primary/60" /> : <File className="h-3.5 w-3.5 text-muted-foreground" />;
-        return (
-        <div key={item.path}>
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => item.type === 'folder' ? setCollapsed((current) => ({ ...current, [item.path]: !current[item.path] })) : onSelect(item.path)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                if (item.type === 'folder') {
-                  setCollapsed((current) => ({ ...current, [item.path]: !current[item.path] }));
-                } else {
-                  onSelect(item.path);
-                }
-              }
-            }}
-            className={cn('flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-surface-2 cursor-pointer transition-colors', item.path === selectedFile && 'bg-primary/10 text-primary')}
-            style={{ paddingLeft: `${depth * 12 + 4}px` }}
-          >
-            {chevronOrSpacer}
-            {folderOrFileIcon}
-            <span className="flex-1 truncate">{item.name}</span>
-            {item.status && <span className={cn('text-micro font-bold', fileStatusColors[item.status] || 'text-muted-foreground')}>{item.status}</span>}
-          </div>
-          {item.children && !collapsed[item.path] && <FileTree items={item.children} selectedFile={selectedFile} onSelect={onSelect} depth={depth + 1} />}
+return (
+          <div key={item.path}>
+            <button
+              type="button"
+              onClick={() => item.type === 'folder' ? setCollapsed((current) => ({ ...current, [item.path]: !current[item.path] })) : onSelect(item.path)}
+              className={cn('flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-surface-2 cursor-pointer transition-colors w-full text-left', item.path === selectedFile && 'bg-primary/10 text-primary')}
+              style={{ paddingLeft: `${depth * 12 + 4}px` }}
+            >
+              {chevronOrSpacer}
+              {folderOrFileIcon}
+              <span className="flex-1 truncate">{item.name}</span>
+              {item.status && <span className={cn('text-micro font-bold', fileStatusColors[item.status] || 'text-muted-foreground')}>{item.status}</span>}
+</button>
+            {item.children && !collapsed[item.path] && <FileTree items={item.children} selectedFile={selectedFile} onSelect={onSelect} depth={depth + 1} />}
         </div>
         );
       })}

@@ -574,15 +574,13 @@ function TechDebtBoard() {
                 {items
                   .filter((item: TechDebtItem) => item.severity === column)
                   .map((item: TechDebtItem) => (
-                    <div
+                    <button
+                      type="button"
                       key={item.id}
-                      role="button"
-                      tabIndex={0}
                       draggable
                       onDragStart={() => setDraggedId(item.id)}
                       onDragEnd={() => setDraggedId(null)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setDraggedId(item.id); }}
-                      className="rounded-lg border border-border bg-card p-3 hover:border-primary/30 cursor-grab active:cursor-grabbing transition-colors"
+                      className="rounded-lg border border-border bg-card p-3 hover:border-primary/30 cursor-grab active:cursor-grabbing transition-colors w-full text-left"
                     >
                       <h5 className="text-sm font-medium mb-1">{item.title}</h5>
                       <p className="text-micro text-muted-foreground mb-1">{item.description}</p>
@@ -591,7 +589,7 @@ function TechDebtBoard() {
                         <span className="text-micro font-mono text-muted-foreground">{item.file}</span>
                         {item.lines > 0 && <span className="text-micro text-muted-foreground">{item.lines} lines</span>}
                       </div>
-                    </div>
+                    </button>
                   ))}
               </div>
             </div>
