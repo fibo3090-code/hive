@@ -35,16 +35,16 @@ jobs:
           - rust: stable
           - rust: 1.85.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@4f1454f76239bc7a61f2214470211a76c89ca03e # v1
         with:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@23bce30061da22eda4249a2927256193e6205739 # v2.7.7
         with:
           shared-key: be-cache-${{ matrix.rust }}}
 
@@ -62,15 +62,15 @@ jobs:
       run:
         working-directory: back-end
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4f1454f76239bc7a61f2214470211a76c89ca03e # v1
         with:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@23bce30061da22eda4249a2927256193e6205739 # v2.7.7
         with:
           shared-key: be-cache-stable
 
@@ -82,13 +82,13 @@ jobs:
 
       - name: Restore build artifact
         if: github.event_name == 'pull_request'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
         with:
           name: target
           path: back-end/target
 
       - name: Cache target directory
-        uses: actions/cache@v4
+        uses: actions/cache@d4323d4df104b028a05b383baa0ad2755f564750 # v4.2.2
         if: github.event_name != 'pull_request'
         with:
           path: back-end/target
@@ -103,7 +103,7 @@ jobs:
         run: cargo build --workspace --release
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
           name: target
           path: back-end/target
