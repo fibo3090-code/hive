@@ -33,13 +33,6 @@ export interface SettingsState {
     telemetry: boolean;
     language: 'English' | 'Deutsch' | '日本語';
   };
-  llmProviders: Array<{
-    name: 'OpenAI' | 'Anthropic' | 'Google' | 'Local (Ollama)';
-    connected: boolean;
-    apiKey?: string;
-    maskedKey?: string;
-    revealKey: boolean;
-  }>;
   router: {
     enabled: boolean;
     explorationRate: number;
@@ -132,12 +125,6 @@ export const defaultSettings: SettingsState = {
     telemetry: false,
     language: 'English',
   },
-  llmProviders: [
-    { name: 'OpenAI', connected: true, apiKey: 'sk-demo-openai-1234', maskedKey: '••••••••••sk-1234', revealKey: false },
-    { name: 'Anthropic', connected: true, apiKey: 'ant-demo-anthropic-5678', maskedKey: '••••••••••ant-5678', revealKey: false },
-    { name: 'Google', connected: false, apiKey: 'gemini-demo-key-2468', maskedKey: '••••••••••gem-2468', revealKey: false },
-    { name: 'Local (Ollama)', connected: false, revealKey: false },
-  ],
   router: {
     enabled: true,
     explorationRate: 10,

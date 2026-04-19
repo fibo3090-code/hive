@@ -5,17 +5,13 @@ import { motion } from 'framer-motion';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useAgentBlueprintsData } from '@/api/queries/useServerData';
+import { useLlmProviders } from '@/api/llm';
 import { api } from '@/api/client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import type { AgentBlueprint } from '@/types/domain';
 
-const conversationSteps = [
-  { question: 'What role should this agent fill?', options: ['Frontend', 'Backend', 'Testing', 'DevOps', 'Security', 'Documentation', 'Custom'] },
-  { question: 'Which LLM should power this agent?', options: ['GPT-4o', 'Claude 3.5 Sonnet', 'Gemini Pro', 'Local (Ollama)'] },
-  { question: 'What sovereignty tier?', options: ['Local', 'Hybrid', 'Cloud'] },
-  { question: 'How autonomous should it be?', options: ['Low', 'Medium', 'High'] },
-] as const;
+type ConversationStep = { question: string; options: readonly string[] };
 
 function DNAViewer({
   dna,
@@ -68,6 +64,20 @@ export default function AgentForge() {
   const queryClient = useQueryClient();
   const { activeProject } = useHiveData();
   const { data: blueprints = [] } = useAgentBlueprintsData();
+  const { data: llmProviders = [] } = useLlmProviders();
+  const llmOptions = useMemo(() => {
+    const connected = llmProviders.filter((p) => p.connected || p.kind === 'ollama');
+    return connected.length > 0 ? connected.map((p) => p.name) : ['Ollama'];
+  }, [llmProviders]);
+  const conversationSteps = useMemo<readonly ConversationStep[]>(
+    () => [
+      { question: 'What role should this agent fill?', options: ['Frontend', 'Backend', 'Testing', 'DevOps', 'Security', 'Documentation', 'Custom'] },
+      { question: 'Which LLM should power this agent?', options: llmOptions },
+      { question: 'What sovereignty tier?', options: ['Local', 'Hybrid', 'Cloud'] },
+      { question: 'How autonomous should it be?', options: ['Low', 'Medium', 'High'] },
+    ],
+    [llmOptions],
+  );
   const [tab, setTab] = useState<'blueprints' | 'create'>('blueprints');
   const [dnaTarget, setDnaTarget] = useState<AgentBlueprint | null>(null);
   const [step, setStep] = useState(0);

@@ -3,8 +3,9 @@ import { cn } from '@/lib/utils';
 import {
   Settings as SettingsIcon, Cpu, GitBranch, Github, Link2,
   Shield, Bell, Keyboard, Palette, Database, Info, Plug, FileLock,
-  Plus, Trash2, Check, Eye, EyeOff, Save,
+  Plus, Trash2, Check, Save, RefreshCw, Loader2,
 } from 'lucide-react';
+import { useLlmProviders, useSetProviderKey, useTestProvider, type LlmProvider } from '@/api/llm';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
 import { defaultSettings, useWorkspace, type SettingsState } from '@/context/WorkspaceContext';
@@ -233,35 +234,7 @@ export default function Settings() {
           </div>
         )}
 
-        {section === 'llm' && (
-          <div className="space-y-6 max-w-xl">
-            <h2 className="text-lg font-semibold">LLM Providers</h2>
-            {draft.llmProviders.map((provider, index) => (
-              <div key={provider.name} className="rounded-lg border border-border bg-card p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-sm font-semibold">{provider.name}</h3>
-                  <Switch checked={provider.connected} onCheckedChange={(checked) => {
-                    const next = [...draft.llmProviders];
-                    next[index] = { ...provider, connected: checked };
-                    patch('llmProviders', next);
-                  }} />
-                </div>
-                {provider.maskedKey && (
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-xs font-mono text-muted-foreground">{provider.revealKey ? provider.apiKey : provider.maskedKey}</span>
-                    <button onClick={() => {
-                      const next = [...draft.llmProviders];
-                      next[index] = { ...provider, revealKey: !provider.revealKey };
-                      patch('llmProviders', next);
-                    }} className="text-muted-foreground hover:text-foreground">
-                      {provider.revealKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+        {section === 'llm' && <LlmProvidersSection />}
 
         {section === 'router' && (
           <div className="space-y-6 max-w-2xl">
@@ -418,6 +391,108 @@ export default function Settings() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function LlmProvidersSection() {
+  const { data: providers = [], isLoading, refetch } = useLlmProviders();
+  const setKey = useSetProviderKey();
+  const testProvider = useTestProvider();
+  const [drafts, setDrafts] = useState<Record<string, { apiKey: string; baseUrl: string }>>({});
+
+  const getDraft = (p: LlmProvider) =>
+    drafts[p.id] ?? { apiKey: '', baseUrl: p.baseUrl ?? '' };
+
+  const updateDraft = (id: string, patchDraft: Partial<{ apiKey: string; baseUrl: string }>) => {
+    setDrafts((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] ?? { apiKey: '', baseUrl: '' }), ...patchDraft },
+    }));
+  };
+
+  const onSave = async (p: LlmProvider) => {
+    const d = getDraft(p);
+    await setKey.mutateAsync({
+      providerId: p.id,
+      apiKey: d.apiKey || undefined,
+      baseUrl: d.baseUrl || undefined,
+    });
+    updateDraft(p.id, { apiKey: '' });
+    toast.success(`${p.name} updated`);
+  };
+
+  const onTest = async (p: LlmProvider) => {
+    const res = await testProvider.mutateAsync(p.id);
+    if (res.ok) toast.success(`${p.name} connected`);
+    else toast.error(`${p.name}: ${res.error ?? 'failed'}`);
+  };
+
+  return (
+    <div className="space-y-4 max-w-xl">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">LLM Providers</h2>
+        <button onClick={() => refetch()} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+          <RefreshCw className="h-3 w-3" /> Refresh
+        </button>
+      </div>
+      {isLoading && <div className="text-xs text-muted-foreground">Loading…</div>}
+      {providers.map((p) => {
+        const d = getDraft(p);
+        const needsKey = p.kind !== 'ollama';
+        return (
+          <div key={p.id} className="rounded-lg border border-border bg-card p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold">{p.name}</h3>
+                <span className="text-micro font-mono text-muted-foreground">{p.kind}</span>
+              </div>
+              <span className={cn('text-micro px-2 py-0.5 rounded-full', p.connected ? 'text-success bg-success/10' : 'text-muted-foreground bg-surface-2')}>
+                {p.connected ? 'Connected' : 'Not connected'}
+              </span>
+            </div>
+            {needsKey && (
+              <div>
+                <label className="text-xs font-medium mb-1 block">
+                  API Key {p.maskedKey && <span className="font-mono text-muted-foreground">(current: {p.maskedKey})</span>}
+                </label>
+                <Field
+                  value={d.apiKey}
+                  onChange={(v) => updateDraft(p.id, { apiKey: v })}
+                  placeholder={p.hasKey ? 'Leave blank to keep current' : 'sk-…'}
+                  className="w-full font-mono"
+                />
+              </div>
+            )}
+            <div>
+              <label className="text-xs font-medium mb-1 block">Base URL</label>
+              <Field
+                value={d.baseUrl}
+                onChange={(v) => updateDraft(p.id, { baseUrl: v })}
+                placeholder={p.baseUrl ?? ''}
+                className="w-full font-mono"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void onSave(p)}
+                disabled={setKey.isPending}
+                className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => void onTest(p)}
+                disabled={testProvider.isPending}
+                className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-50"
+              >
+                {testProvider.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                Test Connection
+              </button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
