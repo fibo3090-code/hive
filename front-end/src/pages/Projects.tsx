@@ -64,7 +64,7 @@ export default function Projects() {
                   e.stopPropagation();
                   setDeletingId(project.id);
                 }}
-                className="absolute top-2 right-2 p-1.5 rounded-md text-muted-foreground/0 group-hover:text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
+                className="absolute top-2 right-2 p-1.5 rounded-md text-muted-foreground/20 group-hover:text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
                 title="Delete project"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -118,8 +118,8 @@ export default function Projects() {
       </p>
 
       <ConfirmDeleteModal
-        isOpen={!!deletingId}
-        onClose={() => setDeletingId(null)}
+        open={!!deletingId}
+        onOpenChange={(open) => !open && setDeletingId(null)}
         onConfirm={handleDelete}
         title="Delete Project"
         description="Are you sure you want to delete this project? This action follows GDPR right to erasure and will permanently wipe all associated agents, memory, and history."
