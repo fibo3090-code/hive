@@ -47,10 +47,7 @@ pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbE
 }
 
 /// Create a new project.
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateProject,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateProject) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     let model = ActiveModel {
         id: Set(new_id()),

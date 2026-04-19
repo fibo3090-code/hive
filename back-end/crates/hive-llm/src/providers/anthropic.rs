@@ -27,7 +27,8 @@ struct Entry {
 }
 
 pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
-    let parsed: ListResponse = serde_json::from_str(body).map_err(|e| LlmError::Parse(e.to_string()))?;
+    let parsed: ListResponse =
+        serde_json::from_str(body).map_err(|e| LlmError::Parse(e.to_string()))?;
     Ok(parsed
         .data
         .into_iter()
@@ -61,7 +62,10 @@ impl LlmProvider for AnthropicProvider {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(LlmError::ProviderStatus { status: status.as_u16(), body });
+            return Err(LlmError::ProviderStatus {
+                status: status.as_u16(),
+                body,
+            });
         }
         let body = response.text().await?;
         parse_models(&body)

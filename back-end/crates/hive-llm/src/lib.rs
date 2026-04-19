@@ -149,7 +149,9 @@ pub fn client_for(config: ProviderConfig) -> Box<dyn LlmProvider> {
         .build()
         .expect("reqwest client builds");
     match config.kind {
-        ProviderKind::Anthropic => Box::new(providers::anthropic::AnthropicProvider::new(http, config)),
+        ProviderKind::Anthropic => {
+            Box::new(providers::anthropic::AnthropicProvider::new(http, config))
+        }
         ProviderKind::Openai => Box::new(providers::openai::OpenAiProvider::new(http, config)),
         ProviderKind::Gemini => Box::new(providers::gemini::GeminiProvider::new(http, config)),
         ProviderKind::Ollama => Box::new(providers::ollama::OllamaProvider::new(http, config)),

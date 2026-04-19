@@ -47,10 +47,7 @@ pub async fn list_by_project(
 }
 
 /// Create a new tech-debt item.
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateTechDebt,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateTechDebt) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     let model = ActiveModel {
         id: Set(new_id()),
@@ -108,11 +105,7 @@ pub async fn update(
 }
 
 /// Move an item to a different severity lane.
-pub async fn move_item(
-    db: &DatabaseConnection,
-    id: &str,
-    severity: &str,
-) -> Result<Model, DbErr> {
+pub async fn move_item(db: &DatabaseConnection, id: &str, severity: &str) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .one(db)
         .await?

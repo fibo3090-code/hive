@@ -33,10 +33,7 @@ pub async fn list_by_project(
 }
 
 /// Create a new alert.
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateAlert,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateAlert) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     let model = ActiveModel {
         id: Set(new_id()),

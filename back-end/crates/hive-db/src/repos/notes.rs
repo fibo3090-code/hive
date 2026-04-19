@@ -41,10 +41,7 @@ pub async fn list_by_project(
 }
 
 /// Create a new note.
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateNote,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateNote) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     let model = ActiveModel {
         id: Set(new_id()),
@@ -61,11 +58,7 @@ pub async fn create(
 }
 
 /// Partially update an existing note.
-pub async fn update(
-    db: &DatabaseConnection,
-    id: &str,
-    input: UpdateNote,
-) -> Result<Model, DbErr> {
+pub async fn update(db: &DatabaseConnection, id: &str, input: UpdateNote) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .one(db)
         .await?

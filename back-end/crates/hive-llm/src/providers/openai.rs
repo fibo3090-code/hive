@@ -25,13 +25,17 @@ struct Entry {
 }
 
 pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
-    let parsed: ListResponse = serde_json::from_str(body).map_err(|e| LlmError::Parse(e.to_string()))?;
+    let parsed: ListResponse =
+        serde_json::from_str(body).map_err(|e| LlmError::Parse(e.to_string()))?;
     Ok(parsed
         .data
         .into_iter()
         .filter(|e| {
             let id = e.id.to_ascii_lowercase();
-            id.starts_with("gpt-") || id.starts_with("o1") || id.starts_with("o3") || id.starts_with("chatgpt")
+            id.starts_with("gpt-")
+                || id.starts_with("o1")
+                || id.starts_with("o3")
+                || id.starts_with("chatgpt")
         })
         .map(|e| ModelInfo {
             label: e.id.clone(),
@@ -56,7 +60,10 @@ impl LlmProvider for OpenAiProvider {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(LlmError::ProviderStatus { status: status.as_u16(), body });
+            return Err(LlmError::ProviderStatus {
+                status: status.as_u16(),
+                body,
+            });
         }
         let body = response.text().await?;
         parse_models(&body)
@@ -81,8 +88,19 @@ mod tests {
         ]}"#;
         let models = parse_models(body).unwrap();
         let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec!["gpt-4o", "gpt-4o-mini", "o1-preview", "o3-mini", "chatgpt-4o-latest"]);
-        assert!(models.iter().all(|m| m.supports_tools && m.supports_streaming));
+        assert_eq!(
+            ids,
+            vec![
+                "gpt-4o",
+                "gpt-4o-mini",
+                "o1-preview",
+                "o3-mini",
+                "chatgpt-4o-latest"
+            ]
+        );
+        assert!(models
+            .iter()
+            .all(|m| m.supports_tools && m.supports_streaming));
     }
 
     #[test]

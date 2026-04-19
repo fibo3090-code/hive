@@ -51,10 +51,7 @@ pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbE
 }
 
 /// Create a new agent.
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateAgent,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateAgent) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     let model = ActiveModel {
         id: Set(new_id()),
@@ -76,11 +73,7 @@ pub async fn create(
 }
 
 /// Partially update an existing agent.
-pub async fn update(
-    db: &DatabaseConnection,
-    id: &str,
-    input: UpdateAgent,
-) -> Result<Model, DbErr> {
+pub async fn update(db: &DatabaseConnection, id: &str, input: UpdateAgent) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .one(db)
         .await?
@@ -121,11 +114,7 @@ pub async fn update(
 }
 
 /// Set the status of an agent.
-pub async fn set_status(
-    db: &DatabaseConnection,
-    id: &str,
-    status: &str,
-) -> Result<Model, DbErr> {
+pub async fn set_status(db: &DatabaseConnection, id: &str, status: &str) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .one(db)
         .await?
@@ -138,10 +127,7 @@ pub async fn set_status(
 }
 
 /// Count agents belonging to a project.
-pub async fn count_by_project(
-    db: &DatabaseConnection,
-    project_id: &str,
-) -> Result<u64, DbErr> {
+pub async fn count_by_project(db: &DatabaseConnection, project_id: &str) -> Result<u64, DbErr> {
     Entity::find()
         .filter(Column::ProjectId.eq(project_id))
         .filter(Column::DeletedAt.is_null())

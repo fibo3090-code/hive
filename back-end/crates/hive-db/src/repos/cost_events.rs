@@ -30,7 +30,10 @@ pub async fn total_cost_cents_for_project(
     project_id: &str,
 ) -> Result<i64, DbErr> {
     let items = list_by_project(db, project_id).await?;
-    Ok(items.into_iter().map(|item| i64::from(item.cost_cents)).sum())
+    Ok(items
+        .into_iter()
+        .map(|item| i64::from(item.cost_cents))
+        .sum())
 }
 
 pub async fn total_cost_cents_for_session(
@@ -38,7 +41,10 @@ pub async fn total_cost_cents_for_session(
     session_id: &str,
 ) -> Result<i64, DbErr> {
     let items = list_by_session(db, session_id).await?;
-    Ok(items.into_iter().map(|item| i64::from(item.cost_cents)).sum())
+    Ok(items
+        .into_iter()
+        .map(|item| i64::from(item.cost_cents))
+        .sum())
 }
 
 pub async fn total_tokens_for_session(

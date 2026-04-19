@@ -29,10 +29,7 @@ pub async fn list_all(db: &DatabaseConnection) -> Result<Vec<Model>, DbErr> {
 }
 
 /// Create a new notification.
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateNotification,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateNotification) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     let model = ActiveModel {
         id: Set(new_id()),

@@ -26,10 +26,7 @@ pub async fn list_by_project(
         .await
 }
 
-pub async fn create_active(
-    db: &DatabaseConnection,
-    project_id: &str,
-) -> Result<Model, DbErr> {
+pub async fn create_active(db: &DatabaseConnection, project_id: &str) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     ActiveModel {
         id: Set(new_id()),
@@ -42,10 +39,7 @@ pub async fn create_active(
     .await
 }
 
-pub async fn toggle_for_project(
-    db: &DatabaseConnection,
-    project_id: &str,
-) -> Result<Model, DbErr> {
+pub async fn toggle_for_project(db: &DatabaseConnection, project_id: &str) -> Result<Model, DbErr> {
     if let Some(active) = get_active_by_project(db, project_id).await? {
         let mut model: ActiveModel = active.into();
         model.is_active = Set(false);

@@ -1,16 +1,16 @@
-pub mod projects;
 pub mod agents;
-pub mod tasks;
 pub mod alerts;
-pub mod notifications;
-pub mod notes;
-pub mod tech_debt;
-pub mod sprints;
-pub mod sessions;
-pub mod cost_events;
-pub mod settings;
 pub mod audit;
+pub mod cost_events;
 pub mod llm_providers;
+pub mod notes;
+pub mod notifications;
+pub mod projects;
+pub mod sessions;
+pub mod settings;
+pub mod sprints;
+pub mod tasks;
+pub mod tech_debt;
 
 use ulid::Ulid;
 

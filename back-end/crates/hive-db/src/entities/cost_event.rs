@@ -20,12 +20,28 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(belongs_to = "super::project::Entity", from = "Column::ProjectId", to = "super::project::Column::Id")]
+    #[sea_orm(
+        belongs_to = "super::project::Entity",
+        from = "Column::ProjectId",
+        to = "super::project::Column::Id"
+    )]
     Project,
-    #[sea_orm(belongs_to = "super::session::Entity", from = "Column::SessionId", to = "super::session::Column::Id")]
+    #[sea_orm(
+        belongs_to = "super::session::Entity",
+        from = "Column::SessionId",
+        to = "super::session::Column::Id"
+    )]
     Session,
 }
 
-impl Related<super::project::Entity> for Entity { fn to() -> RelationDef { Relation::Project.def() } }
-impl Related<super::session::Entity> for Entity { fn to() -> RelationDef { Relation::Session.def() } }
+impl Related<super::project::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Project.def()
+    }
+}
+impl Related<super::session::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Session.def()
+    }
+}
 impl ActiveModelBehavior for ActiveModel {}

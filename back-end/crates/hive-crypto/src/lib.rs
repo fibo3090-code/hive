@@ -100,7 +100,14 @@ pub fn mask_key(plaintext: &str) -> String {
         return "•".repeat(chars.len());
     }
     let prefix: String = chars.iter().take(4).collect();
-    let suffix: String = chars.iter().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    let suffix: String = chars
+        .iter()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     format!("{prefix}…{suffix}")
 }
 

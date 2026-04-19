@@ -39,9 +39,19 @@ impl MigrationTrait for Migration {
         let now = chrono::Utc::now().to_rfc3339();
 
         let seeds: &[(&str, &str, &str, &str)] = &[
-            ("anthropic", "Anthropic", "anthropic", "https://api.anthropic.com"),
+            (
+                "anthropic",
+                "Anthropic",
+                "anthropic",
+                "https://api.anthropic.com",
+            ),
             ("openai", "OpenAI", "openai", "https://api.openai.com"),
-            ("gemini", "Google Gemini", "gemini", "https://generativelanguage.googleapis.com"),
+            (
+                "gemini",
+                "Google Gemini",
+                "gemini",
+                "https://generativelanguage.googleapis.com",
+            ),
             ("ollama", "Ollama", "ollama", "http://localhost:11434"),
         ];
 

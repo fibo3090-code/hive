@@ -51,10 +51,7 @@ pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbE
 }
 
 /// Create a new task.
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateTask,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateTask) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     let model = ActiveModel {
         id: Set(new_id()),
@@ -75,11 +72,7 @@ pub async fn create(
 }
 
 /// Partially update an existing task.
-pub async fn update(
-    db: &DatabaseConnection,
-    id: &str,
-    input: UpdateTask,
-) -> Result<Model, DbErr> {
+pub async fn update(db: &DatabaseConnection, id: &str, input: UpdateTask) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .one(db)
         .await?
@@ -117,11 +110,7 @@ pub async fn update(
 }
 
 /// Set the status of a task. When status is "completed", also sets `completed_at`.
-pub async fn set_status(
-    db: &DatabaseConnection,
-    id: &str,
-    status: &str,
-) -> Result<Model, DbErr> {
+pub async fn set_status(db: &DatabaseConnection, id: &str, status: &str) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .one(db)
         .await?

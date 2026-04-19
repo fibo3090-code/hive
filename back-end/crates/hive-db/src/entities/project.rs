@@ -41,13 +41,45 @@ pub enum Relation {
     Sprints,
 }
 
-impl Related<super::agent::Entity> for Entity { fn to() -> RelationDef { Relation::Agents.def() } }
-impl Related<super::task::Entity> for Entity { fn to() -> RelationDef { Relation::Tasks.def() } }
-impl Related<super::alert::Entity> for Entity { fn to() -> RelationDef { Relation::Alerts.def() } }
-impl Related<super::session::Entity> for Entity { fn to() -> RelationDef { Relation::Sessions.def() } }
-impl Related<super::cost_event::Entity> for Entity { fn to() -> RelationDef { Relation::CostEvents.def() } }
-impl Related<super::hive_mind_note::Entity> for Entity { fn to() -> RelationDef { Relation::HiveMindNotes.def() } }
-impl Related<super::tech_debt_item::Entity> for Entity { fn to() -> RelationDef { Relation::TechDebtItems.def() } }
-impl Related<super::sprint::Entity> for Entity { fn to() -> RelationDef { Relation::Sprints.def() } }
+impl Related<super::agent::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Agents.def()
+    }
+}
+impl Related<super::task::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Tasks.def()
+    }
+}
+impl Related<super::alert::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Alerts.def()
+    }
+}
+impl Related<super::session::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Sessions.def()
+    }
+}
+impl Related<super::cost_event::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CostEvents.def()
+    }
+}
+impl Related<super::hive_mind_note::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::HiveMindNotes.def()
+    }
+}
+impl Related<super::tech_debt_item::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::TechDebtItems.def()
+    }
+}
+impl Related<super::sprint::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Sprints.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}

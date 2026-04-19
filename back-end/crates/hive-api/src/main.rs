@@ -1,4 +1,12 @@
-use std::{collections::HashMap, fs, net::SocketAddr, path::{Path as StdPath, PathBuf}, str::FromStr, sync::Arc, time::{Duration, Instant}};
+use std::{
+    collections::HashMap,
+    fs,
+    net::SocketAddr,
+    path::{Path as StdPath, PathBuf},
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::{
     extract::{Path, State},
@@ -13,7 +21,10 @@ use axum::{
 use clap::{Parser, Subcommand};
 use hive_crypto::{mask_key, Crypto};
 use hive_db::{
-    repos::{agents, alerts, audit, cost_events, llm_providers, notes, notifications, projects, sessions, settings, sprints, tasks, tech_debt},
+    repos::{
+        agents, alerts, audit, cost_events, llm_providers, notes, notifications, projects,
+        sessions, settings, sprints, tasks, tech_debt,
+    },
     seed::seed_demo,
     Db,
 };
@@ -240,9 +251,15 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route("/v1/openapi.json", get(openapi_json))
         .route("/v1/projects", get(list_projects).post(create_project))
         .route("/v1/projects/active", get(get_active_project))
-        .route("/v1/projects/:project_id", get(get_project).patch(update_project))
+        .route(
+            "/v1/projects/:project_id",
+            get(get_project).patch(update_project),
+        )
         .route("/v1/projects/:project_id/activate", post(activate_project))
-        .route("/v1/projects/:project_id/agents", get(list_agents).post(create_agent))
+        .route(
+            "/v1/projects/:project_id/agents",
+            get(list_agents).post(create_agent),
+        )
         .route("/v1/agents/:agent_id/set-status", post(set_agent_status))
         .route("/v1/agents/:agent_id/messages", get(get_agent_messages))
         .route("/v1/projects/:project_id/tasks", get(list_tasks))
@@ -250,34 +267,82 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route("/v1/projects/:project_id/alerts", get(list_alerts))
         .route("/v1/alerts/:alert_id/dismiss", post(dismiss_alert))
         .route("/v1/notifications", get(list_notifications))
-        .route("/v1/notifications/:notification_id/read", post(mark_notification_read))
-        .route("/v1/notifications/read-all", post(mark_all_notifications_read))
-        .route("/v1/notifications/:notification_id/dismiss", post(dismiss_notification))
-        .route("/v1/projects/:project_id/notes", get(list_notes).post(create_note))
+        .route(
+            "/v1/notifications/:notification_id/read",
+            post(mark_notification_read),
+        )
+        .route(
+            "/v1/notifications/read-all",
+            post(mark_all_notifications_read),
+        )
+        .route(
+            "/v1/notifications/:notification_id/dismiss",
+            post(dismiss_notification),
+        )
+        .route(
+            "/v1/projects/:project_id/notes",
+            get(list_notes).post(create_note),
+        )
         .route("/v1/projects/:project_id/tech-debt", get(list_tech_debt))
         .route("/v1/tech-debt/:item_id/move", post(move_tech_debt_item))
         .route("/v1/projects/:project_id/sprints", get(list_sprints))
-        .route("/v1/projects/:project_id/sprints/reorder", post(reorder_sprints))
+        .route(
+            "/v1/projects/:project_id/sprints/reorder",
+            post(reorder_sprints),
+        )
         .route("/v1/projects/:project_id/session", get(get_project_session))
-        .route("/v1/projects/:project_id/session/toggle", post(toggle_project_session))
-        .route("/v1/projects/:project_id/budget/extend", post(extend_project_budget))
-        .route("/v1/projects/:project_id/activity", get(get_project_activity))
-        .route("/v1/projects/:project_id/sessions/history", get(get_project_session_history))
-        .route("/v1/projects/:project_id/requirements", get(get_project_requirements))
-        .route("/v1/projects/:project_id/user-stories", get(get_project_user_stories))
-        .route("/v1/projects/:project_id/insights/quality-over-time", get(get_project_quality_over_time))
-        .route("/v1/projects/:project_id/insights/spend", get(get_project_spend))
-        .route("/v1/projects/:project_id/insights/task-throughput", get(get_project_task_throughput))
+        .route(
+            "/v1/projects/:project_id/session/toggle",
+            post(toggle_project_session),
+        )
+        .route(
+            "/v1/projects/:project_id/budget/extend",
+            post(extend_project_budget),
+        )
+        .route(
+            "/v1/projects/:project_id/activity",
+            get(get_project_activity),
+        )
+        .route(
+            "/v1/projects/:project_id/sessions/history",
+            get(get_project_session_history),
+        )
+        .route(
+            "/v1/projects/:project_id/requirements",
+            get(get_project_requirements),
+        )
+        .route(
+            "/v1/projects/:project_id/user-stories",
+            get(get_project_user_stories),
+        )
+        .route(
+            "/v1/projects/:project_id/insights/quality-over-time",
+            get(get_project_quality_over_time),
+        )
+        .route(
+            "/v1/projects/:project_id/insights/spend",
+            get(get_project_spend),
+        )
+        .route(
+            "/v1/projects/:project_id/insights/task-throughput",
+            get(get_project_task_throughput),
+        )
         .route("/v1/projects/:project_id/modules", get(list_modules))
         .route("/v1/modules/:module_id", get(get_module))
-        .route("/v1/projects/:project_id/modules/:module_id/install", post(install_module))
+        .route(
+            "/v1/projects/:project_id/modules/:module_id/install",
+            post(install_module),
+        )
         .route("/v1/agent-blueprints", get(get_agent_blueprints))
         .route("/v1/settings", get(get_settings).patch(update_settings))
         .route("/v1/audit-log", get(get_audit_log))
         .route("/v1/llm-providers", get(list_llm_providers))
         .route("/v1/llm-providers/:id", patch(update_llm_provider))
         .route("/v1/llm-providers/:id/test", post(test_llm_provider))
-        .route("/v1/llm-providers/:id/models", get(list_llm_provider_models))
+        .route(
+            "/v1/llm-providers/:id/models",
+            get(list_llm_provider_models),
+        )
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
@@ -303,7 +368,12 @@ async fn bootstrap_runtime(workspace_root: &StdPath) -> anyhow::Result<RuntimeSt
             .and_then(toml::Value::as_str)
             .unwrap_or("")
             .to_owned();
-        let engine = if url.starts_with("postgres") { "postgres" } else { "sqlite" }.to_owned();
+        let engine = if url.starts_with("postgres") {
+            "postgres"
+        } else {
+            "sqlite"
+        }
+        .to_owned();
         (url, engine, false)
     } else {
         (
@@ -356,9 +426,16 @@ async fn active_project_id(state: &AppState) -> Result<Option<String>, AppError>
         .map(|project| project.id))
 }
 
-async fn read_setting_json(state: &AppState, scope: &str, key: &str, fallback: Value) -> Result<Value, AppError> {
+async fn read_setting_json(
+    state: &AppState,
+    scope: &str,
+    key: &str,
+    fallback: Value,
+) -> Result<Value, AppError> {
     let database = db(state).await;
-    Ok(settings::get_value(database.conn(), scope, key).await?.unwrap_or(fallback))
+    Ok(settings::get_value(database.conn(), scope, key)
+        .await?
+        .unwrap_or(fallback))
 }
 
 fn cents_to_dollars(cents: i64) -> i64 {
@@ -412,9 +489,13 @@ fn format_elapsed(started_at: &str, ended_at: Option<&str>) -> String {
     format!("{hours:02}:{minutes:02}:{seconds:02}")
 }
 
-async fn project_payload(database: &Db, project: hive_db::entities::project::Model) -> Result<Value, AppError> {
+async fn project_payload(
+    database: &Db,
+    project: hive_db::entities::project::Model,
+) -> Result<Value, AppError> {
     let agent_count = agents::count_by_project(database.conn(), &project.id).await?;
-    let used_cents = cost_events::total_cost_cents_for_project(database.conn(), &project.id).await?;
+    let used_cents =
+        cost_events::total_cost_cents_for_project(database.conn(), &project.id).await?;
     Ok(json!({
         "id": project.id,
         "name": project.name,
@@ -444,13 +525,18 @@ async fn session_payload(database: &Db, project_id: &str) -> Result<Value, AppEr
     let latest = if active.is_some() {
         active
     } else {
-        sessions::list_by_project(database.conn(), project_id).await?.into_iter().next()
+        sessions::list_by_project(database.conn(), project_id)
+            .await?
+            .into_iter()
+            .next()
     };
 
     let agent_count = agents::count_by_project(database.conn(), project_id).await?;
     if let Some(session) = latest {
-        let budget_cents = cost_events::total_cost_cents_for_session(database.conn(), &session.id).await?;
-        let tokens_used = cost_events::total_tokens_for_session(database.conn(), &session.id).await?;
+        let budget_cents =
+            cost_events::total_cost_cents_for_session(database.conn(), &session.id).await?;
+        let tokens_used =
+            cost_events::total_tokens_for_session(database.conn(), &session.id).await?;
         Ok(json!({
             "id": session.id,
             "isActive": session.is_active,
@@ -500,7 +586,9 @@ async fn setup_database(
     fs::create_dir_all(&data_dir).map_err(|err| AppError::Internal(err.to_string()))?;
 
     let database_url = if body.engine == "postgres" {
-        body.url.clone().ok_or_else(|| AppError::BadRequest("postgres url is required".into()))?
+        body.url
+            .clone()
+            .ok_or_else(|| AppError::BadRequest("postgres url is required".into()))?
     } else {
         body.url
             .clone()
@@ -516,7 +604,10 @@ async fn setup_database(
         seed_demo(db.conn()).await?;
     }
 
-    let config_toml = format!("[database]\nurl = \"{}\"\n", database_url.replace('\\', "\\\\"));
+    let config_toml = format!(
+        "[database]\nurl = \"{}\"\n",
+        database_url.replace('\\', "\\\\")
+    );
     fs::write(&config_path, config_toml).map_err(|err| AppError::Internal(err.to_string()))?;
 
     {
@@ -553,10 +644,23 @@ async fn events_stream(
             }
         }
     };
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("ping"),
+    )
 }
 
-async fn openapi_json(State(_state): State<AppState>) -> Result<(StatusCode, [(axum::http::HeaderName, &'static str); 1], String), AppError> {
+async fn openapi_json(
+    State(_state): State<AppState>,
+) -> Result<
+    (
+        StatusCode,
+        [(axum::http::HeaderName, &'static str); 1],
+        String,
+    ),
+    AppError,
+> {
     // The OpenAPI document is not yet generated from the real route handlers.
     // BACKEND_PLAN.md calls for utoipa-driven generation; that work is tracked
     // in HANDOFF_ISSUES.md §1.3. Until then, we must NOT serve the stub
@@ -696,7 +800,9 @@ async fn list_agents(
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    Ok(Json(json!(agents::list_by_project(database.conn(), &project_id).await?)))
+    Ok(Json(json!(
+        agents::list_by_project(database.conn(), &project_id).await?
+    )))
 }
 
 async fn create_agent(
@@ -705,9 +811,13 @@ async fn create_agent(
     Json(body): Json<CreateAgentBody>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    let slug = body
-        .slug
-        .unwrap_or_else(|| format!("{}-{}", body.role.to_lowercase().chars().take(2).collect::<String>(), chrono::Utc::now().timestamp() % 1000));
+    let slug = body.slug.unwrap_or_else(|| {
+        format!(
+            "{}-{}",
+            body.role.to_lowercase().chars().take(2).collect::<String>(),
+            chrono::Utc::now().timestamp() % 1000
+        )
+    });
     let agent = agents::create(
         database.conn(),
         agents::CreateAgent {
@@ -730,7 +840,12 @@ async fn create_agent(
         Some(serde_json::to_value(&agent).unwrap_or(Value::Null)),
     )
     .await?;
-    emit(&state, "agent.status", json!({ "id": agent.id, "status": agent.status })).await;
+    emit(
+        &state,
+        "agent.status",
+        json!({ "id": agent.id, "status": agent.status }),
+    )
+    .await;
     Ok(Json(json!(agent)))
 }
 
@@ -754,7 +869,12 @@ async fn set_agent_status(
         Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
     )
     .await?;
-    emit(&state, "agent.status", json!({ "id": updated.id, "status": updated.status })).await;
+    emit(
+        &state,
+        "agent.status",
+        json!({ "id": updated.id, "status": updated.status }),
+    )
+    .await;
     Ok(Json(json!(updated)))
 }
 
@@ -763,9 +883,17 @@ async fn get_agent_messages(
     Path(agent_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    let scope = format!("project:{}", active_project_id(&state).await?.unwrap_or_default());
-    let messages = settings::get_value(database.conn(), &scope, "agentMessages").await?.unwrap_or_else(|| json!({}));
-    let result = messages.get(&agent_id).cloned().unwrap_or_else(|| json!([]));
+    let scope = format!(
+        "project:{}",
+        active_project_id(&state).await?.unwrap_or_default()
+    );
+    let messages = settings::get_value(database.conn(), &scope, "agentMessages")
+        .await?
+        .unwrap_or_else(|| json!({}));
+    let result = messages
+        .get(&agent_id)
+        .cloned()
+        .unwrap_or_else(|| json!([]));
     Ok(Json(result))
 }
 
@@ -774,7 +902,9 @@ async fn list_tasks(
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    Ok(Json(json!(tasks::list_by_project(database.conn(), &project_id).await?)))
+    Ok(Json(json!(
+        tasks::list_by_project(database.conn(), &project_id).await?
+    )))
 }
 
 async fn set_task_status(
@@ -797,7 +927,12 @@ async fn set_task_status(
         Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
     )
     .await?;
-    emit(&state, "task.status", json!({ "id": updated.id, "status": updated.status })).await;
+    emit(
+        &state,
+        "task.status",
+        json!({ "id": updated.id, "status": updated.status }),
+    )
+    .await;
     Ok(Json(json!(updated)))
 }
 
@@ -871,7 +1006,9 @@ async fn mark_notification_read(
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn mark_all_notifications_read(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+async fn mark_all_notifications_read(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
     notifications::mark_all_read(database.conn()).await?;
     Ok(Json(json!({ "ok": true })))
@@ -938,7 +1075,9 @@ async fn list_tech_debt(
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    Ok(Json(json!(tech_debt::list_by_project(database.conn(), &project_id).await?)))
+    Ok(Json(json!(
+        tech_debt::list_by_project(database.conn(), &project_id).await?
+    )))
 }
 
 async fn move_tech_debt_item(
@@ -956,7 +1095,9 @@ async fn list_sprints(
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    Ok(Json(json!(sprints::list_by_project(database.conn(), &project_id).await?)))
+    Ok(Json(json!(
+        sprints::list_by_project(database.conn(), &project_id).await?
+    )))
 }
 
 async fn reorder_sprints(
@@ -965,13 +1106,8 @@ async fn reorder_sprints(
     Json(body): Json<ReorderSprintsBody>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    let reordered = sprints::reorder(
-        database.conn(),
-        &project_id,
-        &body.from_id,
-        &body.to_id,
-    )
-    .await?;
+    let reordered =
+        sprints::reorder(database.conn(), &project_id, &body.from_id, &body.to_id).await?;
     Ok(Json(json!(reordered)))
 }
 
@@ -992,7 +1128,11 @@ async fn toggle_project_session(
     let agent_list = agents::list_by_project(database.conn(), &project_id).await?;
     for agent in agent_list {
         let next_status = if toggled.is_active {
-            if agent.status == "paused" { Some("working") } else { None }
+            if agent.status == "paused" {
+                Some("working")
+            } else {
+                None
+            }
         } else if agent.status == "working" {
             Some("paused")
         } else {
@@ -1005,9 +1145,19 @@ async fn toggle_project_session(
     }
 
     let payload = session_payload(&database, &project_id).await?;
-    emit(&state, "session.toggled", json!({ "projectId": project_id, "isActive": toggled.is_active })).await;
+    emit(
+        &state,
+        "session.toggled",
+        json!({ "projectId": project_id, "isActive": toggled.is_active }),
+    )
+    .await;
     if !toggled.is_active {
-        emit(&state, "session.closed", json!({ "projectId": toggled.project_id, "sessionId": toggled.id })).await;
+        emit(
+            &state,
+            "session.closed",
+            json!({ "projectId": toggled.project_id, "sessionId": toggled.id }),
+        )
+        .await;
     }
     Ok(Json(payload))
 }
@@ -1033,7 +1183,12 @@ async fn extend_project_budget(
         },
     )
     .await?;
-    emit(&state, "project.updated", json!({ "id": updated.id, "changedFields": ["budget"] })).await;
+    emit(
+        &state,
+        "project.updated",
+        json!({ "id": updated.id, "changedFields": ["budget"] }),
+    )
+    .await;
     Ok(Json(project_payload(&database, updated).await?))
 }
 
@@ -1042,7 +1197,9 @@ async fn get_project_activity(
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let scope = format!("project:{project_id}");
-    Ok(Json(read_setting_json(&state, &scope, "activityFeed", json!([])).await?))
+    Ok(Json(
+        read_setting_json(&state, &scope, "activityFeed", json!([])).await?,
+    ))
 }
 
 async fn get_project_session_history(
@@ -1050,7 +1207,9 @@ async fn get_project_session_history(
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let scope = format!("project:{project_id}");
-    Ok(Json(read_setting_json(&state, &scope, "sessionHistory", json!([])).await?))
+    Ok(Json(
+        read_setting_json(&state, &scope, "sessionHistory", json!([])).await?,
+    ))
 }
 
 async fn get_project_requirements(
@@ -1058,7 +1217,9 @@ async fn get_project_requirements(
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let scope = format!("project:{project_id}");
-    Ok(Json(read_setting_json(&state, &scope, "requirements", json!([])).await?))
+    Ok(Json(
+        read_setting_json(&state, &scope, "requirements", json!([])).await?,
+    ))
 }
 
 async fn get_project_user_stories(
@@ -1066,7 +1227,9 @@ async fn get_project_user_stories(
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let scope = format!("project:{project_id}");
-    Ok(Json(read_setting_json(&state, &scope, "userStories", json!([])).await?))
+    Ok(Json(
+        read_setting_json(&state, &scope, "userStories", json!([])).await?,
+    ))
 }
 
 async fn get_project_quality_over_time(
@@ -1074,7 +1237,9 @@ async fn get_project_quality_over_time(
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let scope = format!("project:{project_id}");
-    Ok(Json(read_setting_json(&state, &scope, "insights.qualityOverTime", json!([])).await?))
+    Ok(Json(
+        read_setting_json(&state, &scope, "insights.qualityOverTime", json!([])).await?,
+    ))
 }
 
 async fn get_project_spend(
@@ -1082,7 +1247,9 @@ async fn get_project_spend(
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let scope = format!("project:{project_id}");
-    Ok(Json(read_setting_json(&state, &scope, "insights.spend", json!([])).await?))
+    Ok(Json(
+        read_setting_json(&state, &scope, "insights.spend", json!([])).await?,
+    ))
 }
 
 async fn get_project_task_throughput(
@@ -1090,14 +1257,18 @@ async fn get_project_task_throughput(
     Path(project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let scope = format!("project:{project_id}");
-    Ok(Json(read_setting_json(&state, &scope, "insights.taskThroughput", json!([])).await?))
+    Ok(Json(
+        read_setting_json(&state, &scope, "insights.taskThroughput", json!([])).await?,
+    ))
 }
 
 async fn list_modules(
     State(state): State<AppState>,
     Path(_project_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    Ok(Json(read_setting_json(&state, "global", "moduleCatalog", json!([])).await?))
+    Ok(Json(
+        read_setting_json(&state, "global", "moduleCatalog", json!([])).await?,
+    ))
 }
 
 async fn get_module(
@@ -1107,7 +1278,11 @@ async fn get_module(
     let modules = read_setting_json(&state, "global", "moduleCatalog", json!([])).await?;
     let Some(module) = modules
         .as_array()
-        .and_then(|items| items.iter().find(|item| item.get("id").and_then(Value::as_str) == Some(module_id.as_str())))
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some(module_id.as_str()))
+        })
         .cloned()
     else {
         return Err(AppError::NotFound(format!("module {module_id} not found")));
@@ -1120,7 +1295,9 @@ async fn install_module(
     Path((_project_id, module_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    let mut modules = settings::get_value(database.conn(), "global", "moduleCatalog").await?.unwrap_or_else(|| json!([]));
+    let mut modules = settings::get_value(database.conn(), "global", "moduleCatalog")
+        .await?
+        .unwrap_or_else(|| json!([]));
     let mut installed = None;
     if let Some(items) = modules.as_array_mut() {
         for item in items {
@@ -1131,13 +1308,16 @@ async fn install_module(
         }
     }
     settings::put_value(database.conn(), "global", "moduleCatalog", modules).await?;
-    let result = installed.ok_or_else(|| AppError::NotFound(format!("module {module_id} not found")))?;
+    let result =
+        installed.ok_or_else(|| AppError::NotFound(format!("module {module_id} not found")))?;
     emit(&state, "module.installed", result.clone()).await;
     Ok(Json(result))
 }
 
 async fn get_agent_blueprints(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    Ok(Json(read_setting_json(&state, "global", "agentBlueprints", json!([])).await?))
+    Ok(Json(
+        read_setting_json(&state, "global", "agentBlueprints", json!([])).await?,
+    ))
 }
 
 async fn get_settings(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
@@ -1148,9 +1328,15 @@ async fn get_settings(State(state): State<AppState>) -> Result<Json<Value>, AppE
 
     if let Some(project_id) = active_project_id(&state).await? {
         if let Some(project) = projects::get(database.conn(), &project_id).await? {
-            if let Some(general) = settings_state.get_mut("general").and_then(Value::as_object_mut) {
+            if let Some(general) = settings_state
+                .get_mut("general")
+                .and_then(Value::as_object_mut)
+            {
                 general.insert("projectName".to_owned(), Value::String(project.name));
-                general.insert("sovereigntyTier".to_owned(), Value::String(project.sovereignty_tier));
+                general.insert(
+                    "sovereigntyTier".to_owned(),
+                    Value::String(project.sovereignty_tier),
+                );
             }
         }
     }
@@ -1195,14 +1381,26 @@ async fn update_settings(
         }
 
         if let Some(project) = projects::get(database.conn(), &project_id).await? {
-            if let Some(general) = next_settings.get_mut("general").and_then(Value::as_object_mut) {
+            if let Some(general) = next_settings
+                .get_mut("general")
+                .and_then(Value::as_object_mut)
+            {
                 general.insert("projectName".to_owned(), Value::String(project.name));
-                general.insert("sovereigntyTier".to_owned(), Value::String(project.sovereignty_tier));
+                general.insert(
+                    "sovereigntyTier".to_owned(),
+                    Value::String(project.sovereignty_tier),
+                );
             }
         }
     }
 
-    settings::put_value(database.conn(), "global", "settingsState", next_settings.clone()).await?;
+    settings::put_value(
+        database.conn(),
+        "global",
+        "settingsState",
+        next_settings.clone(),
+    )
+    .await?;
     emit(&state, "project.updated", json!({ "kind": "settings" })).await;
     Ok(Json(next_settings))
 }
@@ -1398,7 +1596,8 @@ async fn get_audit_log(
     axum::extract::Query(query): axum::extract::Query<EntityAuditQuery>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    let payload = if let (Some(entity_type), Some(entity_id)) = (query.entity_type, query.entity_id) {
+    let payload = if let (Some(entity_type), Some(entity_id)) = (query.entity_type, query.entity_id)
+    {
         json!(audit::list_for_entity(database.conn(), &entity_type, &entity_id).await?)
     } else {
         json!([])

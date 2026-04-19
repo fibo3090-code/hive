@@ -36,7 +36,8 @@ struct Details {
 }
 
 pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
-    let parsed: TagsResponse = serde_json::from_str(body).map_err(|e| LlmError::Parse(e.to_string()))?;
+    let parsed: TagsResponse =
+        serde_json::from_str(body).map_err(|e| LlmError::Parse(e.to_string()))?;
     Ok(parsed
         .models
         .into_iter()
@@ -82,7 +83,10 @@ impl LlmProvider for OllamaProvider {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(LlmError::ProviderStatus { status: status.as_u16(), body });
+            return Err(LlmError::ProviderStatus {
+                status: status.as_u16(),
+                body,
+            });
         }
         let body = response.text().await?;
         parse_models(&body)
@@ -105,7 +109,10 @@ mod tests {
         assert_eq!(models[0].id, "qwen2.5:14b");
         assert_eq!(models[0].label, "qwen2.5:14b (qwen2 · 14.8B)");
         assert!(models[0].supports_tools, "qwen2.5 should support tools");
-        assert!(models[1].supports_tools, "mistral-nemo should support tools");
+        assert!(
+            models[1].supports_tools,
+            "mistral-nemo should support tools"
+        );
         assert!(!models[2].supports_tools, "gemma2 should not support tools");
         assert_eq!(models[3].label, "plain-model");
         assert!(!models[3].supports_tools);
