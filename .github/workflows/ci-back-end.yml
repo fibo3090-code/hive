@@ -3,16 +3,61 @@ name: backend-ci
 on:
   push:
     branches: [main]
+    paths:
+      - 'back-end/**'
+      - '!.github/**'
+      - '!.*.md'
   pull_request:
+    paths:
+      - 'back-end/**'
+      - '!.github/**'
+      - '!.*.md'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  check:
-    name: fmt + clippy + test
+  fmt-clippy:
+    name: fmt + clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: back-end
+    strategy:
+      matrix:
+        include:
+          - rust: stable
+          - rust: 1.85.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: be-cache-${{ matrix.rust }}}
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test-build:
+    name: test + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: back-end
@@ -24,16 +69,43 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: be-cache-stable
 
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
+      - name: Get build cache key
+        id: cache-key
+        run: |
+          hash="${{ hashFiles('back-end/**/Cargo.toml') }}"
+          echo "value=$hash" >> $GITHUB_OUTPUT
 
-      - name: cargo clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Restore build artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v4
+        with:
+          name: target
+          path: back-end/target
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        if: github.event_name != 'pull_request'
+        with:
+          path: back-end/target
+          key: be-target-${{ runner.os }}-${{ hashFiles('back-end/**/Cargo.lock') }}
+          restore-keys: |
+            be-target-${{ runner.os }}-
 
       - name: cargo test
         run: cargo test --workspace --all-targets
 
       - name: build (release profile, sanity)
         run: cargo build --workspace --release
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: target
+          path: back-end/target
+          retention-days: 1
+          if-no-files-found: error

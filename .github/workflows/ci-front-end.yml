@@ -3,22 +3,59 @@ name: frontend-ci
 on:
   push:
     branches: [main]
+    paths:
+      - 'front-end/**'
+      - '!.github/**'
+      - '!.*.md'
   pull_request:
+    paths:
+      - 'front-end/**'
+      - '!.github/**'
+      - '!.*.md'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_INSTALL_SKIP_REPOSITORIES: 1
 
 jobs:
-  check:
-    name: lint + typecheck + build + test
+  lint-typecheck:
+    name: lint + typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: front-end
+    strategy:
+      matrix:
+        include:
+          - bun-version: latest
+          - bun-version: '1.1'
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
         with:
-          bun-version: latest
+          bun-version: ${{ matrix.bun-version }}
+          cache: true
+
+      - name: Get deps cache key
+        id: cache-key
+        run: |
+          hash="${{ hashFiles('front-end/bun.lockb', 'front-end/package.json') }}"
+          echo "value=$hash" >> $GITHUB_OUTPUT
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: front-end/node_modules
+          key: fe-deps-${{ runner.os }}-${{ matrix.bun-version }}-${{ steps.cache-key.outputs.value }}
+          restore-keys: |
+            fe-deps-${{ runner.os }}-${{ matrix.bun-version }}-
+            fe-deps-${{ runner.os }}-
 
       - name: Install deps
         run: bun install --frozen-lockfile
@@ -29,8 +66,71 @@ jobs:
       - name: Typecheck
         run: bunx tsc --noEmit
 
+  build-test:
+    name: build + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: front-end
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+          cache: true
+
+      - name: Get deps cache key
+        id: cache-key
+        run: |
+          hash="${{ hashFiles('front-end/bun.lockb', 'front-end/package.json') }}"
+          echo "value=$hash" >> $GITHUB_OUTPUT
+
+      - name: Get build cache key
+        run: |
+          hash="${{ hashFiles('front-end/src/**', 'front-end/public/**', 'front-end/index.html') }}"
+          echo "value=$hash" >> $GITHUB_OUTPUT
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: front-end/node_modules
+          key: fe-deps-${{ runner.os }}-latest-${{ steps.cache-key.outputs.value }}
+          restore-keys: |
+            fe-deps-${{ runner.os }}-latest-
+            fe-deps-${{ runner.os }}-
+
+      - name: Restore build artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: front-end/dist
+
+      - name: Cache build
+        uses: actions/cache@v4
+        if: github.event_name != 'pull_request'
+        with:
+          path: front-end/dist
+          key: fe-build-${{ runner.os }}-${{ steps.cache-key.outputs.value }}
+          restore-keys: |
+            fe-build-${{ runner.os }}-
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
       - name: Build
         run: bun run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: front-end/dist
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Test
         run: bun run test
