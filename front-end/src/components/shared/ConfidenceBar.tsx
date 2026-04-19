@@ -1,9 +1,9 @@
 import { cn } from '@/lib/utils';
 
 interface ConfidenceBarProps {
-  value: number; // 0-100
-  bars?: number;
-  className?: string;
+  readonly value: number; // 0-100
+  readonly bars?: number;
+  readonly className?: string;
 }
 
 export function ConfidenceBar({ value, bars = 5, className }: ConfidenceBarProps) {

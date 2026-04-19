@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
-import { Bot, Check, Cpu, Dna, Hexagon, Loader2, Plus, Sparkles } from 'lucide-react';
+import { Bot, Check, Dna, Hexagon, Loader2, Plus, Sparkles } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useHiveData } from '@/api/queries/useHiveData';
@@ -23,10 +23,10 @@ function DNAViewer({
   open,
   onOpenChange,
 }: {
-  dna: Record<string, number>;
-  name: string;
-  open: boolean;
-  onOpenChange: (value: boolean) => void;
+  readonly dna: Record<string, number>;
+  readonly name: string;
+  readonly open: boolean;
+  readonly onOpenChange: (value: boolean) => void;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -37,25 +37,27 @@ function DNAViewer({
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-4">
-          {Object.entries(dna).map(([trait, value]) => (
-            <div key={trait}>
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs capitalize">{trait}</span>
-                <span className="text-micro font-mono text-primary">{value}%</span>
+          {Object.entries(dna).map(([trait, value]) => {
+            const traitColorIfLow = value >= 50 ? 'bg-warning' : 'bg-muted-foreground';
+            const traitColorIfMid = value >= 70 ? 'bg-primary' : traitColorIfLow;
+            const traitBarColor = value >= 90 ? 'bg-success' : traitColorIfMid;
+            return (
+              <div key={trait}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs capitalize">{trait}</span>
+                  <span className="text-micro font-mono text-primary">{value}%</span>
+                </div>
+                <div className="h-2 rounded-full bg-surface-2 overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${value}%` }}
+                    transition={{ duration: 0.6, delay: 0.1 }}
+                    className={cn('h-full rounded-full', traitBarColor)}
+                  />
+                </div>
               </div>
-              <div className="h-2 rounded-full bg-surface-2 overflow-hidden">
-                <motion.div
-                  initial={{ width: 0 }}
-                  animate={{ width: `${value}%` }}
-                  transition={{ duration: 0.6, delay: 0.1 }}
-                  className={cn(
-                    'h-full rounded-full',
-                    value >= 90 ? 'bg-success' : value >= 70 ? 'bg-primary' : value >= 50 ? 'bg-warning' : 'bg-muted-foreground'
-                  )}
-                />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </DialogContent>
     </Dialog>

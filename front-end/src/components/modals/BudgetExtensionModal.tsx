@@ -8,8 +8,8 @@ import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 
 interface BudgetExtensionModalProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
 }
 
 export function BudgetExtensionModal({ open, onOpenChange }: BudgetExtensionModalProps) {
@@ -53,8 +53,8 @@ export function BudgetExtensionModal({ open, onOpenChange }: BudgetExtensionModa
 
           {/* Slider */}
           <div>
-            <label className="text-xs font-medium mb-2 block">New Budget Limit</label>
-            <Slider value={[newTotal]} onValueChange={([v]) => setNewTotal(v)} min={session.budgetTotal} max={session.budgetTotal + 500} step={25} className="mb-2" />
+            <label htmlFor="budget-slider" className="text-xs font-medium mb-2 block">New Budget Limit</label>
+            <Slider id="budget-slider" value={[newTotal]} onValueChange={([v]) => setNewTotal(v)} min={session.budgetTotal} max={session.budgetTotal + 500} step={25} className="mb-2" />
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">+${increase} increase</span>
               <span className="font-mono text-primary font-semibold">${newTotal}</span>

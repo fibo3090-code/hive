@@ -28,6 +28,20 @@ const initialMessages: Message[] = [
 
 const fileSuggestions = ['src/components/Dashboard.tsx', 'src/lib/auth.ts', 'src/lib/api.ts', 'docs/architecture.md'];
 
+function scrollToBottom(el: HTMLDivElement | null) {
+  if (el) {
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }
+}
+
+function buildAgentResponseContent(authorName: string, attachments: string[]): string {
+  if (attachments.length === 0) {
+    return `Acknowledged. I am prioritizing this request for ${authorName}.`;
+  }
+  const suffix = attachments.length > 1 ? 's' : '';
+  return `Received ${attachments.length} attachment${suffix}. I will use ${attachments.join(', ')} as context while reviewing your request.`;
+}
+
 function DeploymentWidget() {
   const items = [
     { label: 'Build passes', done: true },
@@ -77,14 +91,14 @@ function CostWidget() {
   );
 }
 
-function CodeBlock({ language, code }: { language: string; code: string }) {
+function CodeBlock({ language, code }: { readonly language: string; readonly code: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="rounded-md border border-border bg-surface-2 mt-2 overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1.5 bg-surface-3 border-b border-border">
         <span className="text-micro font-mono text-muted-foreground">{language}</span>
         <div className="flex gap-1">
-          <button onClick={() => { navigator.clipboard.writeText(code); setCopied(true); window.setTimeout(() => setCopied(false), 1500); }} className="text-muted-foreground hover:text-foreground p-0.5">
+          <button onClick={() => { navigator.clipboard.writeText(code); setCopied(true); globalThis.setTimeout(() => setCopied(false), 1500); }} className="text-muted-foreground hover:text-foreground p-0.5">
             {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
           </button>
           <button className="text-muted-foreground hover:text-foreground p-0.5"><Eye className="h-3 w-3" /></button>
@@ -96,7 +110,7 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
   );
 }
 
-function TypingIndicator({ agentName }: { agentName: string }) {
+function TypingIndicator({ agentName }: { readonly agentName: string }) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3 max-w-[80%]">
       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
@@ -140,23 +154,20 @@ export default function ChatCentral() {
 
   const appendResponse = (author = activeAgent) => {
     setTypingAgentId(author.id);
-    window.setTimeout(() => {
-      setMessages((current) => [
-        ...current,
-        {
-          id: `m-${Date.now()}`,
-          type: 'agent',
-          agentId: author.id,
-          content: attachments.length > 0
-            ? `Received ${attachments.length} attachment${attachments.length > 1 ? 's' : ''}. I will use ${attachments.join(', ')} as context while reviewing your request.`
-            : `Acknowledged. I am prioritizing this request for ${author.name}.`,
-          timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
-          tokens: 110,
-        },
-      ]);
+    globalThis.setTimeout(() => {
+      const responseContent = buildAgentResponseContent(author.name, attachments);
+      const agentMessage: Message = {
+        id: `m-${Date.now()}`,
+        type: 'agent',
+        agentId: author.id,
+        content: responseContent,
+        timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
+        tokens: 110,
+      };
+      setMessages((current) => [...current, agentMessage]);
       setTypingAgentId(null);
       setAttachments([]);
-      window.setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }), 50);
+      globalThis.setTimeout(() => scrollToBottom(scrollRef.current), 50);
     }, 900);
   };
 

@@ -223,7 +223,7 @@ export default function ModuleDetail() {
             <p>
               This will add <span className="font-mono text-foreground">{mod.name} v{mod.version}</span> to your project.
             </p>
-            {(mod.dependencies ?? []).filter((dependency: ModuleDependency) => dependency.required).length > 0 && (
+            {(mod.dependencies ?? []).some((dependency: ModuleDependency) => dependency.required) && (
               <div className="rounded-md border border-border bg-surface-2 p-3">
                 <span className="text-micro font-semibold text-foreground block mb-1">Required dependencies:</span>
                 {(mod.dependencies ?? [])

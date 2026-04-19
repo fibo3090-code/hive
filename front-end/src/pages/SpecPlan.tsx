@@ -47,7 +47,7 @@ const sprintCardStyles: Record<string, string> = {
   planned: 'border-border',
 };
 
-function EmptyState({ title, message }: { title: string; message: string }) {
+function EmptyState({ title, message }: { readonly title: string; readonly message: string }) {
   return (
     <div className="rounded-lg border border-dashed border-border bg-card/60 p-8 text-center">
       <h3 className="text-sm font-semibold mb-1">{title}</h3>
@@ -230,11 +230,14 @@ function SprintTab() {
         {items.map((sprint: SprintPlanItem) => (
           <div
             key={sprint.id}
+            role="button"
+            tabIndex={0}
             draggable
             onDragStart={() => setDraggedId(sprint.id)}
             onDragOver={(event) => event.preventDefault()}
             onDrop={() => void handleDrop(sprint.id)}
             onDragEnd={() => setDraggedId(null)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setDraggedId(sprint.id); }}
             className={cn(
               'rounded-lg border bg-card p-4 cursor-grab active:cursor-grabbing',
               sprintCardStyles[sprint.status] ?? 'border-border'
@@ -260,7 +263,7 @@ function SprintTab() {
             </div>
             <div className="flex items-center gap-4 text-micro text-muted-foreground">
               <span>{sprint.points ?? 0} story points</span>
-              {sprint.velocity && <span>Velocity: {sprint.velocity} pts/sprint</span>}
+              {sprint.velocity ? <span>Velocity: {sprint.velocity} pts/sprint</span> : null}
             </div>
           </div>
         ))}

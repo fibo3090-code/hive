@@ -2,11 +2,11 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { AlertTriangle } from 'lucide-react';
 
 interface ConfirmDeleteModalProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  title: string;
-  description: string;
-  onConfirm: () => void;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly title: string;
+  readonly description: string;
+  readonly onConfirm: () => void;
 }
 
 export function ConfirmDeleteModal({ open, onOpenChange, title, description, onConfirm }: ConfirmDeleteModalProps) {

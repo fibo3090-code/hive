@@ -3,9 +3,9 @@ import { AlertTriangle, Pause, RotateCcw, Play } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface LoopDetectionModalProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  agentName?: string;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly agentName?: string;
 }
 
 export function LoopDetectionModal({ open, onOpenChange, agentName = 'Doc Writer' }: LoopDetectionModalProps) {
@@ -31,8 +31,8 @@ export function LoopDetectionModal({ open, onOpenChange, agentName = 'Doc Writer
           <div className="rounded-md border border-warning/30 bg-warning/5 p-3">
             <h4 className="text-xs font-semibold text-warning mb-2">Repeated Actions</h4>
             <div className="space-y-1">
-              {loopActions.map((a, i) => (
-                <div key={i} className="flex items-center gap-2 text-xs">
+              {loopActions.map((a) => (
+                <div key={a.time} className="flex items-center gap-2 text-xs">
                   <span className="font-mono text-muted-foreground w-16">{a.time}</span>
                   <span className="text-muted-foreground">{a.action}</span>
                 </div>

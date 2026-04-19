@@ -5,8 +5,8 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
 interface AgentSpawnModalProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
 }
 
 const roles = ['Frontend', 'Backend', 'Testing', 'Security', 'Documentation', 'DevOps', 'Data'] as const;
@@ -36,13 +36,13 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
 
         <div className="space-y-4">
           <div>
-            <label className="text-xs font-medium mb-1.5 block">Agent Name</label>
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. API Architect" className="w-full h-9 rounded-md border border-border bg-surface-2 px-3 text-sm" />
+            <label htmlFor="agent-name" className="text-xs font-medium mb-1.5 block">Agent Name</label>
+            <input id="agent-name" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. API Architect" className="w-full h-9 rounded-md border border-border bg-surface-2 px-3 text-sm" />
           </div>
 
           <div>
-            <label className="text-xs font-medium mb-1.5 block">Role</label>
-            <div className="flex flex-wrap gap-1.5">
+            <label htmlFor="agent-role" className="text-xs font-medium mb-1.5 block">Role</label>
+            <div id="agent-role" className="flex flex-wrap gap-1.5">
               {roles.map(r => (
                 <button key={r} onClick={() => setRole(r)} className={cn('rounded-md px-3 py-1.5 text-xs border transition-colors', role === r ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground')}>{r}</button>
               ))}
@@ -50,8 +50,8 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
           </div>
 
           <div>
-            <label className="text-xs font-medium mb-1.5 block">Model</label>
-            <div className="flex flex-wrap gap-1.5">
+            <label htmlFor="agent-model" className="text-xs font-medium mb-1.5 block">Model</label>
+            <div id="agent-model" className="flex flex-wrap gap-1.5">
               {models.map(m => (
                 <button key={m} onClick={() => setModel(m)} className={cn('flex items-center gap-1 rounded-md px-3 py-1.5 text-xs border transition-colors', model === m ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground')}>
                   <Cpu className="h-3 w-3" />{m}
@@ -61,8 +61,8 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
           </div>
 
           <div>
-            <label className="text-xs font-medium mb-1.5 block">Sovereignty Tier</label>
-            <div className="flex gap-1.5">
+            <label htmlFor="agent-tier" className="text-xs font-medium mb-1.5 block">Sovereignty Tier</label>
+            <div id="agent-tier" className="flex gap-1.5">
               {tiers.map(t => (
                 <button key={t} onClick={() => setTier(t)} className={cn('rounded-md px-3 py-1.5 text-xs border capitalize transition-colors', tier === t ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground')}>{t}</button>
               ))}

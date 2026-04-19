@@ -48,12 +48,8 @@ export default function Modules() {
   const modules = useMemo<ModuleCatalogItem[]>(() => modulesQuery.data ?? [], [modulesQuery.data]);
   const filtered = useMemo(() => {
     return modules.filter((module: ModuleCatalogItem) => {
-      const categoryMatch =
-        category === 'All'
-          ? true
-          : category === 'Installed'
-            ? module.status === 'installed'
-            : module.category === category;
+      const categoryMatchIfNotAll = category === 'Installed' ? module.status === 'installed' : module.category === category;
+      const categoryMatch = category === 'All' ? true : categoryMatchIfNotAll;
       const searchMatch =
         search === '' ||
         module.name?.toLowerCase().includes(search.toLowerCase()) ||
@@ -66,11 +62,11 @@ export default function Modules() {
     setSynthRunning(true);
     setSynthStep(0);
     let step = 0;
-    const interval = window.setInterval(() => {
+    const interval = globalThis.setInterval(() => {
       step += 1;
       setSynthStep(step);
       if (step >= synthesizerSteps.length) {
-        window.clearInterval(interval);
+        globalThis.clearInterval(interval);
         setSynthRunning(false);
       }
     }, 900);
@@ -133,28 +129,24 @@ export default function Modules() {
             {(synthRunning || synthStep > 0) && (
               <div className="space-y-2">
                 <Progress value={(synthStep / synthesizerSteps.length) * 100} className="h-2" />
-                {synthesizerSteps.map((step, index) => (
-                  <div
-                    key={step}
-                    className={cn(
-                      'flex items-center gap-2 text-xs transition-all',
-                      index < synthStep
-                        ? 'text-success'
-                        : index === synthStep && synthRunning
-                          ? 'text-foreground'
-                          : 'text-muted-foreground/40'
-                    )}
-                  >
-                    {index < synthStep ? (
-                      <Check className="h-3.5 w-3.5" />
-                    ) : index === synthStep && synthRunning ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <div className="h-3.5 w-3.5" />
-                    )}
-                    {step}
-                  </div>
-                ))}
+                {synthesizerSteps.map((step, index) => {
+                  const stepColorIfCurrent = index === synthStep && synthRunning ? 'text-foreground' : 'text-muted-foreground/40';
+                  const stepColor = index < synthStep ? 'text-success' : stepColorIfCurrent;
+                  const stepIcon = index < synthStep
+                    ? <Check className="h-3.5 w-3.5" />
+                    : index === synthStep && synthRunning
+                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      : <div className="h-3.5 w-3.5" />;
+                  return (
+                    <div
+                      key={step}
+                      className={cn('flex items-center gap-2 text-xs transition-all', stepColor)}
+                    >
+                      {stepIcon}
+                      {step}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -179,7 +171,10 @@ export default function Modules() {
               {filtered.map((module: ModuleCatalogItem) => (
                 <div
                   key={module.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => navigate(`/modules/${module.id}`)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/modules/${module.id}`); }}
                   className="rounded-lg border border-border bg-card hover:border-primary/30 cursor-pointer transition-colors overflow-hidden"
                 >
                   <div className="p-4">

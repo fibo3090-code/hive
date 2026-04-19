@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
-import { GitBranch, GitCommit, File, FolderOpen, Lock, Check, X, ChevronDown, ChevronRight, Bot, Clock } from 'lucide-react';
+import { GitBranch, File, FolderOpen, Lock, Check, X, ChevronDown, ChevronRight, Bot, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 type FileNode = {
@@ -164,11 +164,14 @@ export default function CodeVersioning() {
       <div className="flex-1 flex flex-col">
         <div className="flex items-center border-b border-border">
           <div className="flex">
-            {(['editor', 'diff', 'git'] as const).map((item) => (
-              <button key={item} onClick={() => setTab(item)} className={cn('px-4 py-2 text-xs capitalize border-b-2 transition-colors', tab === item ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground')}>
-                {item === 'git' ? 'Git Graph' : item === 'editor' ? 'Editor' : 'Diff View'}
-              </button>
-            ))}
+            {(['editor', 'diff', 'git'] as const).map((item) => {
+              const tabLabel = item === 'git' ? 'Git Graph' : item === 'editor' ? 'Editor' : 'Diff View';
+              return (
+                <button key={item} onClick={() => setTab(item)} className={cn('px-4 py-2 text-xs capitalize border-b-2 transition-colors', tab === item ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground')}>
+                  {tabLabel}
+                </button>
+              );
+            })}
           </div>
           {tab === 'diff' && (
             <div className="ml-auto flex gap-1 mr-4">
@@ -224,7 +227,7 @@ export default function CodeVersioning() {
                 <div className="flex">
                   <div className="text-right pr-3 pl-3 py-3 text-micro font-mono text-muted-foreground/40 select-none border-r border-border bg-surface-3">
                     {activeCode.split('\n').map((_, index) => (
-                      <div key={index} className="leading-relaxed">{index + 1}</div>
+                      <div key={`line-${index}`} className="leading-relaxed">{index + 1}</div>
                     ))}
                   </div>
                   <pre className="p-3 text-xs font-mono text-foreground leading-relaxed flex-1 overflow-x-auto">
@@ -239,8 +242,10 @@ export default function CodeVersioning() {
             <div className="p-4 space-y-4 animate-fade-in">
               {visibleDiffs.map((chunk) => {
                 const decision = decisions[chunk.id] ?? null;
+                const decisionBorderIfRejected = decision === 'rejected' ? 'border-destructive/40' : 'border-border';
+                const decisionBorder = decision === 'accepted' ? 'border-success/40' : decisionBorderIfRejected;
                 return (
-                  <div key={chunk.id} className={cn('rounded-lg border overflow-hidden', decision === 'accepted' ? 'border-success/40' : decision === 'rejected' ? 'border-destructive/40' : 'border-border')}>
+                  <div key={chunk.id} className={cn('rounded-lg border overflow-hidden', decisionBorder)}>
                     <div className="bg-surface-2 px-3 py-1.5 text-xs text-muted-foreground border-b border-border flex justify-between">
                       <span>{chunk.file}</span>
                       <span className="text-micro text-muted-foreground">{selectedPr.id}</span>
@@ -330,30 +335,38 @@ function FileTree({
   onSelect,
   depth = 0,
 }: {
-  items: FileNode[];
-  selectedFile: string;
-  onSelect: (path: string) => void;
-  depth?: number;
+  readonly items: FileNode[];
+  readonly selectedFile: string;
+  readonly onSelect: (path: string) => void;
+  readonly depth?: number;
 }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   return (
     <>
-      {items.map((item) => (
+      {items.map((item) => {
+        const folderChevron = collapsed[item.path] ? <ChevronRight className="h-3 w-3 text-muted-foreground" /> : <ChevronDown className="h-3 w-3 text-muted-foreground" />;
+        const chevronOrSpacer = item.type === 'folder' ? folderChevron : <span className="w-3" />;
+        const folderOrFileIcon = item.type === 'folder' ? <FolderOpen className="h-3.5 w-3.5 text-primary/60" /> : <File className="h-3.5 w-3.5 text-muted-foreground" />;
+        return (
         <div key={item.path}>
           <div
+            role="button"
+            tabIndex={0}
             onClick={() => item.type === 'folder' ? setCollapsed((current) => ({ ...current, [item.path]: !current[item.path] })) : onSelect(item.path)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { item.type === 'folder' ? setCollapsed((current) => ({ ...current, [item.path]: !current[item.path] })) : onSelect(item.path); } }}
             className={cn('flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-surface-2 cursor-pointer transition-colors', item.path === selectedFile && 'bg-primary/10 text-primary')}
             style={{ paddingLeft: `${depth * 12 + 4}px` }}
           >
-            {item.type === 'folder' ? (collapsed[item.path] ? <ChevronRight className="h-3 w-3 text-muted-foreground" /> : <ChevronDown className="h-3 w-3 text-muted-foreground" />) : <span className="w-3" />}
-            {item.type === 'folder' ? <FolderOpen className="h-3.5 w-3.5 text-primary/60" /> : <File className="h-3.5 w-3.5 text-muted-foreground" />}
+            {chevronOrSpacer}
+            {folderOrFileIcon}
             <span className="flex-1 truncate">{item.name}</span>
             {item.status && <span className={cn('text-micro font-bold', fileStatusColors[item.status] || 'text-muted-foreground')}>{item.status}</span>}
           </div>
           {item.children && !collapsed[item.path] && <FileTree items={item.children} selectedFile={selectedFile} onSelect={onSelect} depth={depth + 1} />}
         </div>
-      ))}
+        );
+      })}
     </>
   );
 }

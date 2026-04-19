@@ -9,8 +9,8 @@ const tierConfig: Record<SovereigntyTier, { icon: typeof Shield; label: string; 
 };
 
 interface SovereigntyBadgeProps {
-  tier: SovereigntyTier;
-  className?: string;
+  readonly tier: SovereigntyTier;
+  readonly className?: string;
 }
 
 export function SovereigntyBadge({ tier, className }: SovereigntyBadgeProps) {

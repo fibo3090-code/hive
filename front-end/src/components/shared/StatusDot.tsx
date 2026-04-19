@@ -10,10 +10,10 @@ const statusColors: Record<AgentStatus, string> = {
 };
 
 interface StatusDotProps {
-  status: AgentStatus;
-  size?: 'sm' | 'md' | 'lg';
-  pulse?: boolean;
-  className?: string;
+  readonly status: AgentStatus;
+  readonly size?: 'sm' | 'md' | 'lg';
+  readonly pulse?: boolean;
+  readonly className?: string;
 }
 
 export function StatusDot({ status, size = 'md', pulse, className }: StatusDotProps) {

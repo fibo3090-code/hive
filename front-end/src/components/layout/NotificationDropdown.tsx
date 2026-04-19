@@ -39,7 +39,14 @@ export function NotificationDropdown() {
       <AnimatePresence>
         {open && (
           <>
-            <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+            <div
+              className="fixed inset-0 z-40"
+              role="button"
+              tabIndex={0}
+              onClick={() => setOpen(false)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setOpen(false); }}
+              aria-label="Close notifications"
+            />
 
             <motion.div
               initial={{ opacity: 0, y: -4, scale: 0.97 }}
@@ -89,7 +96,7 @@ export function NotificationDropdown() {
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between gap-2">
-                            <p className={cn('text-xs font-medium leading-tight', !n.read ? 'text-foreground' : 'text-muted-foreground')}>{n.title}</p>
+                            <p className={cn('text-xs font-medium leading-tight', n.read ? 'text-muted-foreground' : 'text-foreground')}>{n.title}</p>
                             <div className="flex items-center gap-1 shrink-0">
                               {!n.read && <span className={cn('h-1.5 w-1.5 rounded-full', config.dot)} />}
                               <button onClick={() => dismissNotification(n.id)} className="text-muted-foreground/50 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity">

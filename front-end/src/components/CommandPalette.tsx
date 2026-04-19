@@ -38,6 +38,28 @@ const iconMap = {
   Memory: Brain,
 } as const;
 
+type LucideIconComponent = typeof LayoutDashboard;
+
+const commandLabelIconEntries: Array<[string, LucideIconComponent]> = [
+  ['Hive Graph', Network],
+  ['Chat', MessageSquare],
+  ['Code', GitBranch],
+  ['Insights', BarChart3],
+  ['Spec', FileText],
+  ['Modules', Boxes],
+  ['Settings', Settings],
+];
+
+function getCommandIcon(group: PaletteItem['group'], label: string): LucideIconComponent {
+  if (group !== 'Commands') {
+    return iconMap[group];
+  }
+  for (const [keyword, Icon] of commandLabelIconEntries) {
+    if (label.includes(keyword)) return Icon;
+  }
+  return LayoutDashboard;
+}
+
 export function CommandPalette() {
   const navigate = useNavigate();
   const { setChatTargetAgentId, setGraphFocusAgentId, selectedCommandId, setSelectedCommandId } = useWorkspace();
@@ -94,8 +116,8 @@ export function CommandPalette() {
       }
     };
 
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    globalThis.addEventListener('keydown', handler);
+    return () => globalThis.removeEventListener('keydown', handler);
   }, []);
 
   const activate = (item: PaletteItem | null) => {
@@ -145,16 +167,7 @@ export function CommandPalette() {
                   <CommandGroup key={group} heading={group}>
                     {filtered.filter((item) => item.group === group).map((item) => {
                       const index = filtered.findIndex((entry) => entry.id === item.id);
-                      const Icon = group === 'Commands'
-                        ? item.label.includes('Hive Graph') ? Network
-                          : item.label.includes('Chat') ? MessageSquare
-                          : item.label.includes('Code') ? GitBranch
-                          : item.label.includes('Insights') ? BarChart3
-                          : item.label.includes('Spec') ? FileText
-                          : item.label.includes('Modules') ? Boxes
-                          : item.label.includes('Settings') ? Settings
-                          : LayoutDashboard
-                        : iconMap[group];
+                      const Icon = getCommandIcon(group, item.label);
                       return (
                         <CommandItem
                           key={item.id}

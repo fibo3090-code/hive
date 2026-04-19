@@ -5,19 +5,20 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
 interface CostForecastModalProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
 }
 
 export function CostForecastModal({ open, onOpenChange }: CostForecastModalProps) {
   const { state, toggleSession } = useHiveData();
 
-  const agentCosts = state.agents.filter(a => a.status !== 'deprecated').map(a => ({
-    name: a.name,
-    model: a.model,
-    estimatedCost: a.model === 'GPT-4o' ? 12.5 : a.model === 'Claude 3.5' ? 8.2 : 4.1,
-    estimatedTokens: a.model === 'GPT-4o' ? 35 : a.model === 'Claude 3.5' ? 28 : 18,
-  }));
+  const agentCosts = state.agents.filter(a => a.status !== 'deprecated').map(a => {
+    const estimatedCostIfClaude = a.model === 'Claude 3.5' ? 8.2 : 4.1;
+    const estimatedCost = a.model === 'GPT-4o' ? 12.5 : estimatedCostIfClaude;
+    const estimatedTokensIfClaude = a.model === 'Claude 3.5' ? 28 : 18;
+    const estimatedTokens = a.model === 'GPT-4o' ? 35 : estimatedTokensIfClaude;
+    return { name: a.name, model: a.model, estimatedCost, estimatedTokens };
+  });
 
   const totalEstimated = agentCosts.reduce((sum, a) => sum + a.estimatedCost, 0);
   const totalTokens = agentCosts.reduce((sum, a) => sum + a.estimatedTokens, 0);

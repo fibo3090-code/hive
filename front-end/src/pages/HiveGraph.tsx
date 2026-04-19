@@ -71,9 +71,11 @@ function EmptyGraphState() {
   );
 }
 
-function AgentNode({ data }: { data: AgentNodeData }) {
+function AgentNode({ data }: { readonly data: AgentNodeData }) {
   const agent = data.agent;
-  const borderColor = agent.status === 'working' ? 'border-success/40' : agent.status === 'blocked' ? 'border-destructive/40' : agent.status === 'paused' ? 'border-warning/40' : 'border-border';
+  const borderColorIfPaused = agent.status === 'paused' ? 'border-warning/40' : 'border-border';
+  const borderColorIfBlocked = agent.status === 'blocked' ? 'border-destructive/40' : borderColorIfPaused;
+  const borderColor = agent.status === 'working' ? 'border-success/40' : borderColorIfBlocked;
   return (
     <ContextMenu>
       <ContextMenuTrigger>
@@ -99,7 +101,7 @@ function AgentNode({ data }: { data: AgentNodeData }) {
   );
 }
 
-function AgentDetailDrawer({ agent, onClose, onMessage }: { agent: Agent; onClose: () => void; onMessage: () => void }) {
+function AgentDetailDrawer({ agent, onClose, onMessage }: { readonly agent: Agent; readonly onClose: () => void; readonly onMessage: () => void }) {
   return (
     <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 30, stiffness: 260 }} className="absolute right-0 top-0 h-full w-[380px] border-l border-border bg-card z-50 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -146,7 +148,7 @@ function AgentDetailDrawer({ agent, onClose, onMessage }: { agent: Agent; onClos
   );
 }
 
-function OrgChartView({ agents, onSelect }: { agents: Agent[]; onSelect: (id: string) => void }) {
+function OrgChartView({ agents, onSelect }: { readonly agents: Agent[]; readonly onSelect: (id: string) => void }) {
   if (agents.length === 0) {
     return <EmptyGraphState />;
   }
@@ -169,7 +171,7 @@ function OrgChartView({ agents, onSelect }: { agents: Agent[]; onSelect: (id: st
   );
 }
 
-function Card({ agent, isRoot }: { agent: Agent; isRoot?: boolean }) {
+function Card({ agent, isRoot }: { readonly agent: Agent; readonly isRoot?: boolean }) {
   return (
     <div className={cn('rounded-lg border bg-card px-4 py-3 hover:border-primary/40 transition-all min-w-[160px]', isRoot ? 'border-primary/30 glow-amber' : 'border-border')}>
       <div className="flex items-center gap-2 mb-1">
@@ -262,20 +264,23 @@ export default function HiveGraph() {
       </div>
 
       <div className="flex-1 relative overflow-hidden">
-        {state.agents.length === 0 ? (
-          <EmptyGraphState />
-        ) : view === 'org' ? (
-          <OrgChartView agents={visibleAgents.length > 0 ? visibleAgents : state.agents} onSelect={setSelectedAgentId} />
-        ) : (
-          <ReactFlow nodes={nodes} edges={graph.edges} nodeTypes={nodeTypes} fitView
-            onNodeClick={(_, node) => setSelectedAgentId(node.id)}
-            onNodeDoubleClick={(_, node) => { setChatTargetAgentId(node.id); navigate('/chat'); }}
-            proOptions={{ hideAttribution: true }} className="bg-background">
-            <Background gap={24} size={1} color="hsl(var(--border))" />
-            <Controls className="!bg-card !border-border !rounded-md [&>button]:!bg-card [&>button]:!border-border [&>button]:!text-foreground [&>button:hover]:!bg-surface-2" />
-            <MiniMap nodeColor={(node) => lockedAgents.has(node.id) ? 'hsl(var(--info))' : 'hsl(var(--primary))'} maskColor="hsl(var(--background) / 0.8)" className="!bg-surface-2 !border-border !rounded-md" />
-          </ReactFlow>
-        )}
+        {(() => {
+          if (state.agents.length === 0) return <EmptyGraphState />;
+          if (view === 'org') {
+            const orgAgents = visibleAgents.length > 0 ? visibleAgents : state.agents;
+            return <OrgChartView agents={orgAgents} onSelect={setSelectedAgentId} />;
+          }
+          return (
+            <ReactFlow nodes={nodes} edges={graph.edges} nodeTypes={nodeTypes} fitView
+              onNodeClick={(_, node) => setSelectedAgentId(node.id)}
+              onNodeDoubleClick={(_, node) => { setChatTargetAgentId(node.id); navigate('/chat'); }}
+              proOptions={{ hideAttribution: true }} className="bg-background">
+              <Background gap={24} size={1} color="hsl(var(--border))" />
+              <Controls className="!bg-card !border-border !rounded-md [&>button]:!bg-card [&>button]:!border-border [&>button]:!text-foreground [&>button:hover]:!bg-surface-2" />
+              <MiniMap nodeColor={(node) => lockedAgents.has(node.id) ? 'hsl(var(--info))' : 'hsl(var(--primary))'} maskColor="hsl(var(--background) / 0.8)" className="!bg-surface-2 !border-border !rounded-md" />
+            </ReactFlow>
+          );
+        })()}
 
         {showLocks && (
           <div className="absolute left-4 bottom-4 rounded-lg border border-info/30 bg-card/95 p-3 text-xs shadow-lg">

@@ -1,13 +1,13 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { useHiveData } from '@/api/queries/useHiveData';
-import { Check, X, RotateCcw, DollarSign, Bot, FileCheck, TestTube2, AlertTriangle } from 'lucide-react';
+import { Check, RotateCcw, DollarSign, Bot, FileCheck, TestTube2, AlertTriangle } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
 interface WakeReportModalProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
 }
 
 export function WakeReportModal({ open, onOpenChange }: WakeReportModalProps) {

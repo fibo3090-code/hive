@@ -1,7 +1,6 @@
 import { SovereigntyBadge } from '@/components/shared/SovereigntyBadge';
-import { Hexagon, Plus, Bot, ArrowRight } from 'lucide-react';
+import { Hexagon, Plus, Bot } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
-import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { useHiveData } from '@/api/queries/useHiveData';
@@ -29,7 +28,7 @@ export default function Projects() {
             <button
               key={project.id}
               onClick={() => {
-                void setActiveProject(project.id);
+                setActiveProject(project.id).catch(console.error);
                 navigate('/dashboard');
               }}
               className={cn(

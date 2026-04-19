@@ -210,7 +210,7 @@ function readState(): WorkspaceState {
   }
 
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = globalThis.localStorage.getItem(STORAGE_KEY);
     if (!raw) {
       return defaultState;
     }
@@ -227,7 +227,7 @@ function readState(): WorkspaceState {
   }
 }
 
-export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
+export function WorkspaceProvider({ children }: { readonly children: React.ReactNode }) {
   const [state, setState] = useState<WorkspaceState>(() => readState());
   const { setTheme } = useTheme();
   const settingsQuery = useSettingsData();
@@ -238,7 +238,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
 
   useEffect(() => {

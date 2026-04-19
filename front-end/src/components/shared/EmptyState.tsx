@@ -2,11 +2,11 @@ import { cn } from '@/lib/utils';
 import { Inbox } from 'lucide-react';
 
 interface EmptyStateProps {
-  icon?: React.ElementType;
-  title: string;
-  description: string;
-  action?: { label: string; onClick: () => void };
-  className?: string;
+  readonly icon?: React.ElementType;
+  readonly title: string;
+  readonly description: string;
+  readonly action?: { label: string; onClick: () => void };
+  readonly className?: string;
 }
 
 export function EmptyState({ icon: Icon = Inbox, title, description, action, className }: EmptyStateProps) {

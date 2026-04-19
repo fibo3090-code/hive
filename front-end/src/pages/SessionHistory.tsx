@@ -6,7 +6,7 @@ import { Area, AreaChart, Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAx
 import { motion, AnimatePresence } from 'framer-motion';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useSessionHistoryData } from '@/api/queries/useServerData';
-import type { AgentBreakdownItem, SessionHistoryItem, SessionHistoryPoint } from '@/types/domain';
+import type { AgentBreakdownItem, SessionHistoryItem } from '@/types/domain';
 
 type ChartTooltipEntry = {
   dataKey: string;
@@ -20,9 +20,9 @@ function ChartTooltip({
   payload,
   label,
 }: {
-  active?: boolean;
-  payload?: ChartTooltipEntry[];
-  label?: string;
+  readonly active?: boolean;
+  readonly payload?: ChartTooltipEntry[];
+  readonly label?: string;
 }) {
   if (!active || !payload?.length) return null;
   return (

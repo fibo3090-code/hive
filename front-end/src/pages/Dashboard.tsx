@@ -6,7 +6,7 @@ import { ConfidenceBar } from '@/components/shared/ConfidenceBar';
 import {
   Heart, DollarSign, FileCheck, TestTube2, Bot,
   AlertTriangle, AlertCircle, Info, XCircle,
-  ChevronDown, ChevronRight, GitCommit, Clock,
+  ChevronDown, ChevronRight, GitCommit,
   Eye, FileText, Check, X, Play, Pause,
   CheckCircle2, Circle, Zap,
 } from 'lucide-react';
@@ -108,17 +108,19 @@ function SprintTimeline() {
       </div>
       <div className="px-4 py-4">
         <div className="flex ml-[140px] mb-2">
-          {dates.map((d, i) => <span key={i} className="text-micro text-muted-foreground/60 font-mono" style={{ width: `${100 / 8}%` }}>{d}</span>)}
+          {dates.map((d) => <span key={d} className="text-micro text-muted-foreground/60 font-mono" style={{ width: `${100 / 8}%` }}>{d}</span>)}
         </div>
         <div className="space-y-1.5">
           {tasks.map((task) => {
             const StatusIcon = statusIcons[task.status];
             const leftPct = (task.start / totalDays) * 100;
             const widthPct = ((task.end - task.start) / totalDays) * 100;
+            const ganttStatusColorMap: Record<string, string> = { completed: 'text-success', 'in-progress': 'text-primary', blocked: 'text-destructive' };
+            const ganttStatusColor = ganttStatusColorMap[task.status] ?? 'text-muted-foreground';
             return (
               <div key={task.name} className="flex items-center group">
                 <div className="w-[140px] shrink-0 flex items-center gap-2 pr-3">
-                  <StatusIcon className={cn('h-3 w-3 shrink-0', task.status === 'completed' ? 'text-success' : task.status === 'in-progress' ? 'text-primary' : task.status === 'blocked' ? 'text-destructive' : 'text-muted-foreground')} />
+                  <StatusIcon className={cn('h-3 w-3 shrink-0', ganttStatusColor)} />
                   <span className="text-micro text-muted-foreground truncate">{task.name}</span>
                 </div>
                 <div className="flex-1 relative h-6">
@@ -146,27 +148,27 @@ function SprintTimeline() {
 }
 
 /* ─── Background Session Card ─── */
-function BackgroundSessionCard({ onViewWakeReport }: { onViewWakeReport: () => void }) {
+function BackgroundSessionCard({ onViewWakeReport }: { readonly onViewWakeReport: () => void }) {
   const { state, toggleSession } = useHiveData();
   const { session, agents } = state;
   const workingCount = agents.filter(a => a.status === 'working').length;
   return (
-    <div className={cn('rounded-lg border p-4 transition-colors', !session.isActive ? 'border-warning/20 bg-warning/5' : 'border-primary/20 bg-primary/5')}>
+    <div className={cn('rounded-lg border p-4 transition-colors', session.isActive ? 'border-primary/20 bg-primary/5' : 'border-warning/20 bg-warning/5')}>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <div className={cn('h-2 w-2 rounded-full', !session.isActive ? 'bg-warning' : 'bg-primary animate-status-pulse')} />
-          <h3 className={cn('text-sm font-semibold', !session.isActive ? 'text-warning' : 'text-primary')}>{!session.isActive ? 'Session Paused' : 'Background Session Active'}</h3>
+          <div className={cn('h-2 w-2 rounded-full', session.isActive ? 'bg-primary animate-status-pulse' : 'bg-warning')} />
+          <h3 className={cn('text-sm font-semibold', session.isActive ? 'text-primary' : 'text-warning')}>{session.isActive ? 'Background Session Active' : 'Session Paused'}</h3>
         </div>
         <span className="text-micro font-mono text-primary">{session.elapsed}</span>
       </div>
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        <span>{workingCount} agents {!session.isActive ? 'paused' : 'working'}</span>
+        <span>{workingCount} agents {session.isActive ? 'working' : 'paused'}</span>
         <span>{(session.tokensUsed / 1000).toFixed(0)}K tokens</span>
         <span>${session.budgetUsed} spent</span>
       </div>
       <div className="flex gap-2 mt-3">
         <button onClick={onViewWakeReport} className="text-xs text-primary hover:underline">View Wake Report</button>
-        <button onClick={() => { toggleSession(); toast(!session.isActive ? 'Session resumed' : 'Session paused'); }} className={cn('text-xs hover:underline', !session.isActive ? 'text-success' : 'text-muted-foreground')}>{!session.isActive ? 'Resume Session' : 'Pause Session'}</button>
+        <button onClick={() => { toggleSession(); toast(session.isActive ? 'Session paused' : 'Session resumed'); }} className={cn('text-xs hover:underline', session.isActive ? 'text-muted-foreground' : 'text-success')}>{session.isActive ? 'Pause Session' : 'Resume Session'}</button>
       </div>
     </div>
   );
@@ -185,21 +187,24 @@ function CustomTooltip({
   payload,
   label,
 }: {
-  active?: boolean;
-  payload?: ChartTooltipEntry[];
-  label?: string;
+  readonly active?: boolean;
+  readonly payload?: ChartTooltipEntry[];
+  readonly label?: string;
 }) {
   if (!active || !payload?.length) return null;
   return (
     <div className="rounded-md border border-border bg-card px-3 py-2 shadow-lg text-xs">
       <div className="font-mono text-muted-foreground mb-1">{label}</div>
-      {payload.map((p) => (
-        <div key={p.dataKey} className="flex items-center gap-2">
-          <div className="h-2 w-2 rounded-full" style={{ backgroundColor: p.color }} />
-          <span className="text-muted-foreground">{p.dataKey}:</span>
-          <span className="font-mono font-semibold">{p.value}{p.dataKey === 'tokens' ? 'K' : p.dataKey === 'cost' ? '$' : ''}</span>
-        </div>
-      ))}
+      {payload.map((p) => {
+        const unitSuffix = p.dataKey === 'tokens' ? 'K' : p.dataKey === 'cost' ? '$' : '';
+        return (
+          <div key={p.dataKey} className="flex items-center gap-2">
+            <div className="h-2 w-2 rounded-full" style={{ backgroundColor: p.color }} />
+            <span className="text-muted-foreground">{p.dataKey}:</span>
+            <span className="font-mono font-semibold">{p.value}{unitSuffix}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -243,7 +248,8 @@ export default function Dashboard() {
   const toggleTaskStatus = (id: string) => {
     const task = tasks.find(t => t.id === id);
     if (!task) return;
-    const next = task.status === 'queued' ? 'in-progress' : task.status === 'in-progress' ? 'completed' : task.status;
+    const nextIfInProgress = task.status === 'in-progress' ? 'completed' : task.status;
+    const next = task.status === 'queued' ? 'in-progress' : nextIfInProgress;
     if (next !== task.status) { updateTaskStatus(id, next); toast.success(`Task "${task.title}" → ${next}`); }
   };
 
@@ -351,7 +357,7 @@ export default function Dashboard() {
           <ResponsiveContainer width="100%" height={120}>
             <PieChart>
               <Pie data={taskStatusData} cx="50%" cy="50%" innerRadius={30} outerRadius={50} dataKey="value" paddingAngle={3}>
-                {taskStatusData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                {taskStatusData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
               </Pie>
               <Tooltip content={<CustomTooltip />} />
             </PieChart>
@@ -376,7 +382,7 @@ export default function Dashboard() {
             <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={70} />
             <Tooltip content={<CustomTooltip />} />
             <Bar dataKey="tokens" radius={[0, 4, 4, 0]}>
-              {agentTokenData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+              {agentTokenData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -394,25 +400,28 @@ export default function Dashboard() {
               <span className="text-micro text-muted-foreground">{tasks.length} tasks</span>
             </div>
             <div className="divide-y divide-border">
-              {tasks.map((task) => (
-                <div key={task.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2/50 transition-colors group">
-                  <button onClick={() => toggleTaskStatus(task.id)}
-                    className={cn('h-4 w-4 rounded-sm border flex items-center justify-center shrink-0 transition-colors',
-                      task.status === 'completed' ? 'bg-success/20 border-success text-success' :
-                      task.status === 'in-progress' ? 'border-primary text-primary' :
-                      task.status === 'blocked' ? 'border-destructive text-destructive' : 'border-border hover:border-primary'
-                    )}>
-                    {task.status === 'completed' && <Check className="h-3 w-3" />}
-                    {task.status === 'in-progress' && <div className="h-1.5 w-1.5 rounded-full bg-primary" />}
-                    {task.status === 'blocked' && <X className="h-3 w-3" />}
-                  </button>
-                  <span className={cn('text-xs font-medium w-24 capitalize', statusTaskColors[task.status])}>{task.status}</span>
-                  <span className={cn('text-sm flex-1 truncate', task.status === 'completed' && 'line-through text-muted-foreground')}>{task.title}</span>
-                  <span className={cn('text-micro px-1.5 py-0.5 rounded', task.priority === 'high' ? 'bg-destructive/10 text-destructive' : task.priority === 'medium' ? 'bg-warning/10 text-warning' : 'bg-muted text-muted-foreground')}>{task.priority}</span>
-                  <span className="text-xs text-muted-foreground">{task.assignee}</span>
-                  <span className="text-micro font-mono text-muted-foreground">{(task.estimatedTokens / 1000).toFixed(0)}k tok</span>
-                </div>
-              ))}
+              {tasks.map((task) => {
+                const taskButtonColorIfBlocked = task.status === 'blocked' ? 'border-destructive text-destructive' : 'border-border hover:border-primary';
+                const taskButtonColorIfInProgress = task.status === 'in-progress' ? 'border-primary text-primary' : taskButtonColorIfBlocked;
+                const taskButtonColor = task.status === 'completed' ? 'bg-success/20 border-success text-success' : taskButtonColorIfInProgress;
+                const taskPriorityColorIfMedium = task.priority === 'medium' ? 'bg-warning/10 text-warning' : 'bg-muted text-muted-foreground';
+                const taskPriorityColor = task.priority === 'high' ? 'bg-destructive/10 text-destructive' : taskPriorityColorIfMedium;
+                return (
+                  <div key={task.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2/50 transition-colors group">
+                    <button onClick={() => toggleTaskStatus(task.id)}
+                      className={cn('h-4 w-4 rounded-sm border flex items-center justify-center shrink-0 transition-colors', taskButtonColor)}>
+                      {task.status === 'completed' && <Check className="h-3 w-3" />}
+                      {task.status === 'in-progress' && <div className="h-1.5 w-1.5 rounded-full bg-primary" />}
+                      {task.status === 'blocked' && <X className="h-3 w-3" />}
+                    </button>
+                    <span className={cn('text-xs font-medium w-24 capitalize', statusTaskColors[task.status])}>{task.status}</span>
+                    <span className={cn('text-sm flex-1 truncate', task.status === 'completed' && 'line-through text-muted-foreground')}>{task.title}</span>
+                    <span className={cn('text-micro px-1.5 py-0.5 rounded', taskPriorityColor)}>{task.priority}</span>
+                    <span className="text-xs text-muted-foreground">{task.assignee}</span>
+                    <span className="text-micro font-mono text-muted-foreground">{(task.estimatedTokens / 1000).toFixed(0)}k tok</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -426,7 +435,14 @@ export default function Dashboard() {
               {commitFeed.length === 0 ? (
                 <div className="px-4 py-4 text-xs text-muted-foreground">Git integration not configured</div>
               ) : commitFeed.map(c => (
-                <div key={c.hash} onClick={() => navigate('/code')} className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2/50 transition-colors cursor-pointer">
+                <div
+                  key={c.hash}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => navigate('/code')}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate('/code'); }}
+                  className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2/50 transition-colors cursor-pointer"
+                >
                   <GitCommit className="h-3.5 w-3.5 text-primary shrink-0" />
                   <span className="text-sm flex-1 truncate">{c.message}</span>
                   <span className="text-micro font-mono text-muted-foreground">{c.hash}</span>
@@ -446,11 +462,13 @@ export default function Dashboard() {
               <button onClick={() => navigate('/hive-graph')} className="text-micro text-primary hover:underline">{agents.length} total</button>
             </div>
             <div className="p-3 space-y-2 max-h-[360px] overflow-auto scrollbar-thin">
-              {agents.map((agent) => (
+              {agents.map((agent) => {
+                const agentBorderIfPaused = agent.status === 'paused' ? 'border-warning/30' : 'border-border';
+                const agentBorderIfBlocked = agent.status === 'blocked' ? 'border-destructive/30' : agentBorderIfPaused;
+                const agentBorderColor = agent.status === 'working' ? 'border-success/30' : agentBorderIfBlocked;
+                return (
                 <motion.div key={agent.id} whileHover={{ scale: 1.01 }} onClick={() => navigate('/hive-graph')}
-                  className={cn('rounded-md border bg-surface-2 p-3 cursor-pointer hover:border-primary/30 transition-colors',
-                    agent.status === 'working' ? 'border-success/30' : agent.status === 'blocked' ? 'border-destructive/30' : agent.status === 'paused' ? 'border-warning/30' : 'border-border'
-                  )}>
+                  className={cn('rounded-md border bg-surface-2 p-3 cursor-pointer hover:border-primary/30 transition-colors', agentBorderColor)}>
                   <div className="flex items-center gap-2 mb-1.5">
                     <StatusDot status={agent.status} size="sm" />
                     <span className="text-sm font-medium truncate">{agent.name}</span>
@@ -462,7 +480,8 @@ export default function Dashboard() {
                     <span className="text-micro font-mono text-muted-foreground">{agent.qualityScore}%</span>
                   </div>
                 </motion.div>
-              ))}
+                );
+              })}
             </div>
           </div>
           <BackgroundSessionCard onViewWakeReport={() => setWakeReportOpen(true)} />

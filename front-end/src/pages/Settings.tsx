@@ -54,7 +54,7 @@ function cloneSettings(settings: SettingsState): SettingsState {
   return JSON.parse(JSON.stringify(settings)) as SettingsState;
 }
 
-function Row({ label, desc, children }: { label: string; desc: string; children: React.ReactNode }) {
+function Row({ label, desc, children }: { readonly label: string; readonly desc: string; readonly children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4 py-3 border-b border-border">
       <div>
@@ -72,10 +72,10 @@ function Field({
   className,
   placeholder,
 }: {
-  value: string;
-  onChange: (value: string) => void;
-  className?: string;
-  placeholder?: string;
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+  readonly className?: string;
+  readonly placeholder?: string;
 }) {
   return (
     <input
@@ -93,10 +93,10 @@ function SelectField<T extends string>({
   onChange,
   className,
 }: {
-  value: T;
-  options: readonly T[] | T[];
-  onChange: (value: T) => void;
-  className?: string;
+  readonly value: T;
+  readonly options: readonly T[] | T[];
+  readonly onChange: (value: T) => void;
+  readonly className?: string;
 }) {
   return (
     <select
@@ -153,7 +153,7 @@ export default function Settings() {
   };
 
   const save = () => {
-    void saveSettings(draft);
+    saveSettings(draft).catch(console.error);
     toast.success('Settings saved');
   };
 
@@ -422,7 +422,7 @@ export default function Settings() {
   );
 }
 
-function DataPrivacySection({ draft, patch }: { draft: SettingsState; patch: <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => void }) {
+function DataPrivacySection({ draft, patch }: { readonly draft: SettingsState; readonly patch: <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => void }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   return (
     <div className="space-y-6 max-w-xl">

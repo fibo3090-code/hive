@@ -19,19 +19,17 @@ import {
   useCreateNote,
   useMoveTechDebt,
   useNotesData,
-  useQualityTimelineData,
   useSpendTimelineData,
   useTaskThroughputData,
   useTechDebtData,
 } from '@/api/queries/useServerData';
-import type { ActivityFeedItem, NoteItem, TechDebtItem, TimelinePoint } from '@/types/domain';
+import type { ActivityFeedItem, NoteItem, TechDebtItem } from '@/types/domain';
 import {
   Area,
   AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
   Legend,
   Line,
   LineChart,
@@ -69,9 +67,9 @@ function ChartTooltip({
   payload,
   label,
 }: {
-  active?: boolean;
-  payload?: ChartTooltipEntry[];
-  label?: string;
+  readonly active?: boolean;
+  readonly payload?: ChartTooltipEntry[];
+  readonly label?: string;
 }) {
   if (!active || !payload?.length) return null;
 
@@ -89,7 +87,7 @@ function ChartTooltip({
   );
 }
 
-function EmptyState({ title, message }: { title: string; message: string }) {
+function EmptyState({ title, message }: { readonly title: string; readonly message: string }) {
   return (
     <div className="rounded-lg border border-dashed border-border bg-card/60 p-8 text-center">
       <h3 className="text-sm font-semibold mb-1">{title}</h3>
@@ -578,9 +576,12 @@ function TechDebtBoard() {
                   .map((item: TechDebtItem) => (
                     <div
                       key={item.id}
+                      role="button"
+                      tabIndex={0}
                       draggable
                       onDragStart={() => setDraggedId(item.id)}
                       onDragEnd={() => setDraggedId(null)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setDraggedId(item.id); }}
                       className="rounded-lg border border-border bg-card p-3 hover:border-primary/30 cursor-grab active:cursor-grabbing transition-colors"
                     >
                       <h5 className="text-sm font-medium mb-1">{item.title}</h5>
