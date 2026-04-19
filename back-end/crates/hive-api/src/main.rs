@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::{Duration, Instant}};
+use std::{collections::HashMap, fs, net::SocketAddr, path::{Path as StdPath, PathBuf}, str::FromStr, sync::Arc, time::{Duration, Instant}};
 
 use axum::{
     extract::{Path, State},
@@ -46,8 +46,10 @@ struct AppState {
     crypto: Crypto,
     #[allow(dead_code)]
     http: reqwest::Client,
-    model_cache: Arc<RwLock<HashMap<String, (Instant, Vec<ModelInfo>)>>>,
+    model_cache: ModelCache,
 }
+
+type ModelCache = Arc<RwLock<HashMap<String, (Instant, Vec<ModelInfo>)>>>;
 
 #[derive(Clone)]
 struct RuntimeState {
@@ -287,7 +289,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn bootstrap_runtime(workspace_root: &PathBuf) -> anyhow::Result<RuntimeState> {
+async fn bootstrap_runtime(workspace_root: &StdPath) -> anyhow::Result<RuntimeState> {
     let config_path = workspace_root.join("config").join("local.toml");
     let data_dir = workspace_root.join("data");
     fs::create_dir_all(&data_dir)?;

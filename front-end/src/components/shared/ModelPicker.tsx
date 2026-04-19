@@ -17,15 +17,14 @@ interface ModelPickerProps {
 
 export function ModelPicker({ value, onChange, className, disabled }: ModelPickerProps) {
   const providersQuery = useLlmProviders();
-  const providers = providersQuery.data ?? [];
   const connectedProviders = useMemo(
-    () => providers.filter((p: LlmProvider) => p.connected || p.kind === 'ollama'),
-    [providers],
+    () => (providersQuery.data ?? []).filter((p: LlmProvider) => p.connected || p.kind === 'ollama'),
+    [providersQuery.data],
   );
 
   const activeProviderId = value?.providerId ?? connectedProviders[0]?.id ?? null;
   const modelsQuery = useProviderModels(activeProviderId);
-  const models = modelsQuery.data ?? [];
+  const models = useMemo(() => modelsQuery.data ?? [], [modelsQuery.data]);
 
   useEffect(() => {
     if (!value && connectedProviders.length > 0 && models.length > 0) {

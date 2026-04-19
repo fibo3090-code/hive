@@ -17,6 +17,8 @@ Hive Backend is a production-ready REST API powered by Rust, designed to handle 
 - **Type Safety** - Full Rust type safety and compile-time guarantees
 - **Database Migrations** - Version-controlled schema changes
 - **Seed Data** - Pre-populated datasets for development
+- **LLM Providers** - Pluggable clients for Anthropic, OpenAI, Gemini, Ollama with encrypted key storage
+- **Secret Encryption** - ChaCha20-Poly1305 AEAD for API keys at rest
 
 ## Tech Stack
 
@@ -76,23 +78,27 @@ Hive Backend is a production-ready REST API powered by Rust, designed to handle 
 
 1. **Run migrations:**
    ```bash
-   cargo run --bin hive-db -- migrate
+   cargo run -p hive-api -- migrate
    ```
 
 2. **Seed the database (optional):**
    ```bash
-   cargo run --bin hive-seed
+   cargo run -p hive-api -- seed
    ```
+
+Migrations and seeds also run automatically on `serve`.
 
 ## Development
 
 ### Start Development Server
 
 ```bash
-cargo run
+cargo run -p hive-api -- serve
 ```
 
-The API will be available at `http://localhost:3000`
+The API will be available at `http://127.0.0.1:8787`.
+
+On first start the API generates `~/.hive/master.key` (ChaCha20-Poly1305 master key for secret encryption) and probes Ollama at `http://localhost:11434` — if Ollama is running, its provider row is flagged connected automatically.
 
 ### Build for Production
 
@@ -132,6 +138,10 @@ hive-backend/
 │   │   └── src/
 │   ├── hive-db/            # Database models and queries
 │   │   ├── migration/       # Database migrations
+│   │   └── src/
+│   ├── hive-crypto/        # ChaCha20-Poly1305 AEAD for secrets at rest
+│   │   └── src/
+│   ├── hive-llm/           # LLM provider clients (Anthropic/OpenAI/Gemini/Ollama)
 │   │   └── src/
 │   └── hive-seed/          # Database seeding utilities
 │       └── src/
@@ -187,6 +197,29 @@ cargo run --package hive-db --bin migration create <migration_name>
 Database seeding utilities:
 - Loads JSON seed files from `seed/` directory
 - Populates initial data for development
+
+### hive-crypto
+Secret-at-rest encryption. On first use, generates a master key at `~/.hive/master.key` (0600 on Unix). Provides `seal` / `open` helpers using ChaCha20-Poly1305 AEAD plus `mask_key` for UI-safe previews (`sk-…abcd`).
+
+### hive-llm
+Async trait `LlmProvider` with `list_models`, `test_connection`, and `complete` methods. Factory `client_for(ProviderKind, ProviderConfig)` returns a boxed client. Built-in kinds:
+- `anthropic` — `https://api.anthropic.com`
+- `openai` — `https://api.openai.com`
+- `gemini` — `https://generativelanguage.googleapis.com`
+- `ollama` — `http://localhost:11434` (no API key required)
+
+## LLM Providers API
+
+Sprint 0 delivers CRUD + live model discovery for LLM providers.
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| GET    | `/v1/llm-providers`             | List all providers (never returns ciphertext; `hasKey` derived server-side) |
+| PATCH  | `/v1/llm-providers/:id`         | Update `apiKey` (stored encrypted, masked for display) and/or `baseUrl` |
+| POST   | `/v1/llm-providers/:id/test`    | Live connection test; persists `connected` flag |
+| GET    | `/v1/llm-providers/:id/models`  | Live model list from provider (cached 5 min) |
+
+Empty-string `apiKey` clears the stored key. Setting/changing keys invalidates the model cache for that provider.
 
 ## Database
 
