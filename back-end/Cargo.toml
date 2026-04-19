@@ -6,6 +6,8 @@ members = [
     "crates/hive-db",
     "crates/hive-db/migration",
     "crates/hive-seed",
+    "crates/hive-crypto",
+    "crates/hive-llm",
 ]
 
 [workspace.package]
@@ -60,3 +62,5 @@ clap = { version = "4", features = ["derive"] }
 hive-domain = { path = "crates/hive-domain" }
 hive-db = { path = "crates/hive-db" }
 migration = { path = "crates/hive-db/migration" }
+hive-crypto = { path = "crates/hive-crypto" }
+hive-llm = { path = "crates/hive-llm" }
