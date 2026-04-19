@@ -19,6 +19,8 @@ Hive Frontend is a powerful web application designed for managing complex projec
 - **Real-time Updates** - Live data synchronization via Server-Sent Events
 - **Command Palette** - Quick access to features and commands
 - **Insights & Analytics** - Data-driven decision making
+- **LLM Provider Management** - Connect Anthropic, OpenAI, Gemini, or run fully local with Ollama
+- **Model Picker** - Cascading provider → model selection shared across AgentSpawn, AgentForge, and Settings
 
 ## Tech Stack
 
@@ -105,12 +107,13 @@ bun run test:e2e:ui   # Run E2E tests with UI
 src/
 ├── api/                 # API client and queries
 │   ├── client.ts
+│   ├── llm.ts           # LLM provider hooks (useLlmProviders, useProviderModels, etc.)
 │   ├── generated.ts     # Auto-generated API types
 │   └── queries/
 ├── components/          # React components
 │   ├── layout/          # Layout components (AppLayout, Sidebar, TopBar)
-│   ├── modals/          # Modal dialogs
-│   ├── shared/          # Shared UI components
+│   ├── modals/          # Modal dialogs (AgentSpawnModal, ...)
+│   ├── shared/          # Shared UI components (ModelPicker, ...)
 │   └── ui/              # Reusable UI elements
 ├── context/             # React context providers
 ├── hooks/               # Custom React hooks
@@ -130,6 +133,19 @@ src/
 - **ChatCentral** - Communication interface
 - **SessionHistory** - Historical session data
 - **Insights** - Analytics and reporting
+- **Settings → LLM Providers** - Manage API keys (encrypted server-side), base URLs, and connection tests for each provider
+- **Settings → General → Default Model** - Choose the provider/model pre-selected when spawning a new agent
+
+## LLM Providers
+
+The backend exposes four provider slots out of the box: **Anthropic**, **OpenAI**, **Google Gemini**, and **Ollama** (local, no API key required). Use `src/api/llm.ts` hooks to consume them:
+
+- `useLlmProviders()` — list providers + connection state
+- `useProviderModels(providerId)` — live model discovery (5 min cache)
+- `useSetProviderKey()` — save an API key (encrypted server-side, shown masked)
+- `useTestProvider()` — live connection test
+
+The `<ModelPicker />` component in `components/shared/` is the single entry point for picking a provider + model; it auto-selects the first connected provider and its first model, and shows a friendly empty state when no providers are connected.
 - **Settings** - Application configuration
 - **CodeVersioning** - Version control interface
 - **SpecPlan** - Specification and planning
@@ -154,8 +170,8 @@ Real-time data is synchronized using Server-Sent Events (SSE) configured in:
 Required environment variables (see `.env.example`):
 
 ```
-VITE_API_URL=http://localhost:3000  # Backend API URL
-VITE_API_WS_URL=ws://localhost:3000 # WebSocket URL (if applicable)
+VITE_API_URL=http://127.0.0.1:8787  # Backend API URL
+VITE_API_WS_URL=ws://127.0.0.1:8787 # WebSocket URL (if applicable)
 ```
 
 ## Building & Deployment

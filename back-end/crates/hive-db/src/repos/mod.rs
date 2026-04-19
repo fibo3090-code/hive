@@ -10,6 +10,7 @@ pub mod sessions;
 pub mod cost_events;
 pub mod settings;
 pub mod audit;
+pub mod llm_providers;
 
 use ulid::Ulid;
 

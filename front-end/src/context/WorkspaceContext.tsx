@@ -33,13 +33,6 @@ export interface SettingsState {
     telemetry: boolean;
     language: 'English' | 'Deutsch' | '日本語';
   };
-  llmProviders: Array<{
-    name: 'OpenAI' | 'Anthropic' | 'Google' | 'Local (Ollama)';
-    connected: boolean;
-    apiKey?: string;
-    maskedKey?: string;
-    revealKey: boolean;
-  }>;
   router: {
     enabled: boolean;
     explorationRate: number;
@@ -86,11 +79,17 @@ export interface SettingsState {
   };
 }
 
+export interface DefaultModelSelection {
+  providerId: string;
+  modelId: string;
+}
+
 interface WorkspaceState {
   onboardingDraft: OnboardingDraft;
   chatTargetAgentId: string | null;
   graphFocusAgentId: string | null;
   selectedCommandId: string | null;
+  defaultModel: DefaultModelSelection | null;
 }
 
 interface WorkspaceContextValue extends WorkspaceState {
@@ -100,6 +99,7 @@ interface WorkspaceContextValue extends WorkspaceState {
   setChatTargetAgentId: (agentId: string | null) => void;
   setGraphFocusAgentId: (agentId: string | null) => void;
   setSelectedCommandId: (commandId: string | null) => void;
+  setDefaultModel: (selection: DefaultModelSelection | null) => void;
 }
 
 const STORAGE_KEY = 'hive-workspace-ui';
@@ -132,12 +132,6 @@ export const defaultSettings: SettingsState = {
     telemetry: false,
     language: 'English',
   },
-  llmProviders: [
-    { name: 'OpenAI', connected: true, apiKey: 'sk-demo-openai-1234', maskedKey: '••••••••••sk-1234', revealKey: false },
-    { name: 'Anthropic', connected: true, apiKey: 'ant-demo-anthropic-5678', maskedKey: '••••••••••ant-5678', revealKey: false },
-    { name: 'Google', connected: false, apiKey: 'gemini-demo-key-2468', maskedKey: '••••••••••gem-2468', revealKey: false },
-    { name: 'Local (Ollama)', connected: false, revealKey: false },
-  ],
   router: {
     enabled: true,
     explorationRate: 10,
@@ -200,6 +194,7 @@ const defaultState: WorkspaceState = {
   chatTargetAgentId: null,
   graphFocusAgentId: null,
   selectedCommandId: null,
+  defaultModel: null,
 };
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -294,6 +289,10 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
     setState((current) => ({ ...current, selectedCommandId: commandId }));
   }, []);
 
+  const setDefaultModel = useCallback((selection: DefaultModelSelection | null) => {
+    setState((current) => ({ ...current, defaultModel: selection }));
+  }, []);
+
   const value = useMemo<WorkspaceContextValue>(
     () => ({
       ...state,
@@ -303,6 +302,7 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
       setChatTargetAgentId,
       setGraphFocusAgentId,
       setSelectedCommandId,
+      setDefaultModel,
     }),
     [
       state,
@@ -311,6 +311,7 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
       setChatTargetAgentId,
       setGraphFocusAgentId,
       setSelectedCommandId,
+      setDefaultModel,
     ]
   );
 

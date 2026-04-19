@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { Bot, Cpu } from 'lucide-react';
+import { Bot } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
+import { useWorkspace } from '@/context/WorkspaceContext';
 
 interface AgentSpawnModalProps {
   readonly open: boolean;
@@ -10,18 +12,19 @@ interface AgentSpawnModalProps {
 }
 
 const roles = ['Frontend', 'Backend', 'Testing', 'Security', 'Documentation', 'DevOps', 'Data'] as const;
-const models = ['GPT-4o', 'Claude 3.5 Sonnet', 'Gemini Pro', 'Llama 3.1 70B'] as const;
 const tiers = ['local', 'hybrid', 'cloud'] as const;
 
 export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
+  const { defaultModel } = useWorkspace();
   const [name, setName] = useState('');
   const [role, setRole] = useState<string>(roles[0]);
-  const [model, setModel] = useState<string>(models[0]);
+  const [model, setModel] = useState<ModelSelection | null>(defaultModel);
   const [tier, setTier] = useState<string>(tiers[1]);
 
   const handleSpawn = () => {
     if (!name.trim()) { toast.error('Agent name required'); return; }
-    toast.success(`Agent "${name}" spawned as ${role} on ${model}`);
+    if (!model?.modelId) { toast.error('Select a model'); return; }
+    toast.success(`Agent "${name}" spawned as ${role} on ${model.modelId}`);
     setName('');
     onOpenChange(false);
   };
@@ -50,14 +53,8 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
           </div>
 
           <div>
-            <label htmlFor="agent-model" className="text-xs font-medium mb-1.5 block">Model</label>
-            <div id="agent-model" className="flex flex-wrap gap-1.5">
-              {models.map(m => (
-                <button key={m} onClick={() => setModel(m)} className={cn('flex items-center gap-1 rounded-md px-3 py-1.5 text-xs border transition-colors', model === m ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground')}>
-                  <Cpu className="h-3 w-3" />{m}
-                </button>
-              ))}
-            </div>
+            <label className="text-xs font-medium mb-1.5 block">Model</label>
+            <ModelPicker value={model} onChange={setModel} />
           </div>
 
           <div>

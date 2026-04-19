@@ -12,6 +12,10 @@ pub struct Model {
     #[serde(skip_serializing)]
     pub api_key_ciphertext: Option<Vec<u8>>,
     pub masked_key: Option<String>,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

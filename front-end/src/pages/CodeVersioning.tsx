@@ -354,7 +354,15 @@ function FileTree({
             role="button"
             tabIndex={0}
             onClick={() => item.type === 'folder' ? setCollapsed((current) => ({ ...current, [item.path]: !current[item.path] })) : onSelect(item.path)}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { item.type === 'folder' ? setCollapsed((current) => ({ ...current, [item.path]: !current[item.path] })) : onSelect(item.path); } }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                if (item.type === 'folder') {
+                  setCollapsed((current) => ({ ...current, [item.path]: !current[item.path] }));
+                } else {
+                  onSelect(item.path);
+                }
+              }
+            }}
             className={cn('flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-surface-2 cursor-pointer transition-colors', item.path === selectedFile && 'bg-primary/10 text-primary')}
             style={{ paddingLeft: `${depth * 12 + 4}px` }}
           >
