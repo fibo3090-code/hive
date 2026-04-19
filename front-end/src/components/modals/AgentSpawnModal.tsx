@@ -4,6 +4,7 @@ import { Bot } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
+import { useWorkspace } from '@/context/WorkspaceContext';
 
 interface AgentSpawnModalProps {
   readonly open: boolean;
@@ -14,9 +15,10 @@ const roles = ['Frontend', 'Backend', 'Testing', 'Security', 'Documentation', 'D
 const tiers = ['local', 'hybrid', 'cloud'] as const;
 
 export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
+  const { defaultModel } = useWorkspace();
   const [name, setName] = useState('');
   const [role, setRole] = useState<string>(roles[0]);
-  const [model, setModel] = useState<ModelSelection | null>(null);
+  const [model, setModel] = useState<ModelSelection | null>(defaultModel);
   const [tier, setTier] = useState<string>(tiers[1]);
 
   const handleSpawn = () => {

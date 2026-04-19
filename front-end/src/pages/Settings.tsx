@@ -6,9 +6,11 @@ import {
   Plus, Trash2, Check, Save, RefreshCw, Loader2,
 } from 'lucide-react';
 import { useLlmProviders, useSetProviderKey, useTestProvider, type LlmProvider } from '@/api/llm';
+import { ModelPicker } from '@/components/shared/ModelPicker';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
 import { defaultSettings, useWorkspace, type SettingsState } from '@/context/WorkspaceContext';
+import type { ModelSelection } from '@/components/shared/ModelPicker';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useSettingsData } from '@/api/queries/useServerData';
 import { toast } from 'sonner';
@@ -114,7 +116,7 @@ function SelectField<T extends string>({
 
 export default function Settings() {
   const [section, setSection] = useState<(typeof settingsNav)[number]['id']>('general');
-  const { accentPresets } = useWorkspace();
+  const { accentPresets, defaultModel, setDefaultModel } = useWorkspace();
   const { activeProject } = useHiveData();
   const { data: settings, saveSettings } = useSettingsData();
   const [draft, setDraft] = useState<SettingsState>(() => {
@@ -231,6 +233,16 @@ export default function Settings() {
             <Row label="Language" desc="Interface language">
               <SelectField value={draft.general.language} options={['English', 'Deutsch', '日本語']} onChange={(value) => patch('general', { ...draft.general, language: value })} />
             </Row>
+            <div className="pt-3">
+              <div className="mb-2">
+                <div className="text-sm font-medium">Default Model for New Agents</div>
+                <div className="text-xs text-muted-foreground">Pre-selected when spawning or forging a new agent</div>
+              </div>
+              <ModelPicker
+                value={defaultModel as ModelSelection | null}
+                onChange={(selection) => setDefaultModel(selection)}
+              />
+            </div>
           </div>
         )}
 

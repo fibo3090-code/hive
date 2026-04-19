@@ -79,11 +79,17 @@ export interface SettingsState {
   };
 }
 
+export interface DefaultModelSelection {
+  providerId: string;
+  modelId: string;
+}
+
 interface WorkspaceState {
   onboardingDraft: OnboardingDraft;
   chatTargetAgentId: string | null;
   graphFocusAgentId: string | null;
   selectedCommandId: string | null;
+  defaultModel: DefaultModelSelection | null;
 }
 
 interface WorkspaceContextValue extends WorkspaceState {
@@ -93,6 +99,7 @@ interface WorkspaceContextValue extends WorkspaceState {
   setChatTargetAgentId: (agentId: string | null) => void;
   setGraphFocusAgentId: (agentId: string | null) => void;
   setSelectedCommandId: (commandId: string | null) => void;
+  setDefaultModel: (selection: DefaultModelSelection | null) => void;
 }
 
 const STORAGE_KEY = 'hive-workspace-ui';
@@ -187,6 +194,7 @@ const defaultState: WorkspaceState = {
   chatTargetAgentId: null,
   graphFocusAgentId: null,
   selectedCommandId: null,
+  defaultModel: null,
 };
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -281,6 +289,10 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
     setState((current) => ({ ...current, selectedCommandId: commandId }));
   }, []);
 
+  const setDefaultModel = useCallback((selection: DefaultModelSelection | null) => {
+    setState((current) => ({ ...current, defaultModel: selection }));
+  }, []);
+
   const value = useMemo<WorkspaceContextValue>(
     () => ({
       ...state,
@@ -290,6 +302,7 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
       setChatTargetAgentId,
       setGraphFocusAgentId,
       setSelectedCommandId,
+      setDefaultModel,
     }),
     [
       state,
@@ -298,6 +311,7 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
       setChatTargetAgentId,
       setGraphFocusAgentId,
       setSelectedCommandId,
+      setDefaultModel,
     ]
   );
 
