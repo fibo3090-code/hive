@@ -41,9 +41,12 @@ pub async fn list(db: &DatabaseConnection) -> Result<Vec<Model>, DbErr> {
         .await
 }
 
-/// Get a single project by id.
+/// Get a single project by id, excluding soft-deleted ones.
 pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbErr> {
-    Entity::find_by_id(id.to_owned()).one(db).await
+    Entity::find_by_id(id.to_owned())
+        .filter(Column::DeletedAt.is_null())
+        .one(db)
+        .await
 }
 
 /// Create a new project.
