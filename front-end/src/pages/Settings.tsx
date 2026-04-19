@@ -74,18 +74,20 @@ function Field({
   onChange,
   className,
   placeholder,
+  ...props
 }: {
   readonly value: string;
   readonly onChange: (value: string) => void;
   readonly className?: string;
   readonly placeholder?: string;
-}) {
+} & React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
       className={cn('h-8 rounded-md border border-border bg-surface-2 px-3 text-sm', className)}
+      {...props}
     />
   );
 }
@@ -469,10 +471,11 @@ function LlmProvidersSection() {
             </div>
             {needsKey && (
               <div>
-                <label className="text-xs font-medium mb-1 block">
+                <label htmlFor={`api-key-${p.id}`} className="text-xs font-medium mb-1 block">
                   API Key {p.maskedKey && <span className="font-mono text-muted-foreground">(current: {p.maskedKey})</span>}
                 </label>
                 <Field
+                  id={`api-key-${p.id}`}
                   value={d.apiKey}
                   onChange={(v) => updateDraft(p.id, { apiKey: v })}
                   placeholder={p.hasKey ? 'Leave blank to keep current' : 'sk-…'}
@@ -481,8 +484,9 @@ function LlmProvidersSection() {
               </div>
             )}
             <div>
-              <label className="text-xs font-medium mb-1 block">Base URL</label>
+              <label htmlFor={`base-url-${p.id}`} className="text-xs font-medium mb-1 block">Base URL</label>
               <Field
+                id={`base-url-${p.id}`}
                 value={d.baseUrl}
                 onChange={(v) => updateDraft(p.id, { baseUrl: v })}
                 placeholder={p.baseUrl ?? ''}

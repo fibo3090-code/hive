@@ -231,7 +231,7 @@ export default function CodeVersioning() {
                 <div className="flex">
                   <div className="text-right pr-3 pl-3 py-3 text-micro font-mono text-muted-foreground/40 select-none border-r border-border bg-surface-3">
                     {activeCode.split('\n').map((_, index) => (
-                      <div key={`line-${index}`} className="leading-relaxed">{index + 1}</div>
+                      <div key={`line-num-${index + 1}`} className="leading-relaxed">{index + 1}</div>
                     ))}
                   </div>
                   <pre className="p-3 text-xs font-mono text-foreground leading-relaxed flex-1 overflow-x-auto">
@@ -259,20 +259,20 @@ export default function CodeVersioning() {
                       <span className="text-micro text-primary">{chunk.note}</span>
                     </div>
                     <div className="text-xs font-mono">
-                      {chunk.context.map((line) => <div key={`ctx-${line}`} className="px-3 py-0.5 text-muted-foreground">{line || ' '}</div>)}
+                      {chunk.context.map((line, idx) => <div key={`ctx-${chunk.id}-${idx}`} className="px-3 py-0.5 text-muted-foreground">{line || ' '}</div>)}
                       {diffMode === 'split' ? (
                         <div className="grid grid-cols-2">
                           <div className="border-r border-border">
-                            {chunk.removed.map((line) => <div key={`left-${line}`} className="bg-destructive/5 px-3 py-0.5 text-destructive/80">- {line}</div>)}
+                            {chunk.removed.map((line, idx) => <div key={`left-${chunk.id}-${idx}`} className="bg-destructive/5 px-3 py-0.5 text-destructive/80">- {line}</div>)}
                           </div>
                           <div>
-                            {chunk.added.map((line) => <div key={`right-${line}`} className="bg-success/5 px-3 py-0.5 text-success/80">+ {line}</div>)}
+                            {chunk.added.map((line, idx) => <div key={`right-${chunk.id}-${idx}`} className="bg-success/5 px-3 py-0.5 text-success/80">+ {line}</div>)}
                           </div>
                         </div>
                       ) : (
                         <>
-                          {chunk.removed.map((line) => <div key={`rm-${line}`} className="bg-destructive/5 px-3 py-0.5 text-destructive/80">- {line}</div>)}
-                          {chunk.added.map((line) => <div key={`add-${line}`} className="bg-success/5 px-3 py-0.5 text-success/80">+ {line}</div>)}
+                          {chunk.removed.map((line, idx) => <div key={`rm-${chunk.id}-${idx}`} className="bg-destructive/5 px-3 py-0.5 text-destructive/80">- {line}</div>)}
+                          {chunk.added.map((line, idx) => <div key={`add-${chunk.id}-${idx}`} className="bg-success/5 px-3 py-0.5 text-success/80">+ {line}</div>)}
                         </>
                       )}
                     </div>

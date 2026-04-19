@@ -124,11 +124,11 @@ export default function SessionHistory() {
                       <div
                         className={cn(
                           'text-sm font-mono font-semibold',
-                          session.healthScore >= 80
-                            ? 'text-success'
-                            : session.healthScore >= 60
-                              ? 'text-warning'
-                              : 'text-destructive'
+                          (() => {
+                            if (session.healthScore >= 80) return 'text-success';
+                            if (session.healthScore >= 60) return 'text-warning';
+                            return 'text-destructive';
+                          })()
                         )}
                       >
                         {session.healthScore}%

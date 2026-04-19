@@ -740,14 +740,16 @@ async fn ensure_session_and_costs(
     for (tokens_in, tokens_out, cost_cents, memo) in cost_specs {
         cost_events::insert(
             db,
-            project_id,
-            Some(&session.id),
-            None,
-            "llm_call",
-            tokens_in,
-            tokens_out,
-            cost_cents,
-            Some(memo),
+            cost_events::NewCostEvent {
+                project_id,
+                session_id: Some(&session.id),
+                agent_id: None,
+                kind: "llm_call",
+                tokens_in,
+                tokens_out,
+                cost_cents,
+                memo: Some(memo),
+            },
         )
         .await?;
     }

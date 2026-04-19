@@ -200,7 +200,7 @@ const defaultState: WorkspaceState = {
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
 function readState(): WorkspaceState {
-  if (typeof window === 'undefined') {
+  if (typeof globalThis.window === 'undefined') {
     return defaultState;
   }
 
@@ -229,7 +229,7 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
   const appearance = settingsQuery.data?.appearance ?? defaultSettings.appearance;
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
+    if (typeof globalThis.window === 'undefined') {
       return;
     }
 

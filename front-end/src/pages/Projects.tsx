@@ -48,7 +48,11 @@ export default function Projects() {
               <div className="mb-3">
                 <div className="flex items-center justify-between text-micro text-muted-foreground mb-1">
                   <span>Health</span>
-                  <span className={cn('font-mono', project.healthScore >= 80 ? 'text-success' : project.healthScore >= 60 ? 'text-warning' : 'text-destructive')}>
+                  <span className={cn('font-mono', (() => {
+                    if (project.healthScore >= 80) return 'text-success';
+                    if (project.healthScore >= 60) return 'text-warning';
+                    return 'text-destructive';
+                  })())}>
                     {project.healthScore}%
                   </span>
                 </div>

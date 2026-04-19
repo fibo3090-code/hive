@@ -228,10 +228,9 @@ function SprintTab() {
       <h2 className="text-lg font-semibold">Sprint Plan</h2>
       <div className="space-y-3">
         {items.map((sprint: SprintPlanItem) => (
-          <div
+          <button
             key={sprint.id}
-            role="button"
-            tabIndex={0}
+            type="button"
             draggable
             onDragStart={() => setDraggedId(sprint.id)}
             onDragOver={(event) => event.preventDefault()}
@@ -239,11 +238,11 @@ function SprintTab() {
             onDragEnd={() => setDraggedId(null)}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setDraggedId(sprint.id); }}
             className={cn(
-              'rounded-lg border bg-card p-4 cursor-grab active:cursor-grabbing',
+              'flex flex-col w-full text-left rounded-lg border bg-card p-4 cursor-grab active:cursor-grabbing',
               sprintCardStyles[sprint.status] ?? 'border-border'
             )}
           >
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-2 w-full">
               <div className="flex items-center gap-3">
                 <GripVertical className="h-4 w-4 text-muted-foreground/40" />
                 <h3 className="text-sm font-semibold">{sprint.name}</h3>
@@ -255,7 +254,7 @@ function SprintTab() {
                 {sprint.startDate ?? sprint.start_date} — {sprint.endDate ?? sprint.end_date}
               </span>
             </div>
-            <div className="flex items-center gap-3 mb-2">
+            <div className="flex items-center gap-3 mb-2 w-full">
               <Progress value={sprint.progress ?? 0} className="flex-1 h-1.5" />
               <span className="text-micro font-mono text-muted-foreground">
                 {sprint.completed ?? 0}/{sprint.tasks ?? 0}
@@ -265,7 +264,7 @@ function SprintTab() {
               <span>{sprint.points ?? 0} story points</span>
               {sprint.velocity ? <span>Velocity: {sprint.velocity} pts/sprint</span> : null}
             </div>
-          </div>
+          </button>
         ))}
       </div>
     </div>

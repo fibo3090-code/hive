@@ -58,28 +58,31 @@ pub async fn total_tokens_for_session(
         .sum())
 }
 
-#[allow(clippy::too_many_arguments)]
+pub struct NewCostEvent<'a> {
+    pub project_id: &'a str,
+    pub session_id: Option<&'a str>,
+    pub agent_id: Option<&'a str>,
+    pub kind: &'a str,
+    pub tokens_in: i32,
+    pub tokens_out: i32,
+    pub cost_cents: i32,
+    pub memo: Option<&'a str>,
+}
+
 pub async fn insert(
     db: &DatabaseConnection,
-    project_id: &str,
-    session_id: Option<&str>,
-    agent_id: Option<&str>,
-    kind: &str,
-    tokens_in: i32,
-    tokens_out: i32,
-    cost_cents: i32,
-    memo: Option<&str>,
+    event: NewCostEvent<'_>,
 ) -> Result<Model, DbErr> {
     ActiveModel {
         id: Set(new_id()),
-        project_id: Set(project_id.to_owned()),
-        session_id: Set(session_id.map(ToOwned::to_owned)),
-        agent_id: Set(agent_id.map(ToOwned::to_owned)),
-        kind: Set(kind.to_owned()),
-        tokens_in: Set(tokens_in),
-        tokens_out: Set(tokens_out),
-        cost_cents: Set(cost_cents),
-        memo: Set(memo.map(ToOwned::to_owned)),
+        project_id: Set(event.project_id.to_owned()),
+        session_id: Set(event.session_id.map(ToOwned::to_owned)),
+        agent_id: Set(event.agent_id.map(ToOwned::to_owned)),
+        kind: Set(event.kind.to_owned()),
+        tokens_in: Set(event.tokens_in),
+        tokens_out: Set(event.tokens_out),
+        cost_cents: Set(event.cost_cents),
+        memo: Set(event.memo.map(ToOwned::to_owned)),
         created_at: Set(now_rfc3339()),
     }
     .insert(db)

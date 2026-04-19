@@ -27,7 +27,12 @@ export default function Onboarding() {
 
   const launchProject = () => {
     const trimmedDescription = onboardingDraft.description.trim();
-    const sourceDefaultName = onboardingDraft.source === 'import' ? 'Imported Workspace' : onboardingDraft.source === 'template' ? 'Template Workspace' : 'New Hive Project';
+    let sourceDefaultName = 'New Hive Project';
+    if (onboardingDraft.source === 'import') {
+      sourceDefaultName = 'Imported Workspace';
+    } else if (onboardingDraft.source === 'template') {
+      sourceDefaultName = 'Template Workspace';
+    }
     const generatedName = trimmedDescription
       ? trimmedDescription.split(/\s+/).slice(0, 3).join(' ')
       : sourceDefaultName;

@@ -32,10 +32,14 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    throw new ApiError(payload ? (payload as { error?: string })?.error ?? `Request failed (${response.status})` : `Request failed (${response.status})`, payload ? (payload as { code?: string })?.code : 'request_failed');
+    const errorPayload = payload as Record<string, unknown> | null;
+    throw new ApiError(
+      errorPayload?.error as string ?? `Request failed (${response.status})`,
+      errorPayload?.code as string ?? 'request_failed'
+    );
   }
 
-  return payload as T;
+  return payload!;
 }
 
 export function eventStreamUrl(path: string) {
