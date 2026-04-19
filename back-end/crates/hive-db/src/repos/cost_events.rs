@@ -58,6 +58,7 @@ pub async fn total_tokens_for_session(
         .sum())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert(
     db: &DatabaseConnection,
     project_id: &str,
