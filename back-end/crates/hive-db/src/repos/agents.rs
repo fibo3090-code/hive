@@ -47,7 +47,10 @@ pub async fn list_by_project(
 
 /// Get a single agent by id.
 pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbErr> {
-    Entity::find_by_id(id.to_owned()).one(db).await
+    Entity::find_by_id(id.to_owned())
+        .filter(Column::DeletedAt.is_null())
+        .one(db)
+        .await
 }
 
 /// Create a new agent.

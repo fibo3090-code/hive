@@ -29,33 +29,44 @@ pub async fn total_cost_cents_for_project(
     db: &DatabaseConnection,
     project_id: &str,
 ) -> Result<i64, DbErr> {
-    let items = list_by_project(db, project_id).await?;
-    Ok(items
-        .into_iter()
-        .map(|item| i64::from(item.cost_cents))
-        .sum())
+    let result: Option<Option<i64>> = Entity::find()
+        .filter(Column::ProjectId.eq(project_id))
+        .select_only()
+        .column_as(sea_orm::sea_query::Expr::col(Column::CostCents).sum(), "sum")
+        .into_tuple()
+        .one(db)
+        .await?;
+    Ok(result.flatten().unwrap_or(0))
 }
 
 pub async fn total_cost_cents_for_session(
     db: &DatabaseConnection,
     session_id: &str,
 ) -> Result<i64, DbErr> {
-    let items = list_by_session(db, session_id).await?;
-    Ok(items
-        .into_iter()
-        .map(|item| i64::from(item.cost_cents))
-        .sum())
+    let result: Option<Option<i64>> = Entity::find()
+        .filter(Column::SessionId.eq(session_id))
+        .select_only()
+        .column_as(sea_orm::sea_query::Expr::col(Column::CostCents).sum(), "sum")
+        .into_tuple()
+        .one(db)
+        .await?;
+    Ok(result.flatten().unwrap_or(0))
 }
 
 pub async fn total_tokens_for_session(
     db: &DatabaseConnection,
     session_id: &str,
 ) -> Result<i64, DbErr> {
-    let items = list_by_session(db, session_id).await?;
-    Ok(items
-        .into_iter()
-        .map(|item| i64::from(item.tokens_in + item.tokens_out))
-        .sum())
+    let result: Option<(Option<i64>, Option<i64>)> = Entity::find()
+        .filter(Column::SessionId.eq(session_id))
+        .select_only()
+        .column_as(sea_orm::sea_query::Expr::col(Column::TokensIn).sum(), "sum_in")
+        .column_as(sea_orm::sea_query::Expr::col(Column::TokensOut).sum(), "sum_out")
+        .into_tuple()
+        .one(db)
+        .await?;
+    let (in_sum, out_sum) = result.unwrap_or((Some(0), Some(0)));
+    Ok(in_sum.unwrap_or(0) + out_sum.unwrap_or(0))
 }
 
 pub struct NewCostEvent<'a> {

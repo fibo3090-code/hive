@@ -69,12 +69,14 @@ pub async fn reorder(
     items.insert(target_index, moved);
 
     let now = now_rfc3339();
+    let txn = db.begin().await?;
     for (position, item) in items.iter().enumerate() {
         let mut model: ActiveModel = item.clone().into();
         model.position = Set(position as i32);
         model.updated_at = Set(now.clone());
-        model.update(db).await?;
+        model.update(&txn).await?;
     }
+    txn.commit().await?;
 
     list_by_project(db, project_id).await
 }

@@ -41,7 +41,7 @@ Hive Backend is a production-ready REST API powered by Rust, designed to handle 
 1. **Clone the repository:**
    ```bash
    git clone <repository-url>
-   cd hive/hive-backend
+   cd hive/hive-code/back-end
    ```
 
 2. **Install Rust (if not already installed):**
@@ -130,7 +130,7 @@ cargo fmt --check
 ## Project Structure
 
 ```
-hive-backend/
+hive-code/back-end/
 ├── crates/
 │   ├── hive-api/           # REST API and main server
 │   │   └── src/

@@ -809,7 +809,6 @@ async fn delete_project(
 
     // If we deleted the active project, clear it
     if active_project_id(&state).await? == Some(project_id.clone()) {
-        let now = chrono::Utc::now().to_rfc3339();
         settings::put_value(
             database.conn(),
             "global",

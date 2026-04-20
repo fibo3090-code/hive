@@ -43,7 +43,7 @@ Hive Frontend is a powerful web application designed for managing complex projec
 1. **Clone the repository:**
    ```bash
    git clone <repository-url>
-   cd hive/frontend
+   cd hive/hive-code/front-end
    ```
 
 2. **Install dependencies:**
