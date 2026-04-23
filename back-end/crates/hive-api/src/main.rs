@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
     sync::{broadcast, Mutex, RwLock},
-    task::JoinHandle,
+    task::AbortHandle,
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{info, warn};
@@ -68,9 +68,9 @@ struct AppState {
 type ModelCache = Arc<RwLock<HashMap<String, (Instant, Vec<ModelInfo>)>>>;
 
 /// In-flight chat turns keyed by `assistant_message_id`. Holds both the
-/// cooperative cancel flag (checked inside the runner loop) and the task
-/// handle so the API can also abort the task if the flag isn't polled in
-/// time.
+/// cooperative cancel flag (checked inside the runner loop) and the task's
+/// `AbortHandle` so the API can force-interrupt the task if the runner is
+/// blocked inside `stream.next().await` and isn't polling the flag.
 #[derive(Clone, Default)]
 struct ChatJobRegistry {
     inner: Arc<RwLock<HashMap<String, ChatJob>>>,
@@ -78,27 +78,43 @@ struct ChatJobRegistry {
 
 struct ChatJob {
     cancel: Arc<Mutex<bool>>,
-    _handle: JoinHandle<()>,
+    /// Filled in once the spawned task's `AbortHandle` is available.
+    abort: Option<AbortHandle>,
 }
 
 impl ChatJobRegistry {
-    async fn insert(&self, msg_id: &str, cancel: Arc<Mutex<bool>>, handle: JoinHandle<()>) {
+    /// Register the cancellation flag for a new message. Must be called
+    /// BEFORE spawning the runner task so that a fast-exiting task cannot
+    /// race ahead of its registry entry.
+    async fn register(&self, msg_id: &str, cancel: Arc<Mutex<bool>>) {
         self.inner.write().await.insert(
             msg_id.to_owned(),
             ChatJob {
                 cancel,
-                _handle: handle,
+                abort: None,
             },
         );
     }
 
-    async fn cancel(&self, msg_id: &str) -> bool {
-        let guard = self.inner.read().await;
-        if let Some(job) = guard.get(msg_id) {
-            *job.cancel.lock().await = true;
-            return true;
+    /// Attach the spawned task's `AbortHandle` so cancellation can interrupt
+    /// the stream if the runner isn't polling the cooperative flag.
+    async fn attach_abort(&self, msg_id: &str, abort: AbortHandle) {
+        if let Some(job) = self.inner.write().await.get_mut(msg_id) {
+            job.abort = Some(abort);
         }
-        false
+    }
+
+    async fn cancel(&self, msg_id: &str) -> bool {
+        let mut map = self.inner.write().await;
+        let Some(job) = map.get(msg_id) else {
+            return false;
+        };
+        *job.cancel.lock().await = true;
+        if let Some(handle) = &job.abort {
+            handle.abort();
+        }
+        map.remove(msg_id);
+        true
     }
 
     async fn remove(&self, msg_id: &str) {
@@ -295,7 +311,9 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route("/v1/projects/active", get(get_active_project))
         .route(
             "/v1/projects/:project_id",
-            get(get_project).patch(update_project).delete(delete_project),
+            get(get_project)
+                .patch(update_project)
+                .delete(delete_project),
         )
         .route("/v1/projects/:project_id/activate", post(activate_project))
         .route(
@@ -387,8 +405,9 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         )
         .route(
             "/v1/projects/:project_id/chat-threads",
-            get(list_chat_threads).post(create_chat_thread),
+            get(list_chat_threads),
         )
+        .route("/v1/chat-threads", post(create_chat_thread))
         .route("/v1/chat-threads/:thread_id", get(get_chat_thread))
         .route(
             "/v1/chat-threads/:thread_id/messages",
@@ -864,13 +883,7 @@ async fn delete_project(
 
     // If we deleted the active project, clear it
     if active_project_id(&state).await? == Some(project_id.clone()) {
-        settings::put_value(
-            database.conn(),
-            "global",
-            "activeProjectId",
-            Value::Null,
-        )
-        .await?;
+        settings::put_value(database.conn(), "global", "activeProjectId", Value::Null).await?;
     }
 
     emit(&state, "project.deleted", json!({ "id": project_id })).await;
@@ -1786,9 +1799,7 @@ async fn create_chat_thread(
         chat_threads::CreateThread {
             project_id: body.project_id,
             agent_id: body.agent_id,
-            title: body
-                .title
-                .unwrap_or_else(|| "Untitled thread".to_owned()),
+            title: body.title.unwrap_or_else(|| "Untitled thread".to_owned()),
         },
     )
     .await?;
@@ -1856,7 +1867,12 @@ async fn send_chat_message(
         },
     )
     .await?;
-    emit(&state, &format!("chat.{thread_id}.message"), chat_message_json(&user_msg)).await;
+    emit(
+        &state,
+        &format!("chat.{thread_id}.message"),
+        chat_message_json(&user_msg),
+    )
+    .await;
 
     // Insert the pending assistant row so the frontend can render a placeholder.
     let assistant_row = chat_messages::insert(
@@ -1887,8 +1903,15 @@ async fn send_chat_message(
     let cancel_flag = Arc::new(Mutex::new(false));
     let bus = EventBus::new(state.events.clone());
     let db_clone = database.clone();
-    let chat_jobs = state.chat_jobs.clone();
     let assistant_id = assistant_row.id.clone();
+
+    // Register the cancel flag BEFORE spawning so a fast-failing task can't
+    // race past its own registry entry (see PR review).
+    state
+        .chat_jobs
+        .register(&assistant_id, cancel_flag.clone())
+        .await;
+
     let params = hive_runtime::chat::RunTurn {
         db: db_clone,
         bus,
@@ -1902,18 +1925,30 @@ async fn send_chat_message(
         system_prompt: body.system_prompt,
         history_limit: 40,
         agent_id: thread.agent_id.clone(),
-        cancel: cancel_flag.clone(),
+        cancel: cancel_flag,
     };
 
-    let registry = chat_jobs.clone();
-    let assistant_for_cleanup = assistant_id.clone();
     let handle = tokio::spawn(async move {
         if let Err(err) = hive_runtime::chat::run_turn(params).await {
             tracing::warn!(error = %err, "chat turn failed");
         }
-        registry.remove(&assistant_for_cleanup).await;
     });
-    chat_jobs.insert(&assistant_id, cancel_flag, handle).await;
+    state
+        .chat_jobs
+        .attach_abort(&assistant_id, handle.abort_handle())
+        .await;
+
+    // Best-effort reaper: once the task finishes, drop its registry entry so
+    // the map doesn't grow without bound. Cancellation itself already removes
+    // the entry, so the happy path is the only one that needs this.
+    {
+        let registry = state.chat_jobs.clone();
+        let assistant_for_cleanup = assistant_id.clone();
+        tokio::spawn(async move {
+            let _ = handle.await;
+            registry.remove(&assistant_for_cleanup).await;
+        });
+    }
 
     Ok(Json(json!({
         "userMessage": chat_message_json(&user_msg),

@@ -32,7 +32,10 @@ pub async fn total_cost_cents_for_project(
     let result: Option<Option<i64>> = Entity::find()
         .filter(Column::ProjectId.eq(project_id))
         .select_only()
-        .column_as(sea_orm::sea_query::Expr::col(Column::CostCents).sum(), "sum")
+        .column_as(
+            sea_orm::sea_query::Expr::col(Column::CostCents).sum(),
+            "sum",
+        )
         .into_tuple()
         .one(db)
         .await?;
@@ -46,7 +49,10 @@ pub async fn total_cost_cents_for_session(
     let result: Option<Option<i64>> = Entity::find()
         .filter(Column::SessionId.eq(session_id))
         .select_only()
-        .column_as(sea_orm::sea_query::Expr::col(Column::CostCents).sum(), "sum")
+        .column_as(
+            sea_orm::sea_query::Expr::col(Column::CostCents).sum(),
+            "sum",
+        )
         .into_tuple()
         .one(db)
         .await?;
@@ -60,8 +66,14 @@ pub async fn total_tokens_for_session(
     let result: Option<(Option<i64>, Option<i64>)> = Entity::find()
         .filter(Column::SessionId.eq(session_id))
         .select_only()
-        .column_as(sea_orm::sea_query::Expr::col(Column::TokensIn).sum(), "sum_in")
-        .column_as(sea_orm::sea_query::Expr::col(Column::TokensOut).sum(), "sum_out")
+        .column_as(
+            sea_orm::sea_query::Expr::col(Column::TokensIn).sum(),
+            "sum_in",
+        )
+        .column_as(
+            sea_orm::sea_query::Expr::col(Column::TokensOut).sum(),
+            "sum_out",
+        )
         .into_tuple()
         .one(db)
         .await?;
@@ -80,10 +92,7 @@ pub struct NewCostEvent<'a> {
     pub memo: Option<&'a str>,
 }
 
-pub async fn insert(
-    db: &DatabaseConnection,
-    event: NewCostEvent<'_>,
-) -> Result<Model, DbErr> {
+pub async fn insert(db: &DatabaseConnection, event: NewCostEvent<'_>) -> Result<Model, DbErr> {
     ActiveModel {
         id: Set(new_id()),
         project_id: Set(event.project_id.to_owned()),

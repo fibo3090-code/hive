@@ -4,8 +4,8 @@
 //! Sprint 1 adds streaming text completions via `chat_stream`.
 
 pub mod chat;
-pub mod providers;
 pub mod pricing;
+pub mod providers;
 pub mod sse;
 
 pub use chat::{ChatMessage, ChatRequest, ChatRole, StreamChunk, StreamEvent};

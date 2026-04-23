@@ -20,10 +20,7 @@ pub struct NewMessage {
     pub status: String,
 }
 
-pub async fn list_by_thread(
-    db: &DatabaseConnection,
-    thread_id: &str,
-) -> Result<Vec<Model>, DbErr> {
+pub async fn list_by_thread(db: &DatabaseConnection, thread_id: &str) -> Result<Vec<Model>, DbErr> {
     Entity::find()
         .filter(Column::ThreadId.eq(thread_id))
         .order_by_asc(Column::CreatedAt)

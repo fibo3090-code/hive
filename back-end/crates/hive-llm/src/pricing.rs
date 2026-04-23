@@ -93,13 +93,26 @@ mod tests {
 
     #[test]
     fn ollama_is_free() {
-        assert_eq!(cost_cents(ProviderKind::Ollama, "llama3.1:8b", 1_000_000, 1_000_000), 0);
+        assert_eq!(
+            cost_cents(ProviderKind::Ollama, "llama3.1:8b", 1_000_000, 1_000_000),
+            0
+        );
     }
 
     #[test]
     fn opus_is_pricier_than_haiku() {
-        let opus = cost_cents(ProviderKind::Anthropic, "claude-opus-4", 1_000_000, 1_000_000);
-        let haiku = cost_cents(ProviderKind::Anthropic, "claude-haiku-4", 1_000_000, 1_000_000);
+        let opus = cost_cents(
+            ProviderKind::Anthropic,
+            "claude-opus-4",
+            1_000_000,
+            1_000_000,
+        );
+        let haiku = cost_cents(
+            ProviderKind::Anthropic,
+            "claude-haiku-4",
+            1_000_000,
+            1_000_000,
+        );
         assert!(opus > haiku);
     }
 }

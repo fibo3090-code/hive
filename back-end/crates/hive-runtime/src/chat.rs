@@ -76,7 +76,8 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     // persisted messages (excluding the in-flight assistant placeholder and
     // any cancelled/error turns).
     let mut history = chat_messages::list_by_thread(db.conn(), &thread_id).await?;
-    history.retain(|m| m.id != assistant_message_id && m.status != "cancelled" && m.status != "error");
+    history
+        .retain(|m| m.id != assistant_message_id && m.status != "cancelled" && m.status != "error");
     if history.len() > history_limit {
         let skip = history.len() - history_limit;
         history.drain(..skip);

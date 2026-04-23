@@ -4,6 +4,10 @@ pnpm-lock.yaml
 package-lock.json
 yarn.lock
 bun.lockb
+bun.lock
+
+# TypeScript project references incremental build info
+*.tsbuildinfo
 
 # Environment variables
 .env
