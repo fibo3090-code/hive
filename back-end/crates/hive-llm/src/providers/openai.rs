@@ -1,7 +1,10 @@
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use serde::Deserialize;
 
-use crate::{LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
+use crate::chat::{ChatRequest, StreamChunk, StreamEvent};
+use crate::sse::sse_stream;
+use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
 pub struct OpenAiProvider {
     http: reqwest::Client,
@@ -68,6 +71,118 @@ impl LlmProvider for OpenAiProvider {
         let body = response.text().await?;
         parse_models(&body)
     }
+
+    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, LlmError> {
+        let key = self.config.api_key.as_deref().ok_or(LlmError::MissingKey)?;
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.config.base_url.trim_end_matches('/')
+        );
+
+        let messages: Vec<serde_json::Value> = request
+            .messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role.as_str(),
+                    "content": m.content,
+                })
+            })
+            .collect();
+
+        let mut body = serde_json::json!({
+            "model": request.model,
+            "stream": true,
+            "messages": messages,
+            "stream_options": { "include_usage": true },
+        });
+        if let Some(t) = request.temperature {
+            body["temperature"] = serde_json::json!(t);
+        }
+        if let Some(m) = request.max_tokens {
+            body["max_tokens"] = serde_json::json!(m);
+        }
+
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(key)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::ProviderStatus {
+                status: status.as_u16(),
+                body: body_text,
+            });
+        }
+
+        let byte_stream = response.bytes_stream();
+        let sse = sse_stream(byte_stream);
+        let mapped = sse.filter_map(|item| async move {
+            match item {
+                Err(e) => Some(Err(LlmError::Http(e))),
+                Ok(msg) => parse_event(&msg).map(Ok),
+            }
+        });
+        Ok(Box::pin(mapped))
+    }
+}
+
+fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
+    if msg.data.is_empty() || msg.data == "[DONE]" {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(&msg.data).ok()?;
+
+    // `choices` absent on the final usage frame sent when stream_options.include_usage=true
+    if let Some(usage) = value.get("usage") {
+        if usage.is_object() {
+            let tokens_in = usage
+                .get("prompt_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let tokens_out = usage
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            return Some(StreamEvent::Complete {
+                tokens_in,
+                tokens_out,
+                finish_reason: None,
+            });
+        }
+    }
+
+    let choice = value.get("choices")?.get(0)?;
+    let finish = choice
+        .get("finish_reason")
+        .and_then(|r| r.as_str())
+        .map(str::to_owned);
+    let delta = choice
+        .get("delta")
+        .and_then(|d| d.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
+    if !delta.is_empty() {
+        return Some(StreamEvent::Delta(StreamChunk {
+            delta: delta.to_owned(),
+        }));
+    }
+    if finish.is_some() {
+        // OpenAI without include_usage: synthesize a Complete with zero usage.
+        return Some(StreamEvent::Complete {
+            tokens_in: 0,
+            tokens_out: 0,
+            finish_reason: finish,
+        });
+    }
+    None
 }
 
 #[cfg(test)]

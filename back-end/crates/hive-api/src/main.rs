@@ -22,16 +22,20 @@ use clap::{Parser, Subcommand};
 use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
-        agents, alerts, audit, cost_events, llm_providers, notes, notifications, projects,
-        sessions, settings, sprints, tasks, tech_debt,
+        agents, alerts, audit, chat_messages, chat_threads, cost_events, llm_providers, notes,
+        notifications, projects, sessions, settings, sprints, tasks, tech_debt,
     },
     seed::seed_demo,
     Db,
 };
 use hive_llm::{client_for, ModelInfo, ProviderConfig, ProviderKind};
+use hive_runtime::{EventBus, RuntimeEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, RwLock};
+use tokio::{
+    sync::{broadcast, Mutex, RwLock},
+    task::JoinHandle,
+};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{info, warn};
 
@@ -52,15 +56,55 @@ enum Command {
 #[derive(Clone)]
 struct AppState {
     inner: Arc<RwLock<RuntimeState>>,
-    events: broadcast::Sender<DomainEvent>,
+    events: broadcast::Sender<RuntimeEvent>,
     workspace_root: PathBuf,
     crypto: Crypto,
     #[allow(dead_code)]
     http: reqwest::Client,
     model_cache: ModelCache,
+    chat_jobs: ChatJobRegistry,
 }
 
 type ModelCache = Arc<RwLock<HashMap<String, (Instant, Vec<ModelInfo>)>>>;
+
+/// In-flight chat turns keyed by `assistant_message_id`. Holds both the
+/// cooperative cancel flag (checked inside the runner loop) and the task
+/// handle so the API can also abort the task if the flag isn't polled in
+/// time.
+#[derive(Clone, Default)]
+struct ChatJobRegistry {
+    inner: Arc<RwLock<HashMap<String, ChatJob>>>,
+}
+
+struct ChatJob {
+    cancel: Arc<Mutex<bool>>,
+    _handle: JoinHandle<()>,
+}
+
+impl ChatJobRegistry {
+    async fn insert(&self, msg_id: &str, cancel: Arc<Mutex<bool>>, handle: JoinHandle<()>) {
+        self.inner.write().await.insert(
+            msg_id.to_owned(),
+            ChatJob {
+                cancel,
+                _handle: handle,
+            },
+        );
+    }
+
+    async fn cancel(&self, msg_id: &str) -> bool {
+        let guard = self.inner.read().await;
+        if let Some(job) = guard.get(msg_id) {
+            *job.cancel.lock().await = true;
+            return true;
+        }
+        false
+    }
+
+    async fn remove(&self, msg_id: &str) {
+        self.inner.write().await.remove(msg_id);
+    }
+}
 
 #[derive(Clone)]
 struct RuntimeState {
@@ -71,11 +115,8 @@ struct RuntimeState {
     needs_setup: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct DomainEvent {
-    event: String,
-    data: Value,
-}
+// DomainEvent was renamed to hive_runtime::RuntimeEvent so the runtime
+// crate can push to the same broadcast bus without depending on hive-api.
 
 #[derive(Debug)]
 enum AppError {
@@ -239,6 +280,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         crypto,
         http,
         model_cache: Arc::new(RwLock::new(HashMap::new())),
+        chat_jobs: ChatJobRegistry::default(),
     };
 
     let app = Router::new()
@@ -343,6 +385,19 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/llm-providers/:id/models",
             get(list_llm_provider_models),
         )
+        .route(
+            "/v1/projects/:project_id/chat-threads",
+            get(list_chat_threads).post(create_chat_thread),
+        )
+        .route("/v1/chat-threads/:thread_id", get(get_chat_thread))
+        .route(
+            "/v1/chat-threads/:thread_id/messages",
+            get(list_chat_messages).post(send_chat_message),
+        )
+        .route(
+            "/v1/chat-messages/:message_id/cancel",
+            post(cancel_chat_message),
+        )
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
@@ -405,7 +460,7 @@ async fn db(state: &AppState) -> Db {
 }
 
 async fn emit(state: &AppState, event: &str, data: Value) {
-    let _ = state.events.send(DomainEvent {
+    let _ = state.events.send(RuntimeEvent {
         event: event.to_owned(),
         data,
     });
@@ -1640,4 +1695,273 @@ async fn get_audit_log(
         json!([])
     };
     Ok(Json(payload))
+}
+
+// ── Chat (Sprint 1) ──────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateChatThreadBody {
+    project_id: String,
+    agent_id: Option<String>,
+    title: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelRef {
+    provider_id: String,
+    model_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SendChatMessageBody {
+    content: String,
+    model: Option<ModelRef>,
+    system_prompt: Option<String>,
+}
+
+fn chat_thread_json(t: &hive_db::entities::chat_thread::Model) -> Value {
+    json!({
+        "id": t.id,
+        "projectId": t.project_id,
+        "agentId": t.agent_id,
+        "title": t.title,
+        "createdAt": t.created_at,
+        "updatedAt": t.updated_at,
+    })
+}
+
+fn chat_message_json(m: &hive_db::entities::chat_message::Model) -> Value {
+    json!({
+        "id": m.id,
+        "threadId": m.thread_id,
+        "role": m.role,
+        "content": m.content,
+        "toolCalls": m.tool_calls,
+        "model": m.model,
+        "providerId": m.provider_id,
+        "tokensIn": m.tokens_in,
+        "tokensOut": m.tokens_out,
+        "costCents": m.cost_cents,
+        "parentMessageId": m.parent_message_id,
+        "status": m.status,
+        "createdAt": m.created_at,
+        "updatedAt": m.updated_at,
+    })
+}
+
+async fn list_chat_threads(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let rows = chat_threads::list_by_project(database.conn(), &project_id).await?;
+    // Seed a Coordinator thread if none exist yet so the UI always has somewhere
+    // to send the first message.
+    let rows = if rows.is_empty() {
+        let seeded = chat_threads::get_or_create_for_agent(
+            database.conn(),
+            &project_id,
+            None,
+            "Coordinator",
+        )
+        .await?;
+        vec![seeded]
+    } else {
+        rows
+    };
+    let payload: Vec<Value> = rows.iter().map(chat_thread_json).collect();
+    Ok(Json(json!(payload)))
+}
+
+async fn create_chat_thread(
+    State(state): State<AppState>,
+    Json(body): Json<CreateChatThreadBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let thread = chat_threads::create(
+        database.conn(),
+        chat_threads::CreateThread {
+            project_id: body.project_id,
+            agent_id: body.agent_id,
+            title: body
+                .title
+                .unwrap_or_else(|| "Untitled thread".to_owned()),
+        },
+    )
+    .await?;
+    emit(&state, "chat.thread.created", chat_thread_json(&thread)).await;
+    Ok(Json(chat_thread_json(&thread)))
+}
+
+async fn get_chat_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let thread = chat_threads::get(database.conn(), &thread_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("chat thread {thread_id} not found")))?;
+    Ok(Json(chat_thread_json(&thread)))
+}
+
+async fn list_chat_messages(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let rows = chat_messages::list_by_thread(database.conn(), &thread_id).await?;
+    let payload: Vec<Value> = rows.iter().map(chat_message_json).collect();
+    Ok(Json(json!(payload)))
+}
+
+async fn send_chat_message(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    Json(body): Json<SendChatMessageBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let thread = chat_threads::get(database.conn(), &thread_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("chat thread {thread_id} not found")))?;
+
+    // Resolve the provider + model. If the caller didn't specify, fall back to
+    // the project-wide default in settings and then to the first connected
+    // provider with a listable model.
+    let (provider_id, model_id) = resolve_chat_target(&state, body.model.as_ref()).await?;
+    let provider_row = llm_providers::get(database.conn(), &provider_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("llm provider {provider_id} not found")))?;
+    let config = build_provider_config(&state, &provider_row).await?;
+    let kind = config.kind;
+    let provider = Arc::from(client_for(config));
+
+    // Persist the user turn.
+    let user_msg = chat_messages::insert(
+        database.conn(),
+        chat_messages::NewMessage {
+            thread_id: thread.id.clone(),
+            role: "user".into(),
+            content: body.content.clone(),
+            tool_calls: json!([]),
+            model: None,
+            provider_id: None,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_cents: 0,
+            parent_message_id: None,
+            status: "done".into(),
+        },
+    )
+    .await?;
+    emit(&state, &format!("chat.{thread_id}.message"), chat_message_json(&user_msg)).await;
+
+    // Insert the pending assistant row so the frontend can render a placeholder.
+    let assistant_row = chat_messages::insert(
+        database.conn(),
+        chat_messages::NewMessage {
+            thread_id: thread.id.clone(),
+            role: "assistant".into(),
+            content: String::new(),
+            tool_calls: json!([]),
+            model: Some(model_id.clone()),
+            provider_id: Some(provider_id.clone()),
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_cents: 0,
+            parent_message_id: Some(user_msg.id.clone()),
+            status: "pending".into(),
+        },
+    )
+    .await?;
+    emit(
+        &state,
+        &format!("chat.{thread_id}.message"),
+        chat_message_json(&assistant_row),
+    )
+    .await;
+
+    // Kick off the streaming task.
+    let cancel_flag = Arc::new(Mutex::new(false));
+    let bus = EventBus::new(state.events.clone());
+    let db_clone = database.clone();
+    let chat_jobs = state.chat_jobs.clone();
+    let assistant_id = assistant_row.id.clone();
+    let params = hive_runtime::chat::RunTurn {
+        db: db_clone,
+        bus,
+        provider,
+        provider_kind: kind,
+        provider_id: provider_id.clone(),
+        model: model_id.clone(),
+        project_id: thread.project_id.clone(),
+        thread_id: thread_id.clone(),
+        assistant_message_id: assistant_id.clone(),
+        system_prompt: body.system_prompt,
+        history_limit: 40,
+        agent_id: thread.agent_id.clone(),
+        cancel: cancel_flag.clone(),
+    };
+
+    let registry = chat_jobs.clone();
+    let assistant_for_cleanup = assistant_id.clone();
+    let handle = tokio::spawn(async move {
+        if let Err(err) = hive_runtime::chat::run_turn(params).await {
+            tracing::warn!(error = %err, "chat turn failed");
+        }
+        registry.remove(&assistant_for_cleanup).await;
+    });
+    chat_jobs.insert(&assistant_id, cancel_flag, handle).await;
+
+    Ok(Json(json!({
+        "userMessage": chat_message_json(&user_msg),
+        "assistantMessage": chat_message_json(&assistant_row),
+        "providerId": provider_id,
+        "model": model_id,
+    })))
+}
+
+async fn cancel_chat_message(
+    State(state): State<AppState>,
+    Path(message_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let cancelled = state.chat_jobs.cancel(&message_id).await;
+    Ok(Json(json!({ "ok": cancelled })))
+}
+
+async fn resolve_chat_target(
+    state: &AppState,
+    explicit: Option<&ModelRef>,
+) -> Result<(String, String), AppError> {
+    if let Some(r) = explicit {
+        return Ok((r.provider_id.clone(), r.model_id.clone()));
+    }
+
+    // Try settings["global"]["defaultModel"] = { providerId, modelId }
+    let setting = read_setting_json(state, "global", "defaultModel", Value::Null).await?;
+    if let (Some(pid), Some(mid)) = (
+        setting.get("providerId").and_then(|v| v.as_str()),
+        setting.get("modelId").and_then(|v| v.as_str()),
+    ) {
+        return Ok((pid.to_owned(), mid.to_owned()));
+    }
+
+    // Pick the first connected provider and its first model.
+    let database = db(state).await;
+    let providers = llm_providers::list(database.conn()).await?;
+    for p in providers.iter().filter(|p| p.connected) {
+        let config = build_provider_config(state, p).await?;
+        let client = client_for(config);
+        if let Ok(models) = client.list_models().await {
+            if let Some(first) = models.first() {
+                return Ok((p.id.clone(), first.id.clone()));
+            }
+        }
+    }
+
+    Err(AppError::BadRequest(
+        "no connected provider — configure one in Settings → LLM, or start Ollama".into(),
+    ))
 }
