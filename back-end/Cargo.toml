@@ -9,6 +9,8 @@ members = [
     "crates/hive-crypto",
     "crates/hive-llm",
     "crates/hive-runtime",
+    "crates/hive-sandbox",
+    "crates/hive-tools",
 ]
 
 [workspace.package]
@@ -68,3 +70,5 @@ migration = { path = "crates/hive-db/migration" }
 hive-crypto = { path = "crates/hive-crypto" }
 hive-llm = { path = "crates/hive-llm" }
 hive-runtime = { path = "crates/hive-runtime" }
+hive-sandbox = { path = "crates/hive-sandbox" }
+hive-tools = { path = "crates/hive-tools" }
