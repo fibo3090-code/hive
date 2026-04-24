@@ -20,8 +20,38 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  fmt-clippy:
-    name: fmt + clippy
+  # rustfmt output is toolchain-specific, so we only run it against a single
+  # pinned version. Running fmt on an older MSRV toolchain would flag
+  # formatting that was produced by a newer rustfmt — a bogus failure mode.
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: back-end
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
+        with:
+          toolchain: 1.94.1
+          components: rustfmt
+
+      - name: Override rust-toolchain.toml with pinned version
+        run: rustup override set 1.94.1
+
+      - name: versions
+        run: |
+          rustc --version
+          cargo fmt --version
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -31,10 +61,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Pin to the current latest stable so fmt + clippy output is
-          # reproducible across local and CI (dtolnay/rust-toolchain's
-          # `stable` resolves to whatever is current at job runtime,
-          # which can drift between local and CI).
           - rust: 1.94.1
           - rust: 1.85.0
     steps:
@@ -44,7 +70,7 @@ jobs:
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
           toolchain: ${{ matrix.rust }}
-          components: rustfmt, clippy
+          components: clippy
 
       - name: Override rust-toolchain.toml with matrix version
         run: rustup override set ${{ matrix.rust }}
@@ -54,15 +80,10 @@ jobs:
         with:
           shared-key: be-cache-${{ matrix.rust }}
 
-      - name: rustc + cargo versions
+      - name: versions
         run: |
           rustc --version
-          cargo --version
           cargo clippy --version
-          cargo fmt --version
-
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
 
       - name: cargo clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -81,7 +102,6 @@ jobs:
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
           toolchain: 1.94.1
-          components: rustfmt, clippy
 
       - name: Override rust-toolchain.toml with pinned version
         run: rustup override set 1.94.1
