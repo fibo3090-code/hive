@@ -123,3 +123,4 @@ jobs:
 
       - name: build (release profile, sanity)
         run: cargo build --workspace --release
+# trigger CI rerun
