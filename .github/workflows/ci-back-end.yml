@@ -105,22 +105,19 @@ jobs:
       - name: Override rust-toolchain.toml with pinned version
         run: rustup override set 1.94.1
 
-      - name: Cache cargo
+      # Swatinem/rust-cache already handles `target/` — a second cache
+      # action on the same path doubles the post-job upload time and was
+      # causing runs to hang past the 20 min timeout before ever reporting
+      # back. One cache is enough.
+      - name: Cache cargo + target
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           shared-key: be-cache-1.94.1
-
-      - name: Cache target directory
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: back-end/target
-          key: be-target-${{ runner.os }}-${{ hashFiles('back-end/**/Cargo.lock') }}
-          restore-keys: |
-            be-target-${{ runner.os }}-
+          # Also cache release artifacts (off by default).
+          cache-all-crates: true
 
       - name: cargo test
         run: cargo test --workspace --all-targets
 
       - name: build (release profile, sanity)
         run: cargo build --workspace --release
-# trigger CI rerun
