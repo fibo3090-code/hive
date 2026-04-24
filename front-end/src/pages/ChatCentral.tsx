@@ -12,6 +12,7 @@ import {
   useCancelChatMessage,
   type ChatMessage,
   type ChatThread,
+  type ToolCallTrace,
 } from '@/api/chat';
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { cn } from '@/lib/utils';
@@ -73,6 +74,33 @@ function formatTimestamp(iso: string): string {
 
 function centsToDollars(cents: number): string {
   return `$${(cents / 100).toFixed(cents < 100 ? 4 : 2)}`;
+}
+
+function ToolCallList({ toolCalls }: { readonly toolCalls: ToolCallTrace[] }) {
+  if (toolCalls.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-2">
+      {toolCalls.map((call, index) => (
+        <details key={`${call.tool}-${index}`} className="rounded-md border border-border bg-surface-2 px-3 py-2">
+          <summary className="cursor-pointer text-xs font-mono text-primary">
+            {call.tool}
+          </summary>
+          <div className="mt-2 space-y-2">
+            {'arguments' in call && call.arguments !== undefined && (
+              <pre className="overflow-x-auto text-micro text-muted-foreground whitespace-pre-wrap">
+                {JSON.stringify(call.arguments, null, 2)}
+              </pre>
+            )}
+            {'result' in call && call.result !== undefined && (
+              <pre className="overflow-x-auto text-micro text-muted-foreground whitespace-pre-wrap">
+                {JSON.stringify(call.result, null, 2)}
+              </pre>
+            )}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
 }
 
 export default function ChatCentral() {
@@ -139,8 +167,12 @@ export default function ChatCentral() {
   const renderMessages = useMemo<ChatMessage[]>(() => {
     return messages.map((m) => {
       const live = streaming[m.id];
-      if (live && live.content && m.status !== 'done') {
-        return { ...m, content: live.content };
+      if (live && m.status !== 'done') {
+        return {
+          ...m,
+          content: live.content || m.content,
+          toolCalls: (live.toolCalls as ToolCallTrace[] | undefined) ?? m.toolCalls,
+        };
       }
       return m;
     });
@@ -302,6 +334,7 @@ export default function ChatCentral() {
                   {body || (isStreaming ? <span className="opacity-50">…</span> : null)}
                   {isStreaming && <span className="inline-block ml-0.5 animate-pulse">▊</span>}
                 </div>
+                <ToolCallList toolCalls={message.toolCalls ?? []} />
                 {code && <CodeBlock language={code.language} code={code.code} />}
                 <div className="flex items-center gap-2 mt-1.5">
                   <span className="text-micro text-muted-foreground font-mono">{formatTimestamp(message.createdAt)}</span>

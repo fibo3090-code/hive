@@ -15,6 +15,8 @@ hive-db = { workspace = true }
 hive-crypto = { workspace = true }
 hive-llm = { workspace = true }
 hive-runtime = { workspace = true }
+hive-sandbox = { workspace = true }
+hive-search = { workspace = true }
 hive-tools = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sea-orm = { workspace = true }

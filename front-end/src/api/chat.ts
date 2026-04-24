@@ -14,12 +14,19 @@ export interface ChatThread {
 export type ChatRole = 'user' | 'assistant' | 'system' | 'tool';
 export type ChatStatus = 'pending' | 'streaming' | 'done' | 'error' | 'cancelled';
 
+export interface ToolCallTrace {
+  tool: string;
+  arguments?: unknown;
+  result?: unknown;
+  request?: unknown;
+}
+
 export interface ChatMessage {
   id: string;
   threadId: string;
   role: ChatRole;
   content: string;
-  toolCalls: unknown[];
+  toolCalls: ToolCallTrace[];
   model: string | null;
   providerId: string | null;
   tokensIn: number;
@@ -123,6 +130,7 @@ export interface StreamingState {
         tokensIn?: number;
         tokensOut?: number;
         costCents?: number;
+        toolCalls?: ToolCallTrace[];
       }
     | undefined;
 }
@@ -158,6 +166,7 @@ export function useChatStream(threadId: string | null | undefined) {
           [data.messageId]: {
             content: nextContent,
             status: 'streaming',
+            toolCalls: current?.toolCalls ?? [],
           },
         });
       } catch {
@@ -184,6 +193,7 @@ export function useChatStream(threadId: string | null | undefined) {
             tokensIn: data.tokensIn,
             tokensOut: data.tokensOut,
             costCents: data.costCents,
+            toolCalls: current?.toolCalls ?? [],
           },
         });
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
@@ -199,7 +209,11 @@ export function useChatStream(threadId: string | null | undefined) {
         const current = streamingRef.current[data.messageId];
         update({
           ...streamingRef.current,
-          [data.messageId]: { content: current?.content ?? '', status: 'cancelled' },
+          [data.messageId]: {
+            content: current?.content ?? '',
+            status: 'cancelled',
+            toolCalls: current?.toolCalls ?? [],
+          },
         });
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
       } catch {
@@ -214,9 +228,74 @@ export function useChatStream(threadId: string | null | undefined) {
         const current = streamingRef.current[data.messageId];
         update({
           ...streamingRef.current,
-          [data.messageId]: { content: current?.content ?? '', status: 'error' },
+          [data.messageId]: {
+            content: current?.content ?? '',
+            status: 'error',
+            toolCalls: current?.toolCalls ?? [],
+          },
         });
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const onToolCall = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          threadId: string;
+          messageId: string;
+          tool: string;
+          args?: unknown;
+        };
+        if (data.threadId !== threadId) return;
+        const current = streamingRef.current[data.messageId];
+        const toolCalls = [...(current?.toolCalls ?? []), { tool: data.tool, arguments: data.args }];
+        update({
+          ...streamingRef.current,
+          [data.messageId]: {
+            content: current?.content ?? '',
+            status: current?.status ?? 'streaming',
+            tokensIn: current?.tokensIn,
+            tokensOut: current?.tokensOut,
+            costCents: current?.costCents,
+            toolCalls,
+          },
+        });
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const onToolResult = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          threadId: string;
+          messageId: string;
+          tool: string;
+          result?: unknown;
+        };
+        if (data.threadId !== threadId) return;
+        const current = streamingRef.current[data.messageId];
+        const toolCalls = [...(current?.toolCalls ?? [])];
+        const index = [...toolCalls].reverse().findIndex((entry) => entry.tool === data.tool && entry.result === undefined);
+        if (index >= 0) {
+          const actualIndex = toolCalls.length - 1 - index;
+          toolCalls[actualIndex] = { ...toolCalls[actualIndex], result: data.result };
+        } else {
+          toolCalls.push({ tool: data.tool, result: data.result });
+        }
+        update({
+          ...streamingRef.current,
+          [data.messageId]: {
+            content: current?.content ?? '',
+            status: current?.status ?? 'streaming',
+            tokensIn: current?.tokensIn,
+            tokensOut: current?.tokensOut,
+            costCents: current?.costCents,
+            toolCalls,
+          },
+        });
       } catch {
         /* ignore */
       }
@@ -231,6 +310,8 @@ export function useChatStream(threadId: string | null | undefined) {
     source.addEventListener(`chat.${threadId}.cancelled`, onCancelled as EventListener);
     source.addEventListener(`chat.${threadId}.error`, onError as EventListener);
     source.addEventListener(`chat.${threadId}.message`, onMessage as EventListener);
+    source.addEventListener(`chat.${threadId}.tool_call`, onToolCall as EventListener);
+    source.addEventListener(`chat.${threadId}.tool_result`, onToolResult as EventListener);
 
     return () => {
       source.close();

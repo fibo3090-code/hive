@@ -90,6 +90,21 @@ pub async fn finalize(
     model.update(db).await
 }
 
+pub async fn set_tool_calls(
+    db: &DatabaseConnection,
+    id: &str,
+    tool_calls: serde_json::Value,
+) -> Result<Model, DbErr> {
+    let existing = Entity::find_by_id(id.to_owned())
+        .one(db)
+        .await?
+        .ok_or(DbErr::RecordNotFound(id.to_owned()))?;
+    let mut model: ActiveModel = existing.into();
+    model.tool_calls = Set(tool_calls);
+    model.updated_at = Set(now_rfc3339());
+    model.update(db).await
+}
+
 pub async fn set_status(db: &DatabaseConnection, id: &str, status: &str) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .one(db)

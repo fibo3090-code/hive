@@ -10,6 +10,7 @@ chrono = { workspace = true }
 futures-util = { workspace = true }
 hive-db = { workspace = true }
 hive-llm = { workspace = true }
+hive-tools = { workspace = true }
 sea-orm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

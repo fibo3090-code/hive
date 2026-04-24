@@ -30,7 +30,12 @@ use hive_db::{
 };
 use hive_llm::{client_for, ModelInfo, ProviderConfig, ProviderKind};
 use hive_runtime::{EventBus, RuntimeEvent};
-use hive_tools::default_names as default_tool_names;
+use hive_sandbox::LocalFsSandbox;
+use hive_search::{SearxNgProvider, TavilyProvider};
+use hive_tools::{
+    default_names as default_tool_names, register_defaults, register_web_search, ToolContext,
+    ToolRegistry,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
@@ -613,6 +618,88 @@ async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppEr
         "tavilyMaskedKey": masked_key,
         "enabledTools": enabled_tools,
     }))
+}
+
+async fn enabled_tools_for_turn(state: &AppState) -> Result<Vec<String>, AppError> {
+    let settings = current_tools_sandbox_settings(state).await?;
+    Ok(settings
+        .get("enabledTools")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default())
+}
+
+async fn build_tooling(
+    state: &AppState,
+    project_id: &str,
+    agent_id: Option<String>,
+    message_id: &str,
+    thread_id: &str,
+) -> Result<Option<(ToolRegistry, ToolContext)>, AppError> {
+    let enabled_tools = enabled_tools_for_turn(state).await?;
+    if enabled_tools.is_empty() {
+        return Ok(None);
+    }
+
+    let data_dir = state.inner.read().await.data_dir.clone();
+    let workspace_root = workspace_dir(&data_dir, project_id);
+    let sandbox = Arc::new(
+        LocalFsSandbox::new(&workspace_root)
+            .map_err(|e| AppError::Internal(format!("init workspace sandbox: {e}")))?,
+    );
+
+    let mut registry = ToolRegistry::new();
+    register_defaults(&mut registry);
+
+    let search_settings = current_tools_sandbox_settings(state).await?;
+    let provider = search_settings
+        .get("searchProvider")
+        .and_then(Value::as_str)
+        .unwrap_or("searxng");
+    let searxng_url = search_settings
+        .get("searxngUrl")
+        .and_then(Value::as_str)
+        .unwrap_or("http://localhost:8888")
+        .to_owned();
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| AppError::Internal(format!("build search client: {e}")))?;
+
+    let search_provider: Arc<dyn hive_search::SearchProvider> = if provider == "tavily" {
+        if let Some(ciphertext) = read_tavily_ciphertext(state).await? {
+            let key = String::from_utf8(
+                state
+                    .crypto
+                    .open(&ciphertext)
+                    .map_err(|e| AppError::Internal(format!("decrypt tavily key: {e}")))?,
+            )
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+            Arc::new(TavilyProvider::new(http.clone(), key))
+        } else {
+            Arc::new(SearxNgProvider::new(http.clone(), searxng_url))
+        }
+    } else {
+        Arc::new(SearxNgProvider::new(http.clone(), searxng_url))
+    };
+    register_web_search(&mut registry, search_provider);
+    let registry = registry.filtered(&enabled_tools);
+
+    let mut context = ToolContext::new(project_id.to_owned(), sandbox);
+    if let Some(agent_id) = agent_id {
+        context = context.with_agent(agent_id);
+    }
+    context = context
+        .with_thread(thread_id.to_owned())
+        .with_message(message_id.to_owned());
+
+    Ok(Some((registry, context)))
 }
 
 fn cents_to_dollars(cents: i64) -> i64 {
@@ -2136,8 +2223,23 @@ async fn send_chat_message(
         system_prompt: body.system_prompt,
         history_limit: 40,
         agent_id: thread.agent_id.clone(),
+        tool_registry: None,
+        tool_context: None,
         cancel: cancel_flag,
     };
+    let mut params = params;
+    if let Some((registry, context)) = build_tooling(
+        &state,
+        &thread.project_id,
+        thread.agent_id.clone(),
+        &assistant_id,
+        &thread_id,
+    )
+    .await?
+    {
+        params.tool_registry = Some(registry);
+        params.tool_context = Some(context);
+    }
 
     let handle = tokio::spawn(async move {
         if let Err(err) = hive_runtime::chat::run_turn(params).await {
