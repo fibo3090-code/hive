@@ -84,7 +84,10 @@ impl LlmProvider for AnthropicProvider {
             match msg.role {
                 ChatRole::System => {
                     system = Some(match system.take() {
-                        Some(prev) => format!("{prev}\n{}", msg.content),
+                        Some(prev) => {
+                            let content = &msg.content;
+                            format!("{prev}\n{content}")
+                        }
                         None => msg.content.clone(),
                     });
                 }

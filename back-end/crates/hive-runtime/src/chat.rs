@@ -106,7 +106,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     // Mark the assistant message as streaming.
     let _ = chat_messages::set_status(db.conn(), &assistant_message_id, "streaming").await?;
     bus.emit(
-        format!("chat.{}.streaming", thread_id),
+        format!("chat.{thread_id}.streaming"),
         json!({ "threadId": thread_id, "messageId": assistant_message_id }),
     );
 
@@ -126,7 +126,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
             )
             .await;
             bus.emit(
-                format!("chat.{}.error", thread_id),
+                format!("chat.{thread_id}.error"),
                 json!({
                     "threadId": thread_id,
                     "messageId": assistant_message_id,
@@ -156,7 +156,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
             )
             .await?;
             bus.emit(
-                format!("chat.{}.cancelled", thread_id),
+                format!("chat.{thread_id}.cancelled"),
                 json!({ "threadId": thread_id, "messageId": assistant_message_id }),
             );
             return Ok(());
@@ -169,7 +169,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
             Ok(StreamEvent::Delta(chunk)) => {
                 accumulated.push_str(&chunk.delta);
                 bus.emit(
-                    format!("chat.{}.token", thread_id),
+                    format!("chat.{thread_id}.token"),
                     json!({
                         "threadId": thread_id,
                         "messageId": assistant_message_id,
@@ -199,7 +199,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                 )
                 .await?;
                 bus.emit(
-                    format!("chat.{}.error", thread_id),
+                    format!("chat.{thread_id}.error"),
                     json!({
                         "threadId": thread_id,
                         "messageId": assistant_message_id,
@@ -244,7 +244,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     .await;
 
     bus.emit(
-        format!("chat.{}.complete", thread_id),
+        format!("chat.{thread_id}.complete"),
         json!({
             "threadId": thread_id,
             "messageId": assistant_message_id,
