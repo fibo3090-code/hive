@@ -1,7 +1,9 @@
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use serde::Deserialize;
 
-use crate::{LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
+use crate::chat::{ChatRequest, StreamChunk, StreamEvent};
+use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
 pub struct OllamaProvider {
     http: reqwest::Client,
@@ -91,6 +93,122 @@ impl LlmProvider for OllamaProvider {
         let body = response.text().await?;
         parse_models(&body)
     }
+
+    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, LlmError> {
+        let url = format!("{}/api/chat", self.config.base_url.trim_end_matches('/'));
+
+        let messages: Vec<serde_json::Value> = request
+            .messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role.as_str(),
+                    "content": m.content,
+                })
+            })
+            .collect();
+
+        let mut options = serde_json::Map::new();
+        if let Some(t) = request.temperature {
+            options.insert("temperature".into(), serde_json::json!(t));
+        }
+        if let Some(m) = request.max_tokens {
+            options.insert("num_predict".into(), serde_json::json!(m));
+        }
+
+        let mut body = serde_json::json!({
+            "model": request.model,
+            "messages": messages,
+            "stream": true,
+        });
+        if !options.is_empty() {
+            body["options"] = serde_json::Value::Object(options);
+        }
+
+        let response = self
+            .http
+            .post(url)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(LlmError::ProviderStatus {
+                status: status.as_u16(),
+                body: body_text,
+            });
+        }
+
+        let byte_stream = response.bytes_stream();
+        let mapped = async_stream::stream! {
+            let mut buffer = String::new();
+            let mut body = Box::pin(byte_stream);
+            loop {
+                match body.next().await {
+                    Some(Ok(chunk)) => {
+                        if let Ok(text) = std::str::from_utf8(&chunk) {
+                            buffer.push_str(text);
+                        } else {
+                            buffer.push_str(&String::from_utf8_lossy(&chunk));
+                        }
+                        while let Some(idx) = buffer.find('\n') {
+                            let line = buffer[..idx].trim().to_owned();
+                            buffer.drain(..=idx);
+                            if line.is_empty() {
+                                continue;
+                            }
+                            if let Some(event) = parse_line(&line) {
+                                yield Ok(event);
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        yield Err(LlmError::Http(e));
+                        break;
+                    }
+                    None => break,
+                }
+            }
+        };
+        Ok(Box::pin(mapped))
+    }
+}
+
+fn parse_line(line: &str) -> Option<StreamEvent> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let done = value.get("done").and_then(|d| d.as_bool()).unwrap_or(false);
+    if done {
+        let tokens_in = value
+            .get("prompt_eval_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let tokens_out = value
+            .get("eval_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let finish = value
+            .get("done_reason")
+            .and_then(|r| r.as_str())
+            .map(str::to_owned);
+        return Some(StreamEvent::Complete {
+            tokens_in,
+            tokens_out,
+            finish_reason: finish,
+        });
+    }
+    let text = value
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())?;
+    if text.is_empty() {
+        return None;
+    }
+    Some(StreamEvent::Delta(StreamChunk {
+        delta: text.to_owned(),
+    }))
 }
 
 #[cfg(test)]

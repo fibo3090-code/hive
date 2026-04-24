@@ -5,13 +5,11 @@ on:
     branches: [main]
     paths:
       - 'front-end/**'
-      - '!.github/**'
-      - '!.*.md'
+      - '.github/workflows/ci-front-end.yml'
   pull_request:
     paths:
       - 'front-end/**'
-      - '!.github/**'
-      - '!.*.md'
+      - '.github/workflows/ci-front-end.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,21 +35,15 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e5ca096d7e2977260632500919351326ea # v2.0.1
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ matrix.bun-version }}
 
-      - name: Get deps cache key
-        id: cache-key
-        run: |
-          hash="${{ hashFiles('front-end/bun.lockb', 'front-end/package.json') }}"
-          echo "value=$hash" >> $GITHUB_OUTPUT
-
       - name: Cache dependencies
-        uses: actions/cache@d4323d4df104b026a6aa633fdb11d77c138f676c # v4.2.2
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: front-end/node_modules
-          key: fe-deps-${{ runner.os }}-${{ matrix.bun-version }}-${{ steps.cache-key.outputs.value }}
+          key: fe-deps-${{ runner.os }}-${{ matrix.bun-version }}-${{ hashFiles('front-end/package.json') }}
           restore-keys: |
             fe-deps-${{ runner.os }}-${{ matrix.bun-version }}-
             fe-deps-${{ runner.os }}-
@@ -76,43 +68,24 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e5ca096d7e2977260632500919351326ea # v2.0.1
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
-      - name: Get deps cache key
-        id: cache-key
-        run: |
-          hash="${{ hashFiles('front-end/bun.lockb', 'front-end/package.json') }}"
-          echo "value=$hash" >> $GITHUB_OUTPUT
-
-      - name: Get build cache key
-        run: |
-          hash="${{ hashFiles('front-end/src/**', 'front-end/public/**', 'front-end/index.html') }}"
-          echo "value=$hash" >> $GITHUB_OUTPUT
-
       - name: Cache dependencies
-        uses: actions/cache@d4323d4df104b026a6aa633fdb11d77c138f676c # v4.2.2
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: front-end/node_modules
-          key: fe-deps-${{ runner.os }}-latest-${{ steps.cache-key.outputs.value }}
+          key: fe-deps-${{ runner.os }}-latest-${{ hashFiles('front-end/package.json') }}
           restore-keys: |
             fe-deps-${{ runner.os }}-latest-
             fe-deps-${{ runner.os }}-
 
-      - name: Restore build artifact
-        if: github.event_name == 'pull_request'
-        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372fd86344c # v4.1.9
-        with:
-          name: dist
-          path: front-end/dist
-
       - name: Cache build
-        uses: actions/cache@d4323d4df104b026a6aa633fdb11d77c138f676c # v4.2.2
-        if: github.event_name != 'pull_request'
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: front-end/dist
-          key: fe-build-${{ runner.os }}-${{ steps.cache-key.outputs.value }}
+          key: fe-build-${{ runner.os }}-${{ hashFiles('front-end/src/**', 'front-end/public/**', 'front-end/index.html', 'front-end/package.json') }}
           restore-keys: |
             fe-build-${{ runner.os }}-
 
@@ -121,14 +94,6 @@ jobs:
 
       - name: Build
         run: bun run build
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea23f011e825229d05030244c # v4.6.1
-        with:
-          name: dist
-          path: front-end/dist
-          retention-days: 1
-          if-no-files-found: error
 
       - name: Test
         run: bun run test

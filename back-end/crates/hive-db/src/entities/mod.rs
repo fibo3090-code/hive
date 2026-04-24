@@ -1,6 +1,8 @@
 pub mod agent;
 pub mod alert;
 pub mod audit_log;
+pub mod chat_message;
+pub mod chat_thread;
 pub mod cost_event;
 pub mod hive_mind_note;
 pub mod integration;

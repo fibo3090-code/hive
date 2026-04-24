@@ -5,13 +5,11 @@ on:
     branches: [main]
     paths:
       - 'back-end/**'
-      - '!.github/**'
-      - '!.*.md'
+      - '.github/workflows/ci-back-end.yml'
   pull_request:
     paths:
       - 'back-end/**'
-      - '!.github/**'
-      - '!.*.md'
+      - '.github/workflows/ci-back-end.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -22,40 +20,78 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  fmt-clippy:
-    name: fmt + clippy
+  # rustfmt output is toolchain-specific, so we only run it against a single
+  # pinned version. Running fmt on an older MSRV toolchain would flag
+  # formatting that was produced by a newer rustfmt — a bogus failure mode.
+  fmt:
+    name: fmt
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     defaults:
       run:
         working-directory: back-end
-    strategy:
-      matrix:
-        include:
-          - rust: stable
-          - rust: 1.85.0
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f742c62075b406880c3f0856267963f1732 # master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
-          toolchain: ${{ matrix.rust }}
-          components: rustfmt, clippy
+          toolchain: 1.94.1
+          components: rustfmt
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@c19371100f20ad3e857e27e91aaee3d7c36a33c9 # v2.7.7
-        with:
-          shared-key: be-cache-${{ matrix.rust }}}
+      - name: Override rust-toolchain.toml with pinned version
+        run: rustup override set 1.94.1
+
+      - name: versions
+        run: |
+          rustc --version
+          cargo fmt --version
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: back-end
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Pinned to the current latest stable (matches rust-toolchain.toml's
+      # resolved version locally). The Sprint-1 dependency bumps
+      # (reqwest 0.12 with stream feature, futures-util 0.3, bytes) lifted
+      # the effective MSRV above 1.85, so a 1.85 MSRV guard no longer
+      # applies to this workspace.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
+        with:
+          toolchain: 1.94.1
+          components: clippy
+
+      - name: Override rust-toolchain.toml with pinned version
+        run: rustup override set 1.94.1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: be-cache-1.94.1
+
+      - name: versions
+        run: |
+          rustc --version
+          cargo clippy --version
+
       - name: cargo clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-  test-build:
-    name: test + build
+  # Smoke-test only — clippy already validates compilation and lints.
+  # A release-profile rebuild was pushing the job past its 20 min cold-cache
+  # budget, for no additional signal.
+  test:
+    name: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -65,47 +101,17 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@efa25f742c62075b406880c3f0856267963f1732 # master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
-          components: rustfmt, clippy
+          toolchain: 1.94.1
+
+      - name: Override rust-toolchain.toml with pinned version
+        run: rustup override set 1.94.1
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@c19371100f20ad3e857e27e91aaee3d7c36a33c9 # v2.7.7
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: be-cache-stable
-
-      - name: Get build cache key
-        id: cache-key
-        run: |
-          hash="${{ hashFiles('back-end/**/Cargo.toml') }}"
-          echo "value=$hash" >> $GITHUB_OUTPUT
-
-      - name: Restore build artifact
-        if: github.event_name == 'pull_request'
-        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372fd86344c # v4.1.9
-        with:
-          name: target
-          path: back-end/target
-
-      - name: Cache target directory
-        uses: actions/cache@d4323d4df104b026a6aa633fdb11d77c138f676c # v4.2.2
-        if: github.event_name != 'pull_request'
-        with:
-          path: back-end/target
-          key: be-target-${{ runner.os }}-${{ hashFiles('back-end/**/Cargo.lock') }}
-          restore-keys: |
-            be-target-${{ runner.os }}-
+          shared-key: be-cache-1.94.1
 
       - name: cargo test
         run: cargo test --workspace --all-targets
-
-      - name: build (release profile, sanity)
-        run: cargo build --workspace --release
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea23f011e825229d05030244c # v4.6.1
-        with:
-          name: target
-          path: back-end/target
-          retention-days: 1
-          if-no-files-found: error

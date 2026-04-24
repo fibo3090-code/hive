@@ -969,6 +969,7 @@ dependencies = [
  "hive-crypto",
  "hive-db",
  "hive-llm",
+ "hive-runtime",
  "reqwest",
  "sea-orm",
  "serde",
@@ -1024,14 +1025,36 @@ name = "hive-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "async-trait",
+ "bytes",
  "chrono",
  "futures-core",
+ "futures-util",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "hive-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "hive-db",
+ "hive-llm",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
  "tracing",
 ]
 

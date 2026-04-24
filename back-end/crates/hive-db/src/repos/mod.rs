@@ -1,6 +1,8 @@
 pub mod agents;
 pub mod alerts;
 pub mod audit;
+pub mod chat_messages;
+pub mod chat_threads;
 pub mod cost_events;
 pub mod llm_providers;
 pub mod notes;

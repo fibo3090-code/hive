@@ -1,13 +1,19 @@
 //! LLM provider abstraction + clients.
 //!
 //! Sprint 0 scope: provider registry, `list_models` and `test_connection`.
-//! Streaming chat completions land in Sprint 1.
+//! Sprint 1 adds streaming text completions via `chat_stream`.
 
+pub mod chat;
+pub mod pricing;
 pub mod providers;
+pub mod sse;
 
-use std::{fmt, str::FromStr};
+pub use chat::{ChatMessage, ChatRequest, ChatRole, StreamChunk, StreamEvent};
+
+use std::{fmt, pin::Pin, str::FromStr};
 
 use async_trait::async_trait;
+use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -122,6 +128,8 @@ impl ProviderConfig {
     }
 }
 
+pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>;
+
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
@@ -139,6 +147,15 @@ pub trait LlmProvider: Send + Sync {
                 sample_models: vec![],
             },
         }
+    }
+
+    /// Run a streaming chat completion. Default implementation returns an
+    /// `Unsupported` error — providers that support streaming override this.
+    async fn chat_stream(&self, _request: ChatRequest) -> Result<ChatStream, LlmError> {
+        Err(LlmError::Unsupported(format!(
+            "{} does not implement chat_stream",
+            self.kind().as_str()
+        )))
     }
 }
 
