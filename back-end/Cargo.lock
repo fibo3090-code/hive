@@ -970,6 +970,7 @@ dependencies = [
  "hive-db",
  "hive-llm",
  "hive-runtime",
+ "hive-tools",
  "reqwest",
  "sea-orm",
  "serde",

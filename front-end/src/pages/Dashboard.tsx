@@ -39,6 +39,7 @@ const statusTaskColors: Record<string, string> = {
 
 const commitFeed: Array<{ hash: string; message: string; author: string; time: string }> = [];
 const activityIcons = { Bot, GitCommit, AlertTriangle, TestTube2, FileText, DollarSign, Eye } as const;
+type ActivityFeedEntry = ActivityFeedItem & { activityIcon: LucideIcon };
 
 /* ─── Token Usage Timeline ─── */
 const tokenTimelineData = [
@@ -230,10 +231,10 @@ export default function Dashboard() {
 
   const budgetUsed = session.budgetUsed;
   const budgetTotal = session.budgetTotal;
-  const budgetPct = Math.round((budgetUsed / budgetTotal) * 100);
-  const activityFeed: Array<ActivityFeedItem & { icon: LucideIcon }> = activityFeedRaw.map((item) => ({
+  const budgetPct = budgetTotal > 0 ? Math.round((budgetUsed / budgetTotal) * 100) : 0;
+  const activityFeed: ActivityFeedEntry[] = activityFeedRaw.map((item) => ({
     ...item,
-    icon: activityIcons[item.icon as keyof typeof activityIcons] ?? Bot,
+    activityIcon: activityIcons[item.icon as keyof typeof activityIcons] ?? Bot,
   }));
   const displayedActivity = showMoreActivity ? activityFeed : activityFeed.slice(0, 5);
   const specCompletion = activeProject?.specCompletion ?? 73;
@@ -422,7 +423,7 @@ export default function Dashboard() {
                     <span className={cn('text-sm flex-1 truncate', task.status === 'completed' && 'line-through text-muted-foreground')}>{task.title}</span>
                     <span className={cn('text-micro px-1.5 py-0.5 rounded', taskPriorityColor)}>{task.priority}</span>
                     <span className="text-xs text-muted-foreground">{task.assignee}</span>
-                    <span className="text-micro font-mono text-muted-foreground">{(task.estimatedTokens / 1000).toFixed(0)}k tok</span>
+                    <span className="text-micro font-mono text-muted-foreground">{((task.estimatedTokens ?? 0) / 1000).toFixed(0)}k tok</span>
                   </div>
                 );
               })}
@@ -465,6 +466,7 @@ export default function Dashboard() {
             </div>
             <div className="p-3 space-y-2 max-h-[360px] overflow-auto scrollbar-thin">
               {agents.map((agent) => {
+                const qualityScore = agent.qualityScore ?? 0;
                 const agentBorderIfPaused = agent.status === 'paused' ? 'border-warning/30' : 'border-border';
                 const agentBorderIfBlocked = agent.status === 'blocked' ? 'border-destructive/30' : agentBorderIfPaused;
                 const agentBorderColor = agent.status === 'working' ? 'border-success/30' : agentBorderIfBlocked;
@@ -478,8 +480,8 @@ export default function Dashboard() {
                   </div>
                   <p className="text-xs text-muted-foreground truncate mb-2">{agent.currentTask}</p>
                   <div className="flex items-center gap-2">
-                    <ConfidenceBar value={agent.qualityScore} className="flex-shrink-0" />
-                    <span className="text-micro font-mono text-muted-foreground">{agent.qualityScore}%</span>
+                    <ConfidenceBar value={qualityScore} className="flex-shrink-0" />
+                    <span className="text-micro font-mono text-muted-foreground">{qualityScore}%</span>
                   </div>
                 </motion.div>
                 );
@@ -502,12 +504,12 @@ export default function Dashboard() {
         </div>
         <div className="divide-y divide-border">
           {displayedActivity.map((item) => {
-            const Icon = item.icon;
+            const Icon = item.activityIcon;
             return (
               <div key={item.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2/50 transition-colors cursor-pointer">
                 <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                <span className="text-sm flex-1">{item.text}</span>
-                <span className="text-micro text-muted-foreground">{item.time}</span>
+                <span className="text-sm flex-1">{item.text ?? item.title ?? 'Activity item'}</span>
+                <span className="text-micro text-muted-foreground">{item.time ?? item.createdAt ?? 'just now'}</span>
               </div>
             );
           })}

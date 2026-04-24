@@ -1,17 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Bot, Check, Dna, Hexagon, Loader2, Plus, Sparkles } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useAgentBlueprintsData } from '@/api/queries/useServerData';
-import { useLlmProviders } from '@/api/llm';
 import { api } from '@/api/client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
+import { useWorkspace } from '@/context/WorkspaceContext';
 import { toast } from 'sonner';
 import type { AgentBlueprint } from '@/types/domain';
-
-type ConversationStep = { question: string; options: readonly string[] };
 
 function DNAViewer({
   dna,
@@ -29,7 +28,7 @@ function DNAViewer({
       <DialogContent className="max-w-md bg-card border-border">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Dna className="h-5 w-5 text-primary" /> {name} — DNA Profile
+            <Dna className="h-5 w-5 text-primary" /> {name} - DNA Profile
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-4">
@@ -60,30 +59,30 @@ function DNAViewer({
   );
 }
 
+const roles = ['Frontend', 'Backend', 'Testing', 'DevOps', 'Security', 'Documentation', 'Custom'] as const;
+const tiers = ['Local', 'Hybrid', 'Cloud'] as const;
+const autonomyLevels = ['Low', 'Medium', 'High'] as const;
+
 export default function AgentForge() {
   const queryClient = useQueryClient();
   const { activeProject } = useHiveData();
   const { data: blueprints = [] } = useAgentBlueprintsData();
-  const { data: llmProviders = [] } = useLlmProviders();
-  const llmOptions = useMemo(() => {
-    const connected = llmProviders.filter((p) => p.connected || p.kind === 'ollama');
-    return connected.length > 0 ? connected.map((p) => p.name) : ['Ollama'];
-  }, [llmProviders]);
-  const conversationSteps = useMemo<readonly ConversationStep[]>(
-    () => [
-      { question: 'What role should this agent fill?', options: ['Frontend', 'Backend', 'Testing', 'DevOps', 'Security', 'Documentation', 'Custom'] },
-      { question: 'Which LLM should power this agent?', options: llmOptions },
-      { question: 'What sovereignty tier?', options: ['Local', 'Hybrid', 'Cloud'] },
-      { question: 'How autonomous should it be?', options: ['Low', 'Medium', 'High'] },
-    ],
-    [llmOptions],
-  );
+  const { defaultModel } = useWorkspace();
+
   const [tab, setTab] = useState<'blueprints' | 'create'>('blueprints');
   const [dnaTarget, setDnaTarget] = useState<AgentBlueprint | null>(null);
-  const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<string[]>([]);
   const [created, setCreated] = useState(false);
   const [agentName, setAgentName] = useState('');
+  const [role, setRole] = useState<string>(roles[0]);
+  const [model, setModel] = useState<ModelSelection | null>(defaultModel);
+  const [tier, setTier] = useState<string>(tiers[1]);
+  const [autonomy, setAutonomy] = useState<string>(autonomyLevels[1]);
+
+  useEffect(() => {
+    if (!model?.modelId && defaultModel?.modelId) {
+      setModel(defaultModel);
+    }
+  }, [defaultModel, model]);
 
   const createAgent = useMutation({
     mutationFn: (body: { name: string; role: string; model: string; status?: string }) =>
@@ -100,31 +99,49 @@ export default function AgentForge() {
     () =>
       created
         ? {
-            role: answers[0] ?? 'Custom',
-            model: answers[1] ?? 'GPT-4o',
-            tier: answers[2] ?? 'Hybrid',
-            autonomy: answers[3] ?? 'Medium',
+            role,
+            model: model?.modelId ?? 'Unknown',
+            tier,
+            autonomy,
           }
         : null,
-    [answers, created]
+    [autonomy, created, model?.modelId, role, tier]
   );
 
-  const handleAnswer = (answer: string) => {
-    const next = [...answers, answer];
-    setAnswers(next);
-    if (step < conversationSteps.length - 1) {
-      setStep((current) => current + 1);
-    }
+  const resetCreator = () => {
+    setCreated(false);
+    setAgentName('');
+    setRole(roles[0]);
+    setModel(defaultModel);
+    setTier(tiers[1]);
+    setAutonomy(autonomyLevels[1]);
+  };
+
+  const applyBlueprint = (blueprint: AgentBlueprint) => {
+    setTab('create');
+    setCreated(false);
+    setAgentName(blueprint.name);
+    setRole(blueprint.role);
+    setModel(defaultModel);
+    setTier('Hybrid');
+    setAutonomy('Medium');
   };
 
   const handleCreate = async () => {
-    if (!agentName.trim()) return;
+    if (!agentName.trim()) {
+      toast.error('Agent name is required');
+      return;
+    }
+    if (!model?.modelId) {
+      toast.error('Select a model');
+      return;
+    }
 
     try {
       await createAgent.mutateAsync({
         name: agentName.trim(),
-        role: answers[0] ?? 'Custom',
-        model: answers[1] ?? 'GPT-4o',
+        role,
+        model: model.modelId,
         status: 'idle',
       });
       toast.success(`${agentName.trim()} has been forged`);
@@ -132,13 +149,6 @@ export default function AgentForge() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Unable to forge agent');
     }
-  };
-
-  const resetCreator = () => {
-    setStep(0);
-    setAnswers([]);
-    setCreated(false);
-    setAgentName('');
   };
 
   return (
@@ -200,12 +210,7 @@ export default function AgentForge() {
                       <Dna className="h-3 w-3" /> DNA
                     </button>
                     <button
-                      onClick={() => {
-                        setTab('create');
-                        setAgentName(blueprint.name);
-                        setAnswers([blueprint.role, blueprint.model, 'Hybrid', 'Medium']);
-                        setStep(conversationSteps.length - 1);
-                      }}
+                      onClick={() => applyBlueprint(blueprint)}
                       className="flex items-center gap-1 text-micro text-muted-foreground hover:text-primary ml-auto"
                     >
                       <Bot className="h-3 w-3" /> Use Blueprint
@@ -218,77 +223,115 @@ export default function AgentForge() {
         )}
 
         {tab === 'create' && (
-          <div className="max-w-xl space-y-6">
-            <h2 className="text-lg font-semibold">Create Agent</h2>
-            <p className="text-sm text-muted-foreground">Answer a few questions to configure your new agent.</p>
-
-            <div className="space-y-4">
-              {conversationSteps.slice(0, step + 1).map((item, index) => (
-                <motion.div key={item.question} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-2">
-                  <div className="flex gap-3">
-                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
-                      <Hexagon className="h-4 w-4 text-primary" />
-                    </div>
-                    <div className="rounded-lg bg-card border border-border px-4 py-2.5">
-                      <span className="text-sm">{item.question}</span>
-                    </div>
-                  </div>
-                  {answers[index] ? (
-                    <div className="flex justify-end">
-                      <div className="rounded-lg bg-primary/10 px-4 py-2.5">
-                        <span className="text-sm">{answers[index]}</span>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-wrap gap-2 ml-10">
-                      {item.options.map((option) => (
-                        <button
-                          key={option}
-                          onClick={() => handleAnswer(option)}
-                          className="rounded-md border border-border bg-surface-2 px-3 py-1.5 text-xs hover:border-primary/40 hover:text-primary transition-colors"
-                        >
-                          {option}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </motion.div>
-              ))}
-
-              {answers.length === conversationSteps.length && !created && (
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3 ml-10">
-                  <input
-                    value={agentName}
-                    onChange={(event) => setAgentName(event.target.value)}
-                    placeholder="Agent name (e.g. Widget Builder)"
-                    className="w-full h-9 rounded-md border border-border bg-surface-2 px-3 text-sm"
-                  />
-                  <button
-                    onClick={() => void handleCreate()}
-                    disabled={!agentName.trim() || createAgent.isPending || !activeProject}
-                    className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                  >
-                    {createAgent.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                    {createAgent.isPending ? 'Forging agent...' : 'Forge Agent'}
-                  </button>
-                </motion.div>
-              )}
-
-              {created && createdAgentSummary && (
-                <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="rounded-lg border border-success/40 bg-success/5 p-4 ml-10">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Check className="h-5 w-5 text-success" />
-                    <span className="text-sm font-semibold text-success">{agentName} has been forged</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Role: {createdAgentSummary.role} · Model: {createdAgentSummary.model} · Tier: {createdAgentSummary.tier} · Autonomy: {createdAgentSummary.autonomy}
-                  </p>
-                  <button onClick={resetCreator} className="text-xs text-primary hover:underline mt-2">
-                    Create another
-                  </button>
-                </motion.div>
-              )}
+          <div className="max-w-2xl space-y-6">
+            <div>
+              <h2 className="text-lg font-semibold">Create Agent</h2>
+              <p className="text-sm text-muted-foreground">Configure the role, live model target, sovereignty tier, and autonomy in one pass.</p>
             </div>
+
+            <div className="rounded-xl border border-border bg-card p-5 space-y-5">
+              <div>
+                <label htmlFor="agent-name" className="text-xs font-medium mb-1.5 block">Agent Name</label>
+                <input
+                  id="agent-name"
+                  value={agentName}
+                  onChange={(event) => setAgentName(event.target.value)}
+                  placeholder="Agent name (e.g. Widget Builder)"
+                  className="w-full h-10 rounded-md border border-border bg-surface-2 px-3 text-sm"
+                />
+              </div>
+
+              <div>
+                <span className="text-xs font-medium mb-1.5 block">Role</span>
+                <div className="flex flex-wrap gap-2">
+                  {roles.map((option) => (
+                    <button
+                      key={option}
+                      onClick={() => setRole(option)}
+                      className={cn(
+                        'rounded-md border px-3 py-1.5 text-xs transition-colors',
+                        role === option ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <span className="text-xs font-medium mb-1.5 block">Model</span>
+                <ModelPicker value={model} onChange={setModel} />
+              </div>
+
+              <div>
+                <span className="text-xs font-medium mb-1.5 block">Sovereignty Tier</span>
+                <div className="flex flex-wrap gap-2">
+                  {tiers.map((option) => (
+                    <button
+                      key={option}
+                      onClick={() => setTier(option)}
+                      className={cn(
+                        'rounded-md border px-3 py-1.5 text-xs transition-colors',
+                        tier === option ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <span className="text-xs font-medium mb-1.5 block">Autonomy</span>
+                <div className="flex flex-wrap gap-2">
+                  {autonomyLevels.map((option) => (
+                    <button
+                      key={option}
+                      onClick={() => setAutonomy(option)}
+                      className={cn(
+                        'rounded-md border px-3 py-1.5 text-xs transition-colors',
+                        autonomy === option ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border bg-surface-2 p-3 text-xs text-muted-foreground">
+                Provider: <span className="font-mono text-foreground">{model?.providerId ?? 'unselected'}</span>
+                {' · '}
+                Model: <span className="font-mono text-foreground">{model?.modelId ?? 'unselected'}</span>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => void handleCreate()}
+                  disabled={!agentName.trim() || !model?.modelId || createAgent.isPending || !activeProject}
+                  className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {createAgent.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                  {createAgent.isPending ? 'Forging agent...' : 'Forge Agent'}
+                </button>
+                <button onClick={resetCreator} className="text-xs text-muted-foreground hover:text-foreground">
+                  Reset
+                </button>
+              </div>
+            </div>
+
+            {created && createdAgentSummary && (
+              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="rounded-lg border border-success/40 bg-success/5 p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Check className="h-5 w-5 text-success" />
+                  <span className="text-sm font-semibold text-success">{agentName} has been forged</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Role: {createdAgentSummary.role} · Model: {createdAgentSummary.model} · Tier: {createdAgentSummary.tier} · Autonomy: {createdAgentSummary.autonomy}
+                </p>
+              </motion.div>
+            )}
           </div>
         )}
       </div>

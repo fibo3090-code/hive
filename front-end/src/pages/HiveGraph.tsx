@@ -73,6 +73,7 @@ function EmptyGraphState() {
 
 function AgentNode({ data }: { readonly data: AgentNodeData }) {
   const agent = data.agent;
+  const qualityScore = agent.qualityScore ?? 0;
   const borderColorIfPaused = agent.status === 'paused' ? 'border-warning/40' : 'border-border';
   const borderColorIfBlocked = agent.status === 'blocked' ? 'border-destructive/40' : borderColorIfPaused;
   const borderColor = agent.status === 'working' ? 'border-success/40' : borderColorIfBlocked;
@@ -87,7 +88,7 @@ function AgentNode({ data }: { readonly data: AgentNodeData }) {
           </div>
           <span className="text-micro text-muted-foreground font-mono block mb-1">{agent.model}</span>
           <p className="text-micro text-muted-foreground truncate mb-1.5">{agent.currentTask}</p>
-          <ConfidenceBar value={agent.qualityScore} bars={5} />
+          <ConfidenceBar value={qualityScore} bars={5} />
           {data.showLock && data.locked && <div className="absolute top-2 right-2 rounded-full bg-info/10 px-2 py-0.5 text-[10px] text-info">lock</div>}
           <Handle type="source" position={Position.Bottom} className="!bg-primary !w-2 !h-2 !border-0" />
         </div>
@@ -102,6 +103,7 @@ function AgentNode({ data }: { readonly data: AgentNodeData }) {
 }
 
 function AgentDetailDrawer({ agent, onClose, onMessage }: { readonly agent: Agent; readonly onClose: () => void; readonly onMessage: () => void }) {
+  const qualityScore = agent.qualityScore ?? 0;
   return (
     <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 30, stiffness: 260 }} className="absolute right-0 top-0 h-full w-[380px] border-l border-border bg-card z-50 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -123,8 +125,8 @@ function AgentDetailDrawer({ agent, onClose, onMessage }: { readonly agent: Agen
           <div className="rounded-md border border-border bg-surface-2 p-3">
             <p className="text-xs">{agent.currentTask}</p>
             <div className="flex items-center gap-2 mt-2">
-              <ConfidenceBar value={agent.qualityScore} />
-              <span className="text-micro font-mono text-muted-foreground">{agent.qualityScore}%</span>
+              <ConfidenceBar value={qualityScore} />
+              <span className="text-micro font-mono text-muted-foreground">{qualityScore}%</span>
             </div>
           </div>
         </section>
@@ -132,7 +134,7 @@ function AgentDetailDrawer({ agent, onClose, onMessage }: { readonly agent: Agen
           <div className="text-micro font-semibold text-muted-foreground uppercase mb-2">Recent Logs</div>
           <div className="space-y-1.5 text-xs text-muted-foreground">
             <div>01:22:15 Started task: {agent.currentTask}</div>
-            <div>01:20:30 Completed eval cycle — score: {agent.qualityScore}%</div>
+            <div>01:20:30 Completed eval cycle — score: {qualityScore}%</div>
             <div>01:18:45 Received instructions from Planning Engine</div>
             {lockedAgents.has(agent.id) && <div>01:16:10 Acquired file lock on active work item</div>}
           </div>
@@ -172,6 +174,7 @@ function OrgChartView({ agents, onSelect }: { readonly agents: Agent[]; readonly
 }
 
 function Card({ agent, isRoot }: { readonly agent: Agent; readonly isRoot?: boolean }) {
+  const qualityScore = agent.qualityScore ?? 0;
   return (
     <div className={cn('rounded-lg border bg-card px-4 py-3 hover:border-primary/40 transition-all min-w-[160px]', isRoot ? 'border-primary/30 glow-amber' : 'border-border')}>
       <div className="flex items-center gap-2 mb-1">
@@ -180,7 +183,7 @@ function Card({ agent, isRoot }: { readonly agent: Agent; readonly isRoot?: bool
       </div>
       <span className="text-micro text-muted-foreground font-mono block mb-1">{agent.model}</span>
       <p className="text-micro text-muted-foreground truncate mb-1.5">{agent.currentTask}</p>
-      <ConfidenceBar value={agent.qualityScore} bars={5} />
+      <ConfidenceBar value={qualityScore} bars={5} />
     </div>
   );
 }

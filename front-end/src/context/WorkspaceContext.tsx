@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useTheme } from 'next-themes';
 import { useSettingsData } from '@/api/queries/useServerData';
@@ -33,9 +34,17 @@ export interface SettingsState {
     telemetry: boolean;
     language: 'English' | 'Deutsch' | '日本語';
   };
+  defaultModel: DefaultModelSelection | null;
   router: {
     enabled: boolean;
     explorationRate: number;
+  };
+  toolsSandbox: {
+    searchProvider: 'searxng' | 'tavily';
+    searxngUrl: string;
+    tavilyApiKey: string;
+    tavilyMaskedKey: string | null;
+    enabledTools: string[];
   };
   modules: Record<string, boolean>;
   git: {
@@ -89,7 +98,6 @@ interface WorkspaceState {
   chatTargetAgentId: string | null;
   graphFocusAgentId: string | null;
   selectedCommandId: string | null;
-  defaultModel: DefaultModelSelection | null;
 }
 
 interface WorkspaceContextValue extends WorkspaceState {
@@ -99,7 +107,7 @@ interface WorkspaceContextValue extends WorkspaceState {
   setChatTargetAgentId: (agentId: string | null) => void;
   setGraphFocusAgentId: (agentId: string | null) => void;
   setSelectedCommandId: (commandId: string | null) => void;
-  setDefaultModel: (selection: DefaultModelSelection | null) => void;
+  defaultModel: DefaultModelSelection | null;
 }
 
 const STORAGE_KEY = 'hive-workspace-ui';
@@ -132,9 +140,17 @@ export const defaultSettings: SettingsState = {
     telemetry: false,
     language: 'English',
   },
+  defaultModel: null,
   router: {
     enabled: true,
     explorationRate: 10,
+  },
+  toolsSandbox: {
+    searchProvider: 'searxng',
+    searxngUrl: 'http://localhost:8888',
+    tavilyApiKey: '',
+    tavilyMaskedKey: null,
+    enabledTools: ['web_search', 'web_fetch', 'fs_read', 'fs_write', 'fs_list', 'shell_exec'],
   },
   modules: {
     'Auth Module': true,
@@ -189,12 +205,35 @@ export const defaultSettings: SettingsState = {
   },
 };
 
+export function mergeSettings(partial?: Partial<SettingsState> | null): SettingsState {
+  return {
+    ...defaultSettings,
+    ...partial,
+    general: { ...defaultSettings.general, ...partial?.general },
+    defaultModel: partial?.defaultModel ?? defaultSettings.defaultModel,
+    router: { ...defaultSettings.router, ...partial?.router },
+    toolsSandbox: { ...defaultSettings.toolsSandbox, ...partial?.toolsSandbox },
+    modules: { ...defaultSettings.modules, ...partial?.modules },
+    git: { ...defaultSettings.git, ...partial?.git },
+    github: { ...defaultSettings.github, ...partial?.github },
+    integrations: { ...defaultSettings.integrations, ...partial?.integrations },
+    fileProtection: {
+      ...defaultSettings.fileProtection,
+      ...partial?.fileProtection,
+      files: partial?.fileProtection?.files ?? defaultSettings.fileProtection.files,
+    },
+    security: { ...defaultSettings.security, ...partial?.security },
+    notifications: partial?.notifications ?? defaultSettings.notifications,
+    appearance: { ...defaultSettings.appearance, ...partial?.appearance },
+    dataPrivacy: { ...defaultSettings.dataPrivacy, ...partial?.dataPrivacy },
+  };
+}
+
 const defaultState: WorkspaceState = {
   onboardingDraft: defaultOnboardingDraft,
   chatTargetAgentId: null,
   graphFocusAgentId: null,
   selectedCommandId: null,
-  defaultModel: null,
 };
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -227,6 +266,7 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
   const { setTheme } = useTheme();
   const settingsQuery = useSettingsData();
   const appearance = settingsQuery.data?.appearance ?? defaultSettings.appearance;
+  const defaultModel = settingsQuery.data?.defaultModel ?? defaultSettings.defaultModel;
 
   useEffect(() => {
     if (typeof globalThis.window === 'undefined') {
@@ -293,10 +333,6 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
     setState((current) => ({ ...current, selectedCommandId: commandId }));
   }, []);
 
-  const setDefaultModel = useCallback((selection: DefaultModelSelection | null) => {
-    setState((current) => ({ ...current, defaultModel: selection }));
-  }, []);
-
   const value = useMemo<WorkspaceContextValue>(
     () => ({
       ...state,
@@ -306,7 +342,7 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
       setChatTargetAgentId,
       setGraphFocusAgentId,
       setSelectedCommandId,
-      setDefaultModel,
+      defaultModel,
     }),
     [
       state,
@@ -315,7 +351,7 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
       setChatTargetAgentId,
       setGraphFocusAgentId,
       setSelectedCommandId,
-      setDefaultModel,
+      defaultModel,
     ]
   );
 

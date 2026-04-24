@@ -30,6 +30,7 @@ export function useSse() {
       'module.installed',
       'llm_provider.updated',
       'llm_provider.tested',
+      'workspace.updated',
     ].forEach((eventName) => {
       source.addEventListener(eventName, invalidateAll);
     });

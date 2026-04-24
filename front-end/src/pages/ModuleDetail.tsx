@@ -21,6 +21,7 @@ const fallbackModule: ModuleCatalogItem = {
   category: 'Unknown',
   status: 'available',
   layers: [],
+  updated: 'unknown',
   dependencies: [],
   changelog: [],
 };
@@ -193,7 +194,7 @@ export default function ModuleDetail() {
             <div key={`${entry.version}-${entry.date}`} className="relative pl-6">
               <div className="absolute left-0 top-1 flex flex-col items-center">
                 <div className={cn('h-3 w-3 rounded-full border-2', index === 0 ? 'border-primary bg-primary/20' : 'border-border bg-surface-2')} />
-                {index < mod.changelog.length - 1 && <div className="w-px h-full bg-border mt-1" />}
+                {index < ((mod.changelog?.length ?? 0) - 1) && <div className="w-px h-full bg-border mt-1" />}
               </div>
               <div className="pb-4">
                 <div className="flex items-center gap-2 mb-1">

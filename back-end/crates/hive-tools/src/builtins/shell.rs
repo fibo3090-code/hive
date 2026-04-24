@@ -99,16 +99,29 @@ mod tests {
         Arc::new(LocalFsSandbox::new(dir).unwrap())
     }
 
+    fn shell_command(script: &str) -> (&'static str, Vec<String>) {
+        if cfg!(windows) {
+            ("powershell", vec!["-Command".into(), script.into()])
+        } else {
+            ("sh", vec!["-c".into(), script.into()])
+        }
+    }
+
     #[tokio::test]
     async fn runs_echo() {
         let mut reg = ToolRegistry::new();
         reg.insert(Arc::new(ShellExecTool));
         let ctx = ToolContext::new("p1", fresh_sandbox());
+        let (command, args) = if cfg!(windows) {
+            shell_command("Write-Output hi")
+        } else {
+            shell_command("echo hi")
+        };
 
         let out = reg
             .invoke(
                 "shell_exec",
-                json!({ "command": "sh", "args": ["-c", "echo hi"] }),
+                json!({ "command": command, "args": args }),
                 &ctx,
             )
             .await
@@ -123,14 +136,19 @@ mod tests {
         let mut reg = ToolRegistry::new();
         reg.insert(Arc::new(ShellExecTool));
         let ctx = ToolContext::new("p1", fresh_sandbox());
+        let (command, args) = if cfg!(windows) {
+            shell_command("exit 0")
+        } else {
+            shell_command("exit 0")
+        };
         // 10 000 s is clamped to 300 s, but since `true` exits instantly
         // the test just verifies no rejection.
         let out = reg
             .invoke(
                 "shell_exec",
                 json!({
-                    "command": "sh",
-                    "args": ["-c", "exit 0"],
+                    "command": command,
+                    "args": args,
                     "timeoutSeconds": 10_000,
                 }),
                 &ctx,

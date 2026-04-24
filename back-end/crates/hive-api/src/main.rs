@@ -30,6 +30,7 @@ use hive_db::{
 };
 use hive_llm::{client_for, ModelInfo, ProviderConfig, ProviderKind};
 use hive_runtime::{EventBus, RuntimeEvent};
+use hive_tools::default_names as default_tool_names;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
@@ -254,6 +255,15 @@ struct EntityAuditQuery {
     entity_id: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceInfo {
+    project_id: String,
+    sandbox_kind: String,
+    status: String,
+    root_path: String,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -407,6 +417,14 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/projects/:project_id/chat-threads",
             get(list_chat_threads),
         )
+        .route(
+            "/v1/projects/:project_id/workspace/info",
+            get(get_workspace_info),
+        )
+        .route(
+            "/v1/projects/:project_id/workspace/init",
+            post(init_workspace),
+        )
         .route("/v1/chat-threads", post(create_chat_thread))
         .route("/v1/chat-threads/:thread_id", get(get_chat_thread))
         .route(
@@ -510,6 +528,91 @@ async fn read_setting_json(
     Ok(settings::get_value(database.conn(), scope, key)
         .await?
         .unwrap_or(fallback))
+}
+
+fn workspace_dir(data_dir: &StdPath, project_id: &str) -> PathBuf {
+    data_dir.join("workspaces").join(project_id)
+}
+
+fn ensure_object(value: &mut Value) -> Result<&mut serde_json::Map<String, Value>, AppError> {
+    if !value.is_object() {
+        *value = json!({});
+    }
+    value
+        .as_object_mut()
+        .ok_or_else(|| AppError::BadRequest("settings must be a JSON object".into()))
+}
+
+async fn stored_default_model(state: &AppState) -> Result<Value, AppError> {
+    read_setting_json(state, "global", "defaultModel", Value::Null).await
+}
+
+async fn read_tavily_ciphertext(state: &AppState) -> Result<Option<Vec<u8>>, AppError> {
+    let database = db(state).await;
+    let Some(raw) =
+        settings::get_value(database.conn(), "global", "search.tavilyKeyCiphertext").await?
+    else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_value::<Vec<u8>>(raw).ok())
+}
+
+async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppError> {
+    let stored = read_setting_json(state, "global", "settingsState", json!({})).await?;
+    let stored_tools = stored
+        .get("toolsSandbox")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+
+    let mut search_provider = stored_tools
+        .get("searchProvider")
+        .and_then(Value::as_str)
+        .unwrap_or("searxng")
+        .to_owned();
+    if search_provider != "tavily" && search_provider != "searxng" {
+        search_provider = "searxng".into();
+    }
+
+    let searxng_url = stored_tools
+        .get("searxngUrl")
+        .and_then(Value::as_str)
+        .unwrap_or("http://localhost:8888")
+        .to_owned();
+    let enabled_tools = stored_tools
+        .get("enabledTools")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| {
+            let mut defaults = default_tool_names();
+            defaults.insert(0, "web_search".into());
+            defaults
+        });
+
+    let masked_key = if let Some(ciphertext) = read_tavily_ciphertext(state).await? {
+        let opened = state
+            .crypto
+            .open(&ciphertext)
+            .map_err(|e| AppError::Internal(format!("decrypt tavily key: {e}")))?;
+        let key = String::from_utf8(opened).map_err(|e| AppError::Internal(e.to_string()))?;
+        Some(mask_key(&key))
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "searchProvider": search_provider,
+        "searxngUrl": searxng_url,
+        "tavilyApiKey": "",
+        "tavilyMaskedKey": masked_key,
+        "enabledTools": enabled_tools,
+    }))
 }
 
 fn cents_to_dollars(cents: i64) -> i64 {
@@ -1425,18 +1528,72 @@ async fn get_agent_blueprints(State(state): State<AppState>) -> Result<Json<Valu
     ))
 }
 
+async fn get_workspace_info(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    let data_dir = state.inner.read().await.data_dir.clone();
+    let root = workspace_dir(&data_dir, &project_id);
+    let status = if root.exists() { "ready" } else { "missing" };
+    Ok(Json(json!(WorkspaceInfo {
+        project_id,
+        sandbox_kind: "local-fs".into(),
+        status: status.into(),
+        root_path: root.to_string_lossy().into_owned(),
+    })))
+}
+
+async fn init_workspace(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    let data_dir = state.inner.read().await.data_dir.clone();
+    let root = workspace_dir(&data_dir, &project_id);
+    tokio::fs::create_dir_all(&root)
+        .await
+        .map_err(|e| AppError::Internal(format!("create workspace: {e}")))?;
+    emit(
+        &state,
+        "workspace.updated",
+        json!({ "projectId": project_id, "status": "ready" }),
+    )
+    .await;
+    Ok(Json(json!(WorkspaceInfo {
+        project_id,
+        sandbox_kind: "local-fs".into(),
+        status: "ready".into(),
+        root_path: root.to_string_lossy().into_owned(),
+    })))
+}
+
 async fn get_settings(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
     let mut settings_state = settings::get_value(database.conn(), "global", "settingsState")
         .await?
         .unwrap_or_else(|| json!({}));
+    let default_model = stored_default_model(&state).await?;
+    let tools_sandbox = current_tools_sandbox_settings(&state).await?;
+    {
+        let settings_object = ensure_object(&mut settings_state)?;
+        settings_object.insert("defaultModel".to_owned(), default_model);
+        settings_object.insert("toolsSandbox".to_owned(), tools_sandbox);
+    }
 
     if let Some(project_id) = active_project_id(&state).await? {
         if let Some(project) = projects::get(database.conn(), &project_id).await? {
-            if let Some(general) = settings_state
-                .get_mut("general")
-                .and_then(Value::as_object_mut)
-            {
+            let settings_object = ensure_object(&mut settings_state)?;
+            let general = settings_object
+                .entry("general".to_owned())
+                .or_insert_with(|| json!({}));
+            if let Some(general) = general.as_object_mut() {
                 general.insert("projectName".to_owned(), Value::String(project.name));
                 general.insert(
                     "sovereigntyTier".to_owned(),
@@ -1455,6 +1612,59 @@ async fn update_settings(
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
     let mut next_settings = body.settings;
+    let default_model = next_settings
+        .get("defaultModel")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let existing_tools = current_tools_sandbox_settings(&state).await?;
+    let mut pending_tavily_key = None::<String>;
+    {
+        let settings_object = ensure_object(&mut next_settings)?;
+        if let Some(tools) = settings_object
+            .get_mut("toolsSandbox")
+            .and_then(Value::as_object_mut)
+        {
+            pending_tavily_key = tools
+                .get("tavilyApiKey")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
+            tools.insert("tavilyApiKey".to_owned(), Value::String(String::new()));
+            tools.insert(
+                "tavilyMaskedKey".to_owned(),
+                existing_tools
+                    .get("tavilyMaskedKey")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+        }
+    }
+
+    settings::put_value(database.conn(), "global", "defaultModel", default_model).await?;
+
+    if let Some(api_key) = pending_tavily_key {
+        let sealed = state
+            .crypto
+            .seal(api_key.as_bytes())
+            .map_err(|e| AppError::Internal(format!("seal tavily key: {e}")))?;
+        settings::put_value(
+            database.conn(),
+            "global",
+            "search.tavilyKeyCiphertext",
+            serde_json::to_value(sealed).map_err(|e| AppError::Internal(e.to_string()))?,
+        )
+        .await?;
+        if let Some(tools) = next_settings
+            .get_mut("toolsSandbox")
+            .and_then(Value::as_object_mut)
+        {
+            tools.insert(
+                "tavilyMaskedKey".to_owned(),
+                Value::String(mask_key(&api_key)),
+            );
+        }
+    }
 
     if let Some(project_id) = active_project_id(&state).await? {
         let project_name = next_settings
@@ -1486,10 +1696,11 @@ async fn update_settings(
         }
 
         if let Some(project) = projects::get(database.conn(), &project_id).await? {
-            if let Some(general) = next_settings
-                .get_mut("general")
-                .and_then(Value::as_object_mut)
-            {
+            let settings_object = ensure_object(&mut next_settings)?;
+            let general = settings_object
+                .entry("general".to_owned())
+                .or_insert_with(|| json!({}));
+            if let Some(general) = general.as_object_mut() {
                 general.insert("projectName".to_owned(), Value::String(project.name));
                 general.insert(
                     "sovereigntyTier".to_owned(),

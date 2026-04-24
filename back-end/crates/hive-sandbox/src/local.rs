@@ -155,6 +155,14 @@ impl Sandbox for LocalFsSandbox {
 mod tests {
     use super::*;
 
+    fn shell_command(script: &str) -> (String, Vec<String>) {
+        if cfg!(windows) {
+            ("powershell".into(), vec!["-Command".into(), script.into()])
+        } else {
+            ("sh".into(), vec!["-c".into(), script.into()])
+        }
+    }
+
     fn tmp() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("hive-sandbox-test-{}", rand_suffix()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -224,12 +232,13 @@ mod tests {
     #[tokio::test]
     async fn exec_captures_stdout() {
         let sb = LocalFsSandbox::new(tmp()).unwrap();
+        let (command, args) = if cfg!(windows) {
+            shell_command("Write-Output hello")
+        } else {
+            shell_command("echo hello")
+        };
         let out = sb
-            .exec(
-                "sh",
-                &["-c".into(), "echo hello".into()],
-                Duration::from_secs(5),
-            )
+            .exec(&command, &args, Duration::from_secs(5))
             .await
             .unwrap();
         assert_eq!(out.stdout.trim(), "hello");
@@ -240,13 +249,12 @@ mod tests {
     #[tokio::test]
     async fn exec_respects_timeout() {
         let sb = LocalFsSandbox::new(tmp()).unwrap();
-        let out = sb
-            .exec(
-                "sh",
-                &["-c".into(), "sleep 10".into()],
-                Duration::from_millis(200),
-            )
-            .await;
+        let (command, args) = if cfg!(windows) {
+            shell_command("Start-Sleep -Seconds 10")
+        } else {
+            shell_command("sleep 10")
+        };
+        let out = sb.exec(&command, &args, Duration::from_millis(200)).await;
         assert!(matches!(out, Err(SandboxError::Timeout(_))));
     }
 }

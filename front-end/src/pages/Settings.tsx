@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import {
   Settings as SettingsIcon, Cpu, GitBranch, Github, Link2,
-  Shield, Bell, Keyboard, Palette, Database, Info, Plug, FileLock,
+  Shield, Bell, Keyboard, Palette, Database, Info, Plug, FileLock, Wrench,
   Plus, Trash2, Check, Save, RefreshCw, Loader2,
 } from 'lucide-react';
 import { useLlmProviders, useSetProviderKey, useTestProvider, type LlmProvider } from '@/api/llm';
+import { useInitWorkspace, useWorkspaceInfo } from '@/api/tools';
 import { ModelPicker } from '@/components/shared/ModelPicker';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
@@ -20,6 +21,7 @@ const settingsNav = [
   { id: 'general', label: 'General', icon: SettingsIcon },
   { id: 'llm', label: 'LLM Providers', icon: Cpu },
   { id: 'router', label: 'Adaptive Router', icon: Cpu },
+  { id: 'tools', label: 'Tools & Sandbox', icon: Wrench },
   { id: 'modules', label: 'HCM Modules', icon: Plug },
   { id: 'git', label: 'Git', icon: GitBranch },
   { id: 'github', label: 'GitHub Sync', icon: Github },
@@ -80,7 +82,7 @@ function Field({
   readonly onChange: (value: string) => void;
   readonly className?: string;
   readonly placeholder?: string;
-} & React.InputHTMLAttributes<HTMLInputElement>) {
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'placeholder'>) {
   return (
     <input
       value={value}
@@ -118,7 +120,7 @@ function SelectField<T extends string>({
 
 export default function Settings() {
   const [section, setSection] = useState<(typeof settingsNav)[number]['id']>('general');
-  const { accentPresets, defaultModel, setDefaultModel } = useWorkspace();
+  const { accentPresets } = useWorkspace();
   const { activeProject } = useHiveData();
   const { data: settings, saveSettings } = useSettingsData();
   const [draft, setDraft] = useState<SettingsState>(() => {
@@ -245,14 +247,16 @@ export default function Settings() {
                 <div className="text-xs text-muted-foreground">Pre-selected when spawning or forging a new agent</div>
               </div>
               <ModelPicker
-                value={defaultModel as ModelSelection | null}
-                onChange={(selection) => setDefaultModel(selection)}
+                value={draft.defaultModel as ModelSelection | null}
+                onChange={(selection) => patch('defaultModel', selection)}
               />
             </div>
           </div>
         )}
 
         {section === 'llm' && <LlmProvidersSection />}
+
+        {section === 'tools' && <ToolsSandboxSection draft={draft} patch={patch} projectId={activeProject?.id ?? null} />}
 
         {section === 'router' && (
           <div className="space-y-6 max-w-2xl">
@@ -418,6 +422,7 @@ function LlmProvidersSection() {
   const setKey = useSetProviderKey();
   const testProvider = useTestProvider();
   const [drafts, setDrafts] = useState<Record<string, { apiKey: string; baseUrl: string }>>({});
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; sampleCount: number; error: string | null }>>({});
 
   const getDraft = (p: LlmProvider) =>
     drafts[p.id] ?? { apiKey: '', baseUrl: p.baseUrl ?? '' };
@@ -442,6 +447,10 @@ function LlmProvidersSection() {
 
   const onTest = async (p: LlmProvider) => {
     const res = await testProvider.mutateAsync(p.id);
+    setTestResults((current) => ({
+      ...current,
+      [p.id]: { ok: res.ok, sampleCount: res.sampleModels.length, error: res.error },
+    }));
     if (res.ok) toast.success(`${p.name} connected`);
     else toast.error(`${p.name}: ${res.error ?? 'failed'}`);
   };
@@ -458,6 +467,7 @@ function LlmProvidersSection() {
       {providers.map((p) => {
         const d = getDraft(p);
         const needsKey = p.kind !== 'ollama';
+        const testResult = testResults[p.id];
         return (
           <div key={p.id} className="rounded-lg border border-border bg-card p-4 space-y-3">
             <div className="flex items-center justify-between">
@@ -510,9 +520,130 @@ function LlmProvidersSection() {
                 Test Connection
               </button>
             </div>
+            {testResult && (
+              <div className={cn('text-xs rounded-md px-3 py-2', testResult.ok ? 'bg-success/5 text-success' : 'bg-destructive/5 text-destructive')}>
+                {testResult.ok
+                  ? `Test succeeded${testResult.sampleCount > 0 ? ` · ${testResult.sampleCount} sample models returned` : ''}`
+                  : `Test failed${testResult.error ? ` · ${testResult.error}` : ''}`}
+              </div>
+            )}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function ToolsSandboxSection({
+  draft,
+  patch,
+  projectId,
+}: {
+  readonly draft: SettingsState;
+  readonly patch: <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => void;
+  readonly projectId: string | null;
+}) {
+  const workspaceQuery = useWorkspaceInfo(projectId);
+  const initWorkspace = useInitWorkspace(projectId);
+  const toolOptions = [
+    { id: 'web_search', label: 'Web search' },
+    { id: 'web_fetch', label: 'Web fetch' },
+    { id: 'fs_read', label: 'File read' },
+    { id: 'fs_write', label: 'File write' },
+    { id: 'fs_list', label: 'File list' },
+    { id: 'shell_exec', label: 'Shell exec' },
+  ] as const;
+
+  const toggleTool = (toolId: string, enabled: boolean) => {
+    const current = new Set(draft.toolsSandbox.enabledTools);
+    if (enabled) current.add(toolId);
+    else current.delete(toolId);
+    patch('toolsSandbox', { ...draft.toolsSandbox, enabledTools: [...current] });
+  };
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <div>
+        <h2 className="text-lg font-semibold">Tools & Sandbox</h2>
+        <p className="text-xs text-muted-foreground mt-1">Workspace-backed tool settings for local-first execution. Docker remains an upcoming mode.</p>
+      </div>
+
+      <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium">Workspace Sandbox</div>
+            <div className="text-xs text-muted-foreground">
+              {workspaceQuery.data?.sandboxKind === 'local-fs' ? 'Local workspace folder' : 'Pending initialization'}
+            </div>
+          </div>
+          <button
+            onClick={() => void initWorkspace.mutateAsync()}
+            disabled={!projectId || initWorkspace.isPending}
+            className="rounded-md bg-primary px-3 py-2 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {initWorkspace.isPending ? 'Initializing...' : 'Initialize Workspace'}
+          </button>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          Status: <span className="font-mono text-foreground">{workspaceQuery.data?.status ?? 'missing'}</span>
+        </div>
+        {workspaceQuery.data?.rootPath && (
+          <div className="text-xs text-muted-foreground">
+            Root: <span className="font-mono text-foreground break-all">{workspaceQuery.data.rootPath}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-lg border border-border bg-card p-4 space-y-4">
+        <Row label="Search Provider" desc="Select the web-search backend HIVE should use by default">
+          <SelectField
+            value={draft.toolsSandbox.searchProvider}
+            options={['searxng', 'tavily']}
+            onChange={(value) => patch('toolsSandbox', { ...draft.toolsSandbox, searchProvider: value })}
+            className="w-40"
+          />
+        </Row>
+        <Row label="SearxNG URL" desc="Local-first fallback search endpoint">
+          <Field
+            value={draft.toolsSandbox.searxngUrl}
+            onChange={(value) => patch('toolsSandbox', { ...draft.toolsSandbox, searxngUrl: value })}
+            className="w-72 font-mono"
+          />
+        </Row>
+        <Row label="Tavily API Key" desc="Optional keyed provider. Blank input keeps the existing stored key.">
+          <div className="space-y-2">
+            {draft.toolsSandbox.tavilyMaskedKey && (
+              <div className="text-micro text-muted-foreground font-mono">
+                Current: {draft.toolsSandbox.tavilyMaskedKey}
+              </div>
+            )}
+            <Field
+              value={draft.toolsSandbox.tavilyApiKey}
+              onChange={(value) => patch('toolsSandbox', { ...draft.toolsSandbox, tavilyApiKey: value })}
+              placeholder={draft.toolsSandbox.tavilyMaskedKey ? 'Leave blank to keep current key' : 'tvly-...'}
+              className="w-72 font-mono"
+            />
+          </div>
+        </Row>
+      </div>
+
+      <div className="rounded-lg border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold mb-3">Enabled Tools</h3>
+        <div className="space-y-3">
+          {toolOptions.map((tool) => (
+            <div key={tool.id} className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">{tool.label}</div>
+                <div className="text-xs text-muted-foreground font-mono">{tool.id}</div>
+              </div>
+              <Switch
+                checked={draft.toolsSandbox.enabledTools.includes(tool.id)}
+                onCheckedChange={(checked) => toggleTool(tool.id, checked)}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

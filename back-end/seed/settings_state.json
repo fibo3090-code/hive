@@ -7,6 +7,7 @@
     "telemetry": false,
     "language": "English"
   },
+  "defaultModel": null,
   "llmProviders": [
     { "name": "OpenAI", "connected": true, "apiKey": "sk-demo-openai-1234", "maskedKey": "••••••••••sk-1234", "revealKey": false },
     { "name": "Anthropic", "connected": true, "apiKey": "ant-demo-anthropic-5678", "maskedKey": "••••••••••ant-5678", "revealKey": false },
@@ -14,6 +15,13 @@
     { "name": "Local (Ollama)", "connected": false, "revealKey": false }
   ],
   "router": { "enabled": true, "explorationRate": 10 },
+  "toolsSandbox": {
+    "searchProvider": "searxng",
+    "searxngUrl": "http://localhost:8888",
+    "tavilyApiKey": "",
+    "tavilyMaskedKey": null,
+    "enabledTools": ["web_search", "web_fetch", "fs_read", "fs_write", "fs_list", "shell_exec"]
+  },
   "modules": { "Auth Module": true, "Database ORM": true, "Eval Engine": true },
   "git": { "autoCommit": true, "commitPrefix": "[hive]", "branchStrategy": "Feature branches", "squashCommits": true },
   "github": { "autoPush": true, "autoCreatePr": true, "requireChecks": true },

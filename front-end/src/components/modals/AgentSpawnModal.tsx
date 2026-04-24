@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Bot } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -21,11 +21,18 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
   const [model, setModel] = useState<ModelSelection | null>(defaultModel);
   const [tier, setTier] = useState<string>(tiers[1]);
 
+  useEffect(() => {
+    if (open && !model?.modelId && defaultModel?.modelId) {
+      setModel(defaultModel);
+    }
+  }, [defaultModel, model, open]);
+
   const handleSpawn = () => {
     if (!name.trim()) { toast.error('Agent name required'); return; }
     if (!model?.modelId) { toast.error('Select a model'); return; }
     toast.success(`Agent "${name}" spawned as ${role} on ${model.modelId}`);
     setName('');
+    setModel(defaultModel);
     onOpenChange(false);
   };
 
