@@ -1,13 +1,11 @@
 [package]
-name = "hive-tools"
+name = "hive-search"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
 async-trait = "0.1"
-hive-sandbox = { workspace = true }
-hive-search = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

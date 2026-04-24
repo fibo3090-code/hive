@@ -17,7 +17,7 @@ pub mod error;
 pub mod manifest;
 pub mod registry;
 
-pub use builtins::{default_names, register_defaults};
+pub use builtins::{default_names, register_defaults, register_web_search};
 pub use context::ToolContext;
 pub use error::{ToolError, ToolResult};
 pub use manifest::ToolManifest;

@@ -1072,6 +1072,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "hive-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "hive-seed"
 version = "0.1.0"
 dependencies = [
@@ -1091,6 +1105,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "hive-sandbox",
+ "hive-search",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

@@ -10,6 +10,7 @@ members = [
     "crates/hive-llm",
     "crates/hive-runtime",
     "crates/hive-sandbox",
+    "crates/hive-search",
     "crates/hive-tools",
 ]
 
@@ -71,4 +72,5 @@ hive-crypto = { path = "crates/hive-crypto" }
 hive-llm = { path = "crates/hive-llm" }
 hive-runtime = { path = "crates/hive-runtime" }
 hive-sandbox = { path = "crates/hive-sandbox" }
+hive-search = { path = "crates/hive-search" }
 hive-tools = { path = "crates/hive-tools" }

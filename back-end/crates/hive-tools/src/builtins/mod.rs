@@ -3,18 +3,31 @@
 
 pub mod fs;
 pub mod shell;
+pub mod web;
 
 use std::sync::Arc;
 
+use hive_search::SearchProvider;
+
 use crate::ToolRegistry;
 
-/// Install all default tools into a registry. Call after constructing an
-/// empty registry to get the standard tool surface.
+/// Install the sandbox-scoped built-ins (fs_read/write/list, shell_exec)
+/// plus `web_fetch`. Call after constructing an empty registry to get
+/// the standard tool surface. `web_search` requires a provider and is
+/// added separately via `register_web_search`.
 pub fn register_defaults(registry: &mut ToolRegistry) {
     registry.insert(Arc::new(fs::FsReadTool));
     registry.insert(Arc::new(fs::FsWriteTool));
     registry.insert(Arc::new(fs::FsListTool));
     registry.insert(Arc::new(shell::ShellExecTool));
+    registry.insert(Arc::new(web::WebFetchTool::with_default_client()));
+}
+
+/// Install `web_search` backed by the caller-supplied `SearchProvider`.
+/// Split out so the runtime can omit it when no provider is configured,
+/// or swap providers without rebuilding the whole registry.
+pub fn register_web_search(registry: &mut ToolRegistry, provider: Arc<dyn SearchProvider>) {
+    registry.insert(Arc::new(web::WebSearchTool::new(provider)));
 }
 
 /// Names of the defaults, in the same order as `register_defaults`. Useful
@@ -25,5 +38,6 @@ pub fn default_names() -> Vec<String> {
         "fs_write".into(),
         "fs_list".into(),
         "shell_exec".into(),
+        "web_fetch".into(),
     ]
 }
