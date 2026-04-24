@@ -87,10 +87,13 @@ jobs:
       - name: cargo clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-  test-build:
-    name: test + build
+  # Smoke-test only — clippy already validates compilation and lints.
+  # A release-profile rebuild was pushing the job past its 20 min cold-cache
+  # budget, for no additional signal.
+  test:
+    name: test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: back-end
@@ -112,6 +115,3 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --all-targets
-
-      - name: build (release profile, sanity)
-        run: cargo build --workspace --release
