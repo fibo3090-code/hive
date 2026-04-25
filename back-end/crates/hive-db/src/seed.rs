@@ -240,6 +240,12 @@ async fn ensure_agents(
                 role: role.into(),
                 model: model.into(),
                 status: status.into(),
+                parent_agent_id: None,
+                spawned_by_message_id: None,
+                enabled_tools: None,
+                system_prompt: None,
+                model_provider_id: None,
+                model_id: None,
             },
         )
         .await?;
@@ -257,6 +263,10 @@ async fn ensure_agents(
                 quality_score: Some(Some(quality_score)),
                 tokens_used: Some(tokens_used),
                 eval_scores: Some(json_value(eval_scores)),
+                enabled_tools: None,
+                system_prompt: None,
+                model_provider_id: None,
+                model_id: None,
             },
         )
         .await?;

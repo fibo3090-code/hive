@@ -18,6 +18,14 @@ pub struct Model {
     pub tokens_used: i64,
     #[sea_orm(column_type = "Json")]
     pub eval_scores: serde_json::Value,
+    pub parent_agent_id: Option<String>,
+    pub spawned_by_message_id: Option<String>,
+    #[sea_orm(column_type = "Json")]
+    pub enabled_tools: serde_json::Value,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub system_prompt: Option<String>,
+    pub model_provider_id: Option<String>,
+    pub model_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,

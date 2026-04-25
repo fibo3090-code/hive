@@ -22,14 +22,15 @@ use clap::{Parser, Subcommand};
 use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
-        agents, alerts, audit, chat_messages, chat_threads, cost_events, llm_providers, notes,
-        notifications, projects, sessions, settings, sprints, tasks, tech_debt,
+        agent_messages, agents, alerts, audit, chat_messages, chat_threads, cost_events,
+        llm_providers, notes, notifications, projects, sessions, settings, sprints, tasks,
+        tech_debt,
     },
     seed::seed_demo,
     Db,
 };
 use hive_llm::{client_for, ModelInfo, ProviderConfig, ProviderKind};
-use hive_runtime::{EventBus, RuntimeEvent};
+use hive_runtime::{EventBus, RuntimeEvent, TurnDriver, TurnDriverError, TurnRequest};
 use hive_sandbox::LocalFsSandbox;
 use hive_search::{SearxNgProvider, TavilyProvider};
 use hive_tools::{
@@ -69,6 +70,7 @@ struct AppState {
     http: reqwest::Client,
     model_cache: ModelCache,
     chat_jobs: ChatJobRegistry,
+    executors: Arc<hive_runtime::ExecutorRegistry>,
 }
 
 type ModelCache = Arc<RwLock<HashMap<String, (Instant, Vec<ModelInfo>)>>>;
@@ -164,6 +166,14 @@ impl From<sea_orm::DbErr> for AppError {
     }
 }
 
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(m) | Self::BadRequest(m) | Self::Internal(m) => f.write_str(m),
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SetupStatus {
@@ -210,6 +220,18 @@ struct CreateAgentBody {
     role: String,
     model: String,
     status: Option<String>,
+    #[serde(default)]
+    parent_agent_id: Option<String>,
+    #[serde(default)]
+    spawned_by_message_id: Option<String>,
+    #[serde(default)]
+    enabled_tools: Option<Vec<String>>,
+    #[serde(default)]
+    system_prompt: Option<String>,
+    #[serde(default)]
+    model_provider_id: Option<String>,
+    #[serde(default)]
+    model_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -304,6 +326,12 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     // Probe local Ollama for a seamless zero-config experience.
     probe_ollama(&runtime.db, &http).await;
 
+    let executors = Arc::new(hive_runtime::ExecutorRegistry::new(
+        runtime.db.clone(),
+        EventBus::new(events.clone()),
+    ));
+    let _ = executors.rehydrate_from_db().await;
+
     let state = AppState {
         inner: Arc::new(RwLock::new(runtime)),
         events,
@@ -312,7 +340,14 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         http,
         model_cache: Arc::new(RwLock::new(HashMap::new())),
         chat_jobs: ChatJobRegistry::default(),
+        executors: executors.clone(),
     };
+
+    // Install the per-agent turn driver now that AppState exists. Every
+    // future inbox item will run a real LLM turn via this driver.
+    executors
+        .set_driver(Arc::new(ApiTurnDriver::new(state.clone())))
+        .await;
 
     let app = Router::new()
         .route("/v1/healthz", get(healthz))
@@ -337,6 +372,16 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         )
         .route("/v1/agents/:agent_id/set-status", post(set_agent_status))
         .route("/v1/agents/:agent_id/messages", get(get_agent_messages))
+        .route("/v1/tools", get(list_tool_manifests))
+        .route("/v1/agents/:agent_id/lineage", get(get_agent_lineage))
+        .route("/v1/agents/:agent_id/dispatch", post(dispatch_to_agent))
+        .route("/v1/agents/:agent_id/pause", post(pause_agent))
+        .route("/v1/agents/:agent_id/resume", post(resume_agent))
+        .route("/v1/agents/:agent_id/terminate", post(terminate_agent))
+        .route(
+            "/v1/projects/:project_id/coordinator/ensure",
+            post(ensure_coordinator),
+        )
         .route("/v1/projects/:project_id/tasks", get(list_tasks))
         .route("/v1/tasks/:task_id/set-status", post(set_task_status))
         .route("/v1/projects/:project_id/alerts", get(list_alerts))
@@ -642,7 +687,35 @@ async fn build_tooling(
     message_id: &str,
     thread_id: &str,
 ) -> Result<Option<(ToolRegistry, ToolContext)>, AppError> {
-    let enabled_tools = enabled_tools_for_turn(state).await?;
+    let global_enabled = enabled_tools_for_turn(state).await?;
+    if global_enabled.is_empty() {
+        return Ok(None);
+    }
+
+    // Intersect global allow-list with the agent's per-row `enabled_tools`
+    // when an agent is bound to the thread. An empty agent list means
+    // "unconfigured" (fall back to globals); a non-empty list narrows.
+    let enabled_tools = if let Some(agent_id_ref) = agent_id.as_ref() {
+        let database = db(state).await;
+        let agent_row = agents::get(database.conn(), agent_id_ref).await?;
+        if let Some(agent_row) = agent_row {
+            let per_agent = agents::parse_enabled_tools(&agent_row.enabled_tools);
+            if per_agent.is_empty() {
+                global_enabled.clone()
+            } else {
+                global_enabled
+                    .iter()
+                    .filter(|name| per_agent.iter().any(|n| n == *name))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            }
+        } else {
+            global_enabled.clone()
+        }
+    } else {
+        global_enabled.clone()
+    };
+
     if enabled_tools.is_empty() {
         return Ok(None);
     }
@@ -689,6 +762,11 @@ async fn build_tooling(
         Arc::new(SearxNgProvider::new(http.clone(), searxng_url))
     };
     register_web_search(&mut registry, search_provider);
+    hive_runtime::register_agent_tools(
+        &mut registry,
+        db(state).await.clone(),
+        state.executors.clone(),
+    );
     let registry = registry.filtered(&enabled_tools);
 
     let mut context = ToolContext::new(project_id.to_owned(), sandbox);
@@ -1122,6 +1200,12 @@ async fn create_agent(
             role: body.role,
             model: body.model,
             status: body.status.unwrap_or_else(|| "idle".to_owned()),
+            parent_agent_id: body.parent_agent_id,
+            spawned_by_message_id: body.spawned_by_message_id,
+            enabled_tools: body.enabled_tools,
+            system_prompt: body.system_prompt,
+            model_provider_id: body.model_provider_id,
+            model_id: body.model_id,
         },
     )
     .await?;
@@ -1142,6 +1226,189 @@ async fn create_agent(
     )
     .await;
     Ok(Json(json!(agent)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DispatchAgentBody {
+    content: String,
+    #[serde(default)]
+    from_agent_id: Option<String>,
+    #[serde(default)]
+    thread_id: Option<String>,
+}
+
+async fn get_agent_lineage(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let parents = agents::ancestors(database.conn(), &agent_id).await?;
+    let children = agents::descendants(database.conn(), &agent_id).await?;
+    Ok(Json(json!({ "parents": parents, "children": children })))
+}
+
+async fn dispatch_to_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<DispatchAgentBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let agent = agents::get(database.conn(), &agent_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
+    let msg = agent_messages::enqueue(
+        database.conn(),
+        agent_messages::EnqueueAgentMessage {
+            project_id: agent.project_id.clone(),
+            to_agent_id: agent.id.clone(),
+            from_agent_id: body.from_agent_id,
+            content: body.content,
+            thread_id: body.thread_id,
+            reply_to_message_id: None,
+        },
+    )
+    .await?;
+    let _ = state.executors.ensure(&agent.id, &agent.project_id).await;
+    state
+        .executors
+        .dispatch(
+            &agent.id,
+            hive_runtime::InboxItem {
+                message_id: msg.id.clone(),
+                content: msg.content.clone(),
+                thread_id: msg.thread_id.clone(),
+                from_agent_id: msg.from_agent_id.clone(),
+            },
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({ "messageId": msg.id })))
+}
+
+async fn pause_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let agent = agents::get(database.conn(), &agent_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
+    let _ = state.executors.ensure(&agent.id, &agent.project_id).await;
+    state
+        .executors
+        .pause(&agent_id)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let _ = agents::set_status(database.conn(), &agent_id, "paused").await?;
+    Ok(Json(json!({ "id": agent_id, "status": "paused" })))
+}
+
+async fn resume_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let agent = agents::get(database.conn(), &agent_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
+    let _ = state.executors.ensure(&agent.id, &agent.project_id).await;
+    state
+        .executors
+        .resume(&agent_id)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let _ = agents::set_status(database.conn(), &agent_id, "working").await?;
+    Ok(Json(json!({ "id": agent_id, "status": "working" })))
+}
+
+async fn terminate_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let _ = state
+        .executors
+        .terminate(&agent_id)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()));
+    let _ = agents::set_status(database.conn(), &agent_id, "deprecated").await;
+    Ok(Json(json!({ "id": agent_id, "status": "deprecated" })))
+}
+
+async fn ensure_coordinator(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let existing = agents::list_by_project(database.conn(), &project_id).await?;
+    if let Some(coord) = existing.into_iter().find(|a| a.role == "Coordinator") {
+        let _ = state.executors.ensure(&coord.id, &project_id).await;
+        return Ok(Json(json!(coord)));
+    }
+    let created = agents::create(
+        database.conn(),
+        agents::CreateAgent {
+            project_id: project_id.clone(),
+            slug: "coordinator".into(),
+            name: "Coordinator".into(),
+            role: "Coordinator".into(),
+            model: "auto".into(),
+            status: "idle".into(),
+            parent_agent_id: None,
+            spawned_by_message_id: None,
+            enabled_tools: Some(vec![
+                "fs_read".into(),
+                "fs_list".into(),
+                "fs_write".into(),
+                "shell_exec".into(),
+                "web_fetch".into(),
+                "web_search".into(),
+                "spawn_agent".into(),
+                "message_agent".into(),
+            ]),
+            system_prompt: Some(
+                "You are the Coordinator. Plan tasks, then spawn specialist agents to execute them."
+                    .into(),
+            ),
+            model_provider_id: None,
+            model_id: None,
+        },
+    )
+    .await?;
+    let _ = state.executors.ensure(&created.id, &project_id).await;
+    Ok(Json(json!(created)))
+}
+
+async fn list_tool_manifests(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
+    // Build a registry containing every tool the runtime knows about, then
+    // surface their manifests so the UI can let users pick allow-lists.
+    let mut registry = ToolRegistry::new();
+    register_defaults(&mut registry);
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| AppError::Internal(format!("build search client: {e}")))?;
+    let placeholder: Arc<dyn hive_search::SearchProvider> =
+        Arc::new(SearxNgProvider::new(http, "http://localhost:8888".to_string()));
+    register_web_search(&mut registry, placeholder);
+
+    let global = enabled_tools_for_turn(&state).await.unwrap_or_default();
+    let manifests = registry.manifests();
+    let payload: Vec<Value> = manifests
+        .into_iter()
+        .map(|m| {
+            json!({
+                "name": m.name,
+                "description": m.description,
+                "sideEffects": m.side_effects,
+                "defaultEnabled": global.iter().any(|n| n == &m.name),
+            })
+        })
+        .collect();
+    Ok(Json(json!(payload)))
 }
 
 async fn set_agent_status(
@@ -2311,5 +2578,224 @@ async fn resolve_chat_target(
 
     Err(AppError::BadRequest(
         "no connected provider — configure one in Settings → LLM, or start Ollama".into(),
+    ))
+}
+
+// ── Agent turn driver (Sprint 3.1) ──────────────────────────────────────────
+//
+// The executor in `hive-runtime` is provider-agnostic: when an inbox item
+// arrives, it asks the registered `TurnDriver` to run the LLM turn. This
+// implementation lives here in `hive-api` because turning an inbox item into
+// a real LLM round-trip needs all the provider-config, tooling, and
+// chat-message persistence machinery.
+
+#[derive(Clone)]
+struct ApiTurnDriver {
+    state: AppState,
+}
+
+impl ApiTurnDriver {
+    fn new(state: AppState) -> Self {
+        Self { state }
+    }
+
+    async fn run(&self, req: TurnRequest) -> Result<(), AppError> {
+        let TurnRequest {
+            agent_id,
+            project_id,
+            item,
+        } = req;
+        let database = db(&self.state).await;
+
+        // Look up the agent so we can honor its model + system prompt.
+        let agent = agents::get(database.conn(), &agent_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
+
+        // Resolve provider + model: agent override → global default → first
+        // connected provider/model.
+        let explicit_model = match (agent.model_provider_id.as_deref(), agent.model_id.as_deref()) {
+            (Some(pid), Some(mid)) => Some(ModelRef {
+                provider_id: pid.to_owned(),
+                model_id: mid.to_owned(),
+            }),
+            _ => None,
+        };
+        let (provider_id, model_id) =
+            resolve_chat_target(&self.state, explicit_model.as_ref()).await?;
+        let provider_row = llm_providers::get(database.conn(), &provider_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("llm provider {provider_id} not found"))
+            })?;
+        let config = build_provider_config(&self.state, &provider_row).await?;
+        let kind = config.kind;
+        let provider = Arc::from(client_for(config));
+
+        // Ensure a chat thread for this agent exists (one per agent within
+        // its project). The thread carries the agent's history so multi-turn
+        // tool loops have context.
+        let thread_title = format!("{} inbox", agent.role);
+        let thread = chat_threads::get_or_create_for_agent(
+            database.conn(),
+            &project_id,
+            Some(&agent_id),
+            &thread_title,
+        )
+        .await?;
+
+        // Persist the inbox content as a `user`-role message in the thread.
+        let user_msg = chat_messages::insert(
+            database.conn(),
+            chat_messages::NewMessage {
+                thread_id: thread.id.clone(),
+                role: "user".into(),
+                content: item.content.clone(),
+                tool_calls: json!([]),
+                model: None,
+                provider_id: None,
+                tokens_in: 0,
+                tokens_out: 0,
+                cost_cents: 0,
+                parent_message_id: None,
+                status: "done".into(),
+            },
+        )
+        .await?;
+        emit(
+            &self.state,
+            &format!("chat.{}.message", thread.id),
+            chat_message_json(&user_msg),
+        )
+        .await;
+
+        // Pending assistant placeholder — `chat::run_turn` streams into this
+        // row and finalizes it.
+        let assistant_row = chat_messages::insert(
+            database.conn(),
+            chat_messages::NewMessage {
+                thread_id: thread.id.clone(),
+                role: "assistant".into(),
+                content: String::new(),
+                tool_calls: json!([]),
+                model: Some(model_id.clone()),
+                provider_id: Some(provider_id.clone()),
+                tokens_in: 0,
+                tokens_out: 0,
+                cost_cents: 0,
+                parent_message_id: Some(user_msg.id.clone()),
+                status: "pending".into(),
+            },
+        )
+        .await?;
+        emit(
+            &self.state,
+            &format!("chat.{}.message", thread.id),
+            chat_message_json(&assistant_row),
+        )
+        .await;
+
+        // Mark the agent_message as running and notify subscribers.
+        let _ = agent_messages::mark_running(database.conn(), &item.message_id).await;
+        emit(
+            &self.state,
+            &format!("agent.{agent_id}.inbox"),
+            json!({
+                "agentId": agent_id,
+                "projectId": project_id,
+                "messageId": item.message_id,
+                "fromAgentId": item.from_agent_id,
+                "threadId": thread.id,
+                "assistantMessageId": assistant_row.id,
+                "status": "running",
+            }),
+        )
+        .await;
+
+        // Build per-turn tooling (intersected with global + agent allow-list).
+        let cancel_flag = Arc::new(Mutex::new(false));
+        let mut params = hive_runtime::chat::RunTurn {
+            db: database.clone(),
+            bus: EventBus::new(self.state.events.clone()),
+            provider,
+            provider_kind: kind,
+            provider_id: provider_id.clone(),
+            model: model_id.clone(),
+            project_id: project_id.clone(),
+            thread_id: thread.id.clone(),
+            assistant_message_id: assistant_row.id.clone(),
+            system_prompt: agent_system_prompt(&agent),
+            history_limit: 40,
+            agent_id: Some(agent_id.clone()),
+            tool_registry: None,
+            tool_context: None,
+            cancel: cancel_flag,
+        };
+        if let Some((registry, context)) = build_tooling(
+            &self.state,
+            &project_id,
+            Some(agent_id.clone()),
+            &assistant_row.id,
+            &thread.id,
+        )
+        .await?
+        {
+            params.tool_registry = Some(registry);
+            params.tool_context = Some(context);
+        }
+
+        // Drive the turn synchronously within the executor task. Errors
+        // propagate up so the wrapper marks the agent_message `error`.
+        if let Err(err) = hive_runtime::chat::run_turn(params).await {
+            return Err(AppError::Internal(format!("agent turn failed: {err}")));
+        }
+
+        // Re-read the assistant row to pick up the final answer + status.
+        let final_row = chat_messages::get(database.conn(), &assistant_row.id)
+            .await?
+            .unwrap_or(assistant_row);
+
+        let _ = agent_messages::mark_done(database.conn(), &item.message_id).await;
+        emit(
+            &self.state,
+            &format!("agent.{agent_id}.inbox"),
+            json!({
+                "agentId": agent_id,
+                "projectId": project_id,
+                "messageId": item.message_id,
+                "fromAgentId": item.from_agent_id,
+                "threadId": thread.id,
+                "assistantMessageId": final_row.id,
+                "status": "done",
+                "content": final_row.content,
+            }),
+        )
+        .await;
+
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl TurnDriver for ApiTurnDriver {
+    async fn drive(&self, req: TurnRequest) -> Result<(), TurnDriverError> {
+        self.run(req)
+            .await
+            .map_err(|e| TurnDriverError::Other(e.to_string()))
+    }
+}
+
+fn agent_system_prompt(agent: &hive_db::entities::agent::Model) -> Option<String> {
+    if let Some(custom) = agent.system_prompt.as_ref() {
+        if !custom.trim().is_empty() {
+            return Some(custom.clone());
+        }
+    }
+    Some(format!(
+        "You are the {role} agent ({name}) in HIVE, a multi-agent orchestration platform.\n\
+Respond with focused, actionable output. When you need help from another specialist, \
+use the `spawn_agent` tool to recruit one; use `message_agent` to coordinate with peers.",
+        role = agent.role,
+        name = agent.name,
     ))
 }

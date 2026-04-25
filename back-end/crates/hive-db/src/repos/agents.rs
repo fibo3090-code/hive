@@ -15,6 +15,18 @@ pub struct CreateAgent {
     pub role: String,
     pub model: String,
     pub status: String,
+    #[serde(default)]
+    pub parent_agent_id: Option<String>,
+    #[serde(default)]
+    pub spawned_by_message_id: Option<String>,
+    #[serde(default)]
+    pub enabled_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub model_provider_id: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -29,6 +41,10 @@ pub struct UpdateAgent {
     pub quality_score: Option<Option<i32>>,
     pub tokens_used: Option<i64>,
     pub eval_scores: Option<serde_json::Value>,
+    pub enabled_tools: Option<Vec<String>>,
+    pub system_prompt: Option<Option<String>>,
+    pub model_provider_id: Option<Option<String>>,
+    pub model_id: Option<Option<String>>,
 }
 
 // ── Queries ──────────────────────────────────────────────────────────────────
@@ -56,6 +72,10 @@ pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbE
 /// Create a new agent.
 pub async fn create(db: &DatabaseConnection, input: CreateAgent) -> Result<Model, DbErr> {
     let now = now_rfc3339();
+    let enabled_tools = input
+        .enabled_tools
+        .map(|v| serde_json::to_value(v).unwrap_or_else(|_| serde_json::json!([])))
+        .unwrap_or_else(|| serde_json::json!([]));
     let model = ActiveModel {
         id: Set(new_id()),
         project_id: Set(input.project_id),
@@ -68,6 +88,12 @@ pub async fn create(db: &DatabaseConnection, input: CreateAgent) -> Result<Model
         quality_score: Set(None),
         tokens_used: Set(0),
         eval_scores: Set(serde_json::json!({})),
+        parent_agent_id: Set(input.parent_agent_id),
+        spawned_by_message_id: Set(input.spawned_by_message_id),
+        enabled_tools: Set(enabled_tools),
+        system_prompt: Set(input.system_prompt),
+        model_provider_id: Set(input.model_provider_id),
+        model_id: Set(input.model_id),
         created_at: Set(now.clone()),
         updated_at: Set(now),
         deleted_at: Set(None),
@@ -111,6 +137,19 @@ pub async fn update(db: &DatabaseConnection, id: &str, input: UpdateAgent) -> Re
     if let Some(v) = input.eval_scores {
         model.eval_scores = Set(v);
     }
+    if let Some(v) = input.enabled_tools {
+        model.enabled_tools =
+            Set(serde_json::to_value(v).unwrap_or_else(|_| serde_json::json!([])));
+    }
+    if let Some(v) = input.system_prompt {
+        model.system_prompt = Set(v);
+    }
+    if let Some(v) = input.model_provider_id {
+        model.model_provider_id = Set(v);
+    }
+    if let Some(v) = input.model_id {
+        model.model_id = Set(v);
+    }
 
     model.updated_at = Set(now_rfc3339());
     model.update(db).await
@@ -136,4 +175,77 @@ pub async fn count_by_project(db: &DatabaseConnection, project_id: &str) -> Resu
         .filter(Column::DeletedAt.is_null())
         .count(db)
         .await
+}
+
+/// Get the agent's enabled-tools list as a `Vec<String>` (best-effort parse).
+pub fn parse_enabled_tools(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// List direct children of an agent.
+pub async fn list_children(
+    db: &DatabaseConnection,
+    parent_agent_id: &str,
+) -> Result<Vec<Model>, DbErr> {
+    Entity::find()
+        .filter(Column::ParentAgentId.eq(parent_agent_id))
+        .filter(Column::DeletedAt.is_null())
+        .all(db)
+        .await
+}
+
+/// Walk up the parent chain. Returns ordered ancestors closest-first.
+pub async fn ancestors(db: &DatabaseConnection, id: &str) -> Result<Vec<Model>, DbErr> {
+    let mut chain = Vec::new();
+    let mut cursor = id.to_owned();
+    let mut depth = 0;
+    while depth < 32 {
+        let agent = match Entity::find_by_id(cursor.clone())
+            .filter(Column::DeletedAt.is_null())
+            .one(db)
+            .await?
+        {
+            Some(a) => a,
+            None => break,
+        };
+        let parent = agent.parent_agent_id.clone();
+        if depth > 0 {
+            chain.push(agent);
+        }
+        match parent {
+            Some(p) => {
+                cursor = p;
+                depth += 1;
+            }
+            None => break,
+        }
+    }
+    Ok(chain)
+}
+
+/// Walk down the descendant tree (BFS).
+pub async fn descendants(db: &DatabaseConnection, id: &str) -> Result<Vec<Model>, DbErr> {
+    let mut out = Vec::new();
+    let mut frontier = vec![id.to_owned()];
+    let mut depth = 0;
+    while !frontier.is_empty() && depth < 16 {
+        let mut next = Vec::new();
+        for parent_id in &frontier {
+            let kids = list_children(db, parent_id).await?;
+            for k in kids {
+                next.push(k.id.clone());
+                out.push(k);
+            }
+        }
+        frontier = next;
+        depth += 1;
+    }
+    Ok(out)
 }

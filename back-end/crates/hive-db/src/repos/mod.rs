@@ -1,3 +1,4 @@
+pub mod agent_messages;
 pub mod agents;
 pub mod alerts;
 pub mod audit;
