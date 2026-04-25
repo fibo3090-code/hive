@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useHiveData } from '@/api/queries/useHiveData';
+import { useAgentLineage, useAgentMessages, useDispatchAgentTask, usePauseAgent, useResumeAgent, useTerminateAgent } from '@/api/agents';
 import type { Agent } from '@/types/domain';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ConfidenceBar } from '@/components/shared/ConfidenceBar';
-import { Network, Search, Lock, Plus, LayoutGrid, X, MessageSquare, Pause, Settings, Trash2 } from 'lucide-react';
+import { Network, Search, Lock, Plus, LayoutGrid, X, MessageSquare, Pause, Play, Settings, Trash2, SendHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
 import { ReactFlow, Background, Controls, MiniMap, type Node, type Edge, Handle, Position, MarkerType } from '@xyflow/react';
@@ -12,6 +13,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { AgentSpawnModal } from '@/components/modals/AgentSpawnModal';
+import { toast } from 'sonner';
 
 const lockedAgents = new Set(['be-001', 'fe-001']);
 const nodeTypes = { agentNode: AgentNode };
@@ -25,7 +27,7 @@ type AgentNodeData = {
   showLock: boolean;
   onMessage: (agentId: string) => void;
   onOpen: (agentId: string) => void;
-  onTogglePause: (agentId: string) => void;
+  onTogglePause: (agent: Agent) => void;
 };
 
 function buildGraph(agents: Agent[]): { nodes: Node[]; edges: Edge[] } {
@@ -96,16 +98,48 @@ function AgentNode({ data }: { readonly data: AgentNodeData }) {
       <ContextMenuContent className="w-44">
         <ContextMenuItem onClick={() => data.onMessage(agent.id)}>Message agent</ContextMenuItem>
         <ContextMenuItem onClick={() => data.onOpen(agent.id)}>Open details</ContextMenuItem>
-        <ContextMenuItem onClick={() => data.onTogglePause(agent.id)}>{agent.status === 'paused' ? 'Resume agent' : 'Pause agent'}</ContextMenuItem>
+        <ContextMenuItem onClick={() => data.onTogglePause(agent)}>{agent.status === 'paused' ? 'Resume agent' : 'Pause agent'}</ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );
 }
 
-function AgentDetailDrawer({ agent, onClose, onMessage }: { readonly agent: Agent; readonly onClose: () => void; readonly onMessage: () => void }) {
+function AgentDetailDrawer({
+  agent,
+  onClose,
+  onMessage,
+  onTogglePause,
+  onTerminate,
+}: {
+  readonly agent: Agent;
+  readonly onClose: () => void;
+  readonly onMessage: () => void;
+  readonly onTogglePause: (agent: Agent) => void;
+  readonly onTerminate: (agentId: string) => void;
+}) {
   const qualityScore = agent.qualityScore ?? 0;
+  const messagesQuery = useAgentMessages(agent.id);
+  const lineageQuery = useAgentLineage(agent.id);
+  const dispatchMutation = useDispatchAgentTask(agent.id);
+  const [taskDraft, setTaskDraft] = useState('');
+
+  const logs = messagesQuery.data ?? [];
+  const parents = lineageQuery.data?.parents ?? [];
+  const children = lineageQuery.data?.children ?? [];
+
+  const dispatchTask = async () => {
+    if (!taskDraft.trim()) return;
+    try {
+      await dispatchMutation.mutateAsync(taskDraft.trim());
+      toast.success('Task dispatched');
+      setTaskDraft('');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to dispatch task');
+    }
+  };
+
   return (
-    <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 30, stiffness: 260 }} className="absolute right-0 top-0 h-full w-[380px] border-l border-border bg-card z-50 flex flex-col overflow-hidden">
+    <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 30, stiffness: 260 }} className="absolute right-0 top-0 h-full w-[420px] border-l border-border bg-card z-50 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h3 className="text-sm font-semibold">{agent.name}</h3>
         <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
@@ -120,6 +154,7 @@ function AgentDetailDrawer({ agent, onClose, onMessage }: { readonly agent: Agen
             <div className="flex items-center gap-2"><span className="text-muted-foreground">Status:</span><StatusDot status={agent.status} size="sm" /></div>
           </div>
         </section>
+
         <section>
           <div className="text-micro font-semibold text-muted-foreground uppercase mb-2">Current State</div>
           <div className="rounded-md border border-border bg-surface-2 p-3">
@@ -130,21 +165,72 @@ function AgentDetailDrawer({ agent, onClose, onMessage }: { readonly agent: Agen
             </div>
           </div>
         </section>
+
+        <section>
+          <div className="text-micro font-semibold text-muted-foreground uppercase mb-2">Lineage</div>
+          <div className="rounded-md border border-border bg-surface-2 p-3 space-y-2 text-xs">
+            <div>
+              <div className="text-muted-foreground mb-1">Parents</div>
+              {parents.length === 0 ? <div className="text-muted-foreground">None</div> : parents.map((parent) => (
+                <div key={parent.id} className="flex items-center justify-between">
+                  <span>{parent.name}</span>
+                  <span className="font-mono text-micro text-muted-foreground">{parent.role}</span>
+                </div>
+              ))}
+            </div>
+            <div>
+              <div className="text-muted-foreground mb-1">Children</div>
+              {children.length === 0 ? <div className="text-muted-foreground">None</div> : children.map((child) => (
+                <div key={child.id} className="flex items-center justify-between">
+                  <span>{child.name}</span>
+                  <span className="text-micro text-muted-foreground">{child.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <div className="text-micro font-semibold text-muted-foreground uppercase mb-2">Task Dispatch</div>
+          <div className="rounded-md border border-border bg-surface-2 p-3 space-y-2">
+            <textarea
+              value={taskDraft}
+              onChange={(event) => setTaskDraft(event.target.value)}
+              className="w-full min-h-24 rounded-md border border-border bg-card px-3 py-2 text-xs"
+              placeholder="Dispatch a new task to this agent..."
+            />
+            <button
+              onClick={() => void dispatchTask()}
+              disabled={dispatchMutation.isPending}
+              className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-2 text-xs text-primary hover:bg-primary/20 disabled:opacity-50"
+            >
+              <SendHorizontal className="h-3.5 w-3.5" /> Send Task
+            </button>
+          </div>
+        </section>
+
         <section>
           <div className="text-micro font-semibold text-muted-foreground uppercase mb-2">Recent Logs</div>
-          <div className="space-y-1.5 text-xs text-muted-foreground">
-            <div>01:22:15 Started task: {agent.currentTask}</div>
-            <div>01:20:30 Completed eval cycle — score: {qualityScore}%</div>
-            <div>01:18:45 Received instructions from Planning Engine</div>
-            {lockedAgents.has(agent.id) && <div>01:16:10 Acquired file lock on active work item</div>}
+          <div className="space-y-2 text-xs">
+            {logs.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border p-3 text-muted-foreground">No inbox activity yet.</div>
+            ) : logs.map((log) => (
+              <div key={log.id} className="rounded-md border border-border bg-surface-2 p-3">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-medium">{log.status}</span>
+                  <span className="text-micro text-muted-foreground">{new Date(log.createdAt).toLocaleString()}</span>
+                </div>
+                <div className="text-muted-foreground whitespace-pre-wrap">{log.content || 'No content'}</div>
+              </div>
+            ))}
           </div>
         </section>
       </div>
       <div className="flex items-center gap-2 border-t border-border px-4 py-3">
         <button onClick={onMessage} className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-1.5 text-xs text-primary hover:bg-primary/20"><MessageSquare className="h-3.5 w-3.5" /> Message</button>
-        <button className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"><Pause className="h-3.5 w-3.5" /> Pause</button>
+        <button onClick={() => onTogglePause(agent)} className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground">{agent.status === 'paused' ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}{agent.status === 'paused' ? 'Resume' : 'Pause'}</button>
         <button className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"><Settings className="h-3.5 w-3.5" /> Config</button>
-        <button className="flex items-center gap-1 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 ml-auto"><Trash2 className="h-3.5 w-3.5" /> Deprecate</button>
+        <button onClick={() => onTerminate(agent.id)} className="flex items-center gap-1 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 ml-auto"><Trash2 className="h-3.5 w-3.5" /> Terminate</button>
       </div>
     </motion.div>
   );
@@ -192,6 +278,9 @@ export default function HiveGraph() {
   const navigate = useNavigate();
   const { state } = useHiveData();
   const { setChatTargetAgentId, graphFocusAgentId, setGraphFocusAgentId } = useWorkspace();
+  const pauseMutation = usePauseAgent();
+  const resumeMutation = useResumeAgent();
+  const terminateMutation = useTerminateAgent();
   const [view, setView] = useState<'org' | 'graph'>('graph');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
@@ -211,6 +300,30 @@ export default function HiveGraph() {
   const filteredIds = useMemo(() => new Set(visibleAgents.map((agent) => agent.id)), [visibleAgents]);
   const searchLower = search.toLowerCase();
 
+  const togglePause = useCallback(async (agent: Agent) => {
+    try {
+      if (agent.status === 'paused') {
+        await resumeMutation.mutateAsync(agent.id);
+        toast.success(`${agent.name} resumed`);
+      } else {
+        await pauseMutation.mutateAsync(agent.id);
+        toast.success(`${agent.name} paused`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to update agent state');
+    }
+  }, [pauseMutation, resumeMutation]);
+
+  const terminateAgent = useCallback(async (agentId: string) => {
+    try {
+      await terminateMutation.mutateAsync(agentId);
+      toast.success('Agent terminated');
+      setSelectedAgentId((current) => (current === agentId ? null : current));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to terminate agent');
+    }
+  }, [terminateMutation]);
+
   const nodes = useMemo<Node[]>(() => graph.nodes.map((node) => {
     const agent = state.agents.find((candidate) => candidate.id === node.id)!;
     const matchesSearch = searchLower === '' || agent.name.toLowerCase().includes(searchLower) || agent.role.toLowerCase().includes(searchLower);
@@ -224,10 +337,10 @@ export default function HiveGraph() {
         showLock: showLocks,
         onMessage: (agentId: string) => { setChatTargetAgentId(agentId); navigate('/chat'); },
         onOpen: (agentId: string) => setSelectedAgentId(agentId),
-        onTogglePause: (agentId: string) => setSelectedAgentId(agentId),
+        onTogglePause: (agentValue: Agent) => { void togglePause(agentValue); },
       },
     };
-  }), [filteredIds, graph.nodes, navigate, searchLower, setChatTargetAgentId, showLocks, state.agents]);
+  }), [filteredIds, graph.nodes, navigate, searchLower, setChatTargetAgentId, showLocks, state.agents, togglePause]);
 
   const selectedAgent = selectedAgentId ? state.agents.find((agent) => agent.id === selectedAgentId) ?? null : null;
 
@@ -294,8 +407,13 @@ export default function HiveGraph() {
 
         <AnimatePresence>
           {selectedAgent && (
-            <AgentDetailDrawer agent={selectedAgent} onClose={() => setSelectedAgentId(null)}
-              onMessage={() => { setChatTargetAgentId(selectedAgent.id); navigate('/chat'); }} />
+            <AgentDetailDrawer
+              agent={selectedAgent}
+              onClose={() => setSelectedAgentId(null)}
+              onMessage={() => { setChatTargetAgentId(selectedAgent.id); navigate('/chat'); }}
+              onTogglePause={(agent) => { void togglePause(agent); }}
+              onTerminate={(agentId) => { void terminateAgent(agentId); }}
+            />
           )}
         </AnimatePresence>
       </div>

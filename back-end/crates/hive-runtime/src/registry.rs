@@ -125,13 +125,10 @@ impl ExecutorRegistry {
     /// On startup: walk every persisted agent and spin up an executor so the
     /// inbox can be drained without waiting for a fresh API call.
     pub async fn rehydrate_from_db(&self) -> Result<usize, sea_orm::DbErr> {
-        // The repos module doesn't expose a "list all" — walk by project
-        // through a raw query would be cleaner, but for now we just rebuild
-        // executors lazily as agents are touched. Returning 0 keeps the boot
-        // path quiet; real rehydration arrives with the project iteration
-        // helper.
-        // TODO(sprint-3.1): list all non-deleted agents and `ensure` each.
-        let _ = agents::parse_enabled_tools(&serde_json::json!([]));
-        Ok(0)
+        let all = agents::list_all(self.db.conn()).await?;
+        for agent in &all {
+            let _ = self.ensure(&agent.id, &agent.project_id).await;
+        }
+        Ok(all.len())
     }
 }

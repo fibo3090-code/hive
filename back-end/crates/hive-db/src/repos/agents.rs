@@ -61,6 +61,14 @@ pub async fn list_by_project(
         .await
 }
 
+/// List every non-deleted agent across all projects.
+pub async fn list_all(db: &DatabaseConnection) -> Result<Vec<Model>, DbErr> {
+    Entity::find()
+        .filter(Column::DeletedAt.is_null())
+        .all(db)
+        .await
+}
+
 /// Get a single agent by id.
 pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbErr> {
     Entity::find_by_id(id.to_owned())

@@ -23,11 +23,14 @@ use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
         agent_messages, agents, alerts, audit, chat_messages, chat_threads, cost_events,
-        llm_providers, notes, notifications, projects, sessions, settings, sprints, tasks,
-        tech_debt,
+        llm_providers, notes, notifications, projects, sessions, settings, sprints,
+        synthesis_jobs, tasks, tech_debt,
     },
     seed::seed_demo,
     Db,
+};
+use hive_git::{
+    CreatePullRequest, GitDiff, GitError, GitFile, GitHubClient, GitRepo, GitTreeEntry,
 };
 use hive_llm::{client_for, ModelInfo, ProviderConfig, ProviderKind};
 use hive_runtime::{EventBus, RuntimeEvent, TurnDriver, TurnDriverError, TurnRequest};
@@ -291,6 +294,88 @@ struct WorkspaceInfo {
     root_path: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateGitBranchBody {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CheckoutGitBranchBody {
+    name: String,
+    #[serde(default)]
+    create: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitGitBody {
+    message: String,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    paths: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreGitBody {
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitLogQuery {
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitTreeQuery {
+    #[serde(rename = "ref")]
+    reference: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitFileQuery {
+    #[serde(rename = "ref")]
+    reference: Option<String>,
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectGitHubBody {
+    token: String,
+    owner: String,
+    repo: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreatePullRequestBody {
+    title: String,
+    #[serde(default)]
+    body: Option<String>,
+    head: String,
+    base: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SynthesizeModuleBody {
+    description: String,
+    #[serde(default)]
+    tier: Option<String>,
+    #[serde(default)]
+    model: Option<ModelRef>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -475,6 +560,19 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/projects/:project_id/workspace/init",
             post(init_workspace),
         )
+        .route("/v1/projects/:project_id/git/init", post(init_git_repo))
+        .route("/v1/projects/:project_id/git/status", get(get_git_status))
+        .route("/v1/projects/:project_id/git/branches", get(list_git_branches).post(create_git_branch))
+        .route("/v1/projects/:project_id/git/checkout", post(checkout_git_branch))
+        .route("/v1/projects/:project_id/git/log", get(get_git_log))
+        .route("/v1/projects/:project_id/git/tree", get(get_git_tree))
+        .route("/v1/projects/:project_id/git/file", get(get_git_file))
+        .route("/v1/projects/:project_id/git/diff/:reference", get(get_git_diff))
+        .route("/v1/projects/:project_id/git/commit", post(commit_git_changes))
+        .route("/v1/projects/:project_id/git/restore", post(restore_git_changes))
+        .route("/v1/projects/:project_id/github/connect", post(connect_github))
+        .route("/v1/projects/:project_id/github/status", get(get_github_status))
+        .route("/v1/projects/:project_id/github/pulls", get(list_github_pulls).post(create_github_pull))
         .route("/v1/chat-threads", post(create_chat_thread))
         .route("/v1/chat-threads/:thread_id", get(get_chat_thread))
         .route(
@@ -485,6 +583,8 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/chat-messages/:message_id/cancel",
             post(cancel_chat_message),
         )
+        .route("/v1/projects/:project_id/modules/synthesize", post(start_module_synthesis))
+        .route("/v1/synthesis-jobs/:job_id", get(get_synthesis_job))
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
@@ -584,6 +684,10 @@ fn workspace_dir(data_dir: &StdPath, project_id: &str) -> PathBuf {
     data_dir.join("workspaces").join(project_id)
 }
 
+fn project_scope(project_id: &str) -> String {
+    format!("project:{project_id}")
+}
+
 fn ensure_object(value: &mut Value) -> Result<&mut serde_json::Map<String, Value>, AppError> {
     if !value.is_object() {
         *value = json!({});
@@ -663,6 +767,44 @@ async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppEr
         "tavilyMaskedKey": masked_key,
         "enabledTools": enabled_tools,
     }))
+}
+
+async fn github_status_for_project(
+    state: &AppState,
+    project_id: &str,
+) -> Result<Option<(GitHubClient, Option<String>)>, AppError> {
+    let database = db(state).await;
+    let scope = project_scope(project_id);
+    let owner = settings::get_value(database.conn(), &scope, "github.owner")
+        .await?
+        .and_then(|value| value.as_str().map(ToOwned::to_owned));
+    let repo = settings::get_value(database.conn(), &scope, "github.repo")
+        .await?
+        .and_then(|value| value.as_str().map(ToOwned::to_owned));
+    let ciphertext = settings::get_value(database.conn(), &scope, "github.tokenCiphertext")
+        .await?;
+    let masked = settings::get_value(database.conn(), &scope, "github.maskedToken")
+        .await?
+        .and_then(|value| value.as_str().map(ToOwned::to_owned));
+    let Some(owner) = owner else {
+        return Ok(None);
+    };
+    let Some(repo) = repo else {
+        return Ok(None);
+    };
+    let Some(ciphertext) = ciphertext else {
+        return Ok(None);
+    };
+    let sealed = serde_json::from_value::<Vec<u8>>(ciphertext)
+        .map_err(|e| AppError::Internal(format!("parse github token: {e}")))?;
+    let token = String::from_utf8(
+        state
+            .crypto
+            .open(&sealed)
+            .map_err(|e| AppError::Internal(format!("decrypt github token: {e}")))?,
+    )
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Some((GitHubClient::new(owner, repo, token), masked)))
 }
 
 async fn enabled_tools_for_turn(state: &AppState) -> Result<Vec<String>, AppError> {
@@ -1301,6 +1443,12 @@ async fn pause_agent(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let _ = agents::set_status(database.conn(), &agent_id, "paused").await?;
+    emit(
+        &state,
+        "agent.status",
+        json!({ "id": agent_id, "status": "paused" }),
+    )
+    .await;
     Ok(Json(json!({ "id": agent_id, "status": "paused" })))
 }
 
@@ -1319,6 +1467,12 @@ async fn resume_agent(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let _ = agents::set_status(database.conn(), &agent_id, "working").await?;
+    emit(
+        &state,
+        "agent.status",
+        json!({ "id": agent_id, "status": "working" }),
+    )
+    .await;
     Ok(Json(json!({ "id": agent_id, "status": "working" })))
 }
 
@@ -1333,6 +1487,12 @@ async fn terminate_agent(
         .await
         .map_err(|e| AppError::Internal(e.to_string()));
     let _ = agents::set_status(database.conn(), &agent_id, "deprecated").await;
+    emit(
+        &state,
+        "agent.status",
+        json!({ "id": agent_id, "status": "deprecated" }),
+    )
+    .await;
     Ok(Json(json!({ "id": agent_id, "status": "deprecated" })))
 }
 
@@ -1445,18 +1605,26 @@ async fn get_agent_messages(
     Path(agent_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    let scope = format!(
-        "project:{}",
-        active_project_id(&state).await?.unwrap_or_default()
-    );
-    let messages = settings::get_value(database.conn(), &scope, "agentMessages")
-        .await?
-        .unwrap_or_else(|| json!({}));
-    let result = messages
-        .get(&agent_id)
-        .cloned()
-        .unwrap_or_else(|| json!([]));
-    Ok(Json(result))
+    let rows = agent_messages::list_by_agent(database.conn(), &agent_id, 50).await?;
+    Ok(Json(json!(
+        rows.into_iter()
+            .map(|row| {
+                json!({
+                    "id": row.id,
+                    "projectId": row.project_id,
+                    "fromAgentId": row.from_agent_id,
+                    "toAgentId": row.to_agent_id,
+                    "threadId": row.thread_id,
+                    "replyToMessageId": row.reply_to_message_id,
+                    "content": row.content,
+                    "toolCalls": row.tool_calls,
+                    "status": row.status,
+                    "createdAt": row.created_at,
+                    "completedAt": row.completed_at,
+                })
+            })
+            .collect::<Vec<_>>()
+    )))
 }
 
 async fn list_tasks(
@@ -1914,6 +2082,9 @@ async fn init_workspace(
     tokio::fs::create_dir_all(&root)
         .await
         .map_err(|e| AppError::Internal(format!("create workspace: {e}")))?;
+    GitRepo::new(root.clone())
+        .init()
+        .map_err(|e| AppError::Internal(format!("init git repo: {e}")))?;
     emit(
         &state,
         "workspace.updated",
@@ -1926,6 +2097,513 @@ async fn init_workspace(
         status: "ready".into(),
         root_path: root.to_string_lossy().into_owned(),
     })))
+}
+
+fn git_error(err: GitError) -> AppError {
+    AppError::BadRequest(err.to_string())
+}
+
+async fn git_repo_for_project(state: &AppState, project_id: &str) -> Result<GitRepo, AppError> {
+    let data_dir = state.inner.read().await.data_dir.clone();
+    Ok(GitRepo::new(workspace_dir(&data_dir, project_id)))
+}
+
+fn synthesis_job_json(job: &hive_db::entities::synthesis_job::Model) -> Value {
+    json!({
+        "id": job.id,
+        "projectId": job.project_id,
+        "status": job.status,
+        "description": job.description,
+        "tier": job.tier,
+        "providerId": job.provider_id,
+        "modelId": job.model_id,
+        "manifestJson": job.manifest_json,
+        "generatedFilesJson": job.generated_files_json,
+        "error": job.error,
+        "createdAt": job.created_at,
+        "updatedAt": job.updated_at,
+        "completedAt": job.completed_at,
+    })
+}
+
+async fn init_git_repo(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let _ = init_workspace(State(state.clone()), Path(project_id.clone())).await?;
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    repo.init().map_err(git_error)?;
+    emit(&state, "git.changed", json!({ "projectId": project_id })).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn get_git_status(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    Ok(Json(json!(repo.status().map_err(git_error)?)))
+}
+
+async fn list_git_branches(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    Ok(Json(json!(repo.branches().map_err(git_error)?)))
+}
+
+async fn create_git_branch(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<CreateGitBranchBody>,
+) -> Result<Json<Value>, AppError> {
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    repo.create_branch(&body.name).map_err(git_error)?;
+    emit(&state, "git.changed", json!({ "projectId": project_id })).await;
+    Ok(Json(json!({ "ok": true, "name": body.name })))
+}
+
+async fn checkout_git_branch(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<CheckoutGitBranchBody>,
+) -> Result<Json<Value>, AppError> {
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    repo.checkout(&body.name, body.create).map_err(git_error)?;
+    emit(&state, "git.changed", json!({ "projectId": project_id })).await;
+    Ok(Json(json!({ "ok": true, "name": body.name })))
+}
+
+async fn get_git_log(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<GitLogQuery>,
+) -> Result<Json<Value>, AppError> {
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    Ok(Json(json!(
+        repo.log(query.limit.unwrap_or(30).min(200))
+            .map_err(git_error)?
+    )))
+}
+
+async fn get_git_tree(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<GitTreeQuery>,
+) -> Result<Json<Value>, AppError> {
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    let entries: Vec<GitTreeEntry> = repo.tree(query.reference.as_deref()).map_err(git_error)?;
+    Ok(Json(json!(entries)))
+}
+
+async fn get_git_file(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<GitFileQuery>,
+) -> Result<Json<Value>, AppError> {
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    let file: GitFile = repo.file(query.reference.as_deref(), &query.path).map_err(git_error)?;
+    Ok(Json(json!(file)))
+}
+
+async fn get_git_diff(
+    State(state): State<AppState>,
+    Path((project_id, reference)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    let diff: GitDiff = repo.diff(Some(&reference)).map_err(git_error)?;
+    Ok(Json(json!(diff)))
+}
+
+async fn commit_git_changes(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<CommitGitBody>,
+) -> Result<Json<Value>, AppError> {
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    let commit = repo
+        .commit(
+            &body.message,
+            body.author.as_deref().unwrap_or("HIVE"),
+            body.email.as_deref().unwrap_or("hive@local.invalid"),
+            body.paths.as_deref(),
+        )
+        .map_err(git_error)?;
+    emit(&state, "git.changed", json!({ "projectId": project_id })).await;
+    Ok(Json(json!(commit)))
+}
+
+async fn restore_git_changes(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<RestoreGitBody>,
+) -> Result<Json<Value>, AppError> {
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    repo.restore(&body.paths).map_err(git_error)?;
+    emit(&state, "git.changed", json!({ "projectId": project_id })).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn connect_github(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<ConnectGitHubBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let scope = project_scope(&project_id);
+    let sealed = state
+        .crypto
+        .seal(body.token.as_bytes())
+        .map_err(|e| AppError::Internal(format!("seal github token: {e}")))?;
+    settings::put_value(database.conn(), &scope, "github.owner", json!(body.owner)).await?;
+    settings::put_value(database.conn(), &scope, "github.repo", json!(body.repo)).await?;
+    settings::put_value(
+        database.conn(),
+        &scope,
+        "github.maskedToken",
+        json!(mask_key(&body.token)),
+    )
+    .await?;
+    settings::put_value(
+        database.conn(),
+        &scope,
+        "github.tokenCiphertext",
+        serde_json::to_value(sealed).map_err(|e| AppError::Internal(e.to_string()))?,
+    )
+    .await?;
+
+    let client = GitHubClient::new(
+        body.owner.clone(),
+        body.repo.clone(),
+        body.token.clone(),
+    );
+    let status = client
+        .status(Some(mask_key(&body.token)))
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    if let Some(default_branch) = status.default_branch.clone() {
+        settings::put_value(
+            database.conn(),
+            &scope,
+            "github.defaultBranch",
+            json!(default_branch),
+        )
+        .await?;
+    }
+    Ok(Json(json!(status)))
+}
+
+async fn get_github_status(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let scope = project_scope(&project_id);
+    if let Some((client, masked)) = github_status_for_project(&state, &project_id).await? {
+        let status = client.status(masked).await.map_err(git_error)?;
+        if let Some(default_branch) = status.default_branch.clone() {
+            settings::put_value(
+                database.conn(),
+                &scope,
+                "github.defaultBranch",
+                json!(default_branch),
+            )
+            .await?;
+        }
+        return Ok(Json(json!(status)));
+    }
+    Ok(Json(json!({
+        "connected": false,
+        "owner": Value::Null,
+        "repo": Value::Null,
+        "defaultBranch": Value::Null,
+        "maskedToken": Value::Null,
+    })))
+}
+
+async fn list_github_pulls(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let Some((client, _)) = github_status_for_project(&state, &project_id).await? else {
+        return Ok(Json(json!([])));
+    };
+    Ok(Json(json!(client.list_pulls().await.map_err(git_error)?)))
+}
+
+async fn create_github_pull(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<CreatePullRequestBody>,
+) -> Result<Json<Value>, AppError> {
+    let Some((client, _)) = github_status_for_project(&state, &project_id).await? else {
+        return Err(AppError::BadRequest("github is not connected for this project".into()));
+    };
+    let pr = client
+        .create_pull(CreatePullRequest {
+            title: body.title,
+            body: body.body,
+            head: body.head,
+            base: body.base,
+        })
+        .await
+        .map_err(git_error)?;
+    Ok(Json(json!(pr)))
+}
+
+fn slugify(input: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in input.to_ascii_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_matches('-').chars().take(48).collect()
+}
+
+async fn start_module_synthesis(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<SynthesizeModuleBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let job = synthesis_jobs::create(
+        database.conn(),
+        synthesis_jobs::CreateSynthesisJob {
+            project_id: project_id.clone(),
+            description: body.description.clone(),
+            tier: body.tier.clone(),
+            provider_id: body.model.as_ref().map(|model| model.provider_id.clone()),
+            model_id: body.model.as_ref().map(|model| model.model_id.clone()),
+        },
+    )
+    .await?;
+
+    let state_clone = state.clone();
+    let job_id = job.id.clone();
+    tokio::spawn(async move {
+        let result = run_synthesis_job(
+            state_clone.clone(),
+            project_id.clone(),
+            job_id.clone(),
+            body.description.clone(),
+            body.tier.clone(),
+        )
+        .await;
+        if let Err(err) = result {
+            if let Ok(database) = async { Ok::<_, AppError>(db(&state_clone).await) }.await {
+                let _ = synthesis_jobs::set_status(
+                    database.conn(),
+                    &job_id,
+                    "error",
+                    json!({}),
+                    json!([]),
+                    Some(err.to_string()),
+                    true,
+                )
+                .await;
+                emit(
+                    &state_clone,
+                    &format!("synthesis.{job_id}.error"),
+                    json!({ "jobId": job_id, "error": err.to_string() }),
+                )
+                .await;
+                emit(
+                    &state_clone,
+                    "synthesis.error",
+                    json!({ "jobId": job_id, "projectId": project_id, "error": err.to_string() }),
+                )
+                .await;
+            }
+        }
+    });
+
+    Ok(Json(json!({ "jobId": job.id })))
+}
+
+async fn get_synthesis_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let job = synthesis_jobs::get(database.conn(), &job_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("synthesis job {job_id} not found")))?;
+    Ok(Json(synthesis_job_json(&job)))
+}
+
+async fn run_synthesis_job(
+    state: AppState,
+    project_id: String,
+    job_id: String,
+    description: String,
+    tier: Option<String>,
+) -> Result<(), AppError> {
+    let database = db(&state).await;
+    let _ = init_workspace(State(state.clone()), Path(project_id.clone())).await?;
+    let repo = git_repo_for_project(&state, &project_id).await?;
+    repo.init().map_err(git_error)?;
+
+    let slug = {
+        let candidate = slugify(&description);
+        if candidate.is_empty() {
+            format!("module-{}", &job_id[..8.min(job_id.len())])
+        } else {
+            candidate
+        }
+    };
+    let module_root = repo.root().join(".hive").join("modules").join(&slug);
+    let src_dir = module_root.join("src");
+    tokio::fs::create_dir_all(&src_dir)
+        .await
+        .map_err(|e| AppError::Internal(format!("create module dirs: {e}")))?;
+
+    let steps = [
+        "Analyzing request",
+        "Writing manifest",
+        "Scaffolding module files",
+        "Committing generated module",
+    ];
+    for (index, step) in steps.iter().enumerate() {
+        emit(
+            &state,
+            &format!("synthesis.{job_id}.progress"),
+            json!({
+                "jobId": job_id,
+                "projectId": project_id,
+                "step": index + 1,
+                "total": steps.len(),
+                "logLine": step,
+            }),
+        )
+        .await;
+        emit(
+            &state,
+            "synthesis.progress",
+            json!({
+                "jobId": job_id,
+                "projectId": project_id,
+                "step": index + 1,
+                "total": steps.len(),
+                "logLine": step,
+            }),
+        )
+        .await;
+    }
+
+    let manifest = json!({
+        "id": slug,
+        "name": description,
+        "version": "0.1.0",
+        "category": "Project",
+        "status": "available",
+        "description": description,
+        "author": "HIVE Synthesizer",
+        "layers": ["interface", "logic", "integration"],
+        "tier": tier,
+    });
+    let readme = format!(
+        "# {name}\n\nGenerated by HIVE.\n\n## Intent\n\n{description}\n",
+        name = description,
+        description = description
+    );
+    let code = format!(
+        "export const moduleManifest = {} as const;\n\nexport function describeModule() {{\n  return moduleManifest.description;\n}}\n",
+        serde_json::to_string_pretty(&manifest)
+            .map_err(|e| AppError::Internal(e.to_string()))?
+    );
+
+    let manifest_path = module_root.join("manifest.json");
+    let readme_path = module_root.join("README.md");
+    let code_path = src_dir.join("index.ts");
+    tokio::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).map_err(|e| AppError::Internal(e.to_string()))?,
+    )
+    .await
+    .map_err(|e| AppError::Internal(format!("write manifest: {e}")))?;
+    tokio::fs::write(&readme_path, readme)
+        .await
+        .map_err(|e| AppError::Internal(format!("write readme: {e}")))?;
+    tokio::fs::write(&code_path, code)
+        .await
+        .map_err(|e| AppError::Internal(format!("write code: {e}")))?;
+
+    let rel_manifest = format!(".hive/modules/{slug}/manifest.json");
+    let rel_readme = format!(".hive/modules/{slug}/README.md");
+    let rel_code = format!(".hive/modules/{slug}/src/index.ts");
+    let generated_files = vec![rel_manifest.clone(), rel_readme.clone(), rel_code.clone()];
+    let _ = repo
+        .commit(
+            &format!("feat(module): synthesize {slug}"),
+            "HIVE Synthesizer",
+            "hive@local.invalid",
+            Some(&generated_files),
+        )
+        .map_err(git_error)?;
+
+    let mut catalog = settings::get_value(database.conn(), "global", "moduleCatalog")
+        .await?
+        .unwrap_or_else(|| json!([]));
+    if let Some(items) = catalog.as_array_mut() {
+        items.retain(|item| item.get("id").and_then(Value::as_str) != Some(slug.as_str()));
+        items.push(json!({
+            "id": slug,
+            "name": description,
+            "version": "0.1.0",
+            "status": "installed",
+            "category": "Project",
+            "description": description,
+            "longDescription": format!("Synthesized from: {description}"),
+            "stars": 0,
+            "downloads": "0",
+            "layers": ["interface", "logic", "integration"],
+            "author": "HIVE Synthesizer",
+            "updated": "just now",
+        }));
+    }
+    settings::put_value(database.conn(), "global", "moduleCatalog", catalog).await?;
+
+    let updated = synthesis_jobs::set_status(
+        database.conn(),
+        &job_id,
+        "completed",
+        manifest.clone(),
+        json!(generated_files),
+        None,
+        true,
+    )
+    .await?;
+    emit(
+        &state,
+        &format!("synthesis.{job_id}.complete"),
+        json!({
+            "jobId": job_id,
+            "projectId": project_id,
+            "moduleId": slug,
+            "generatedFiles": updated.generated_files_json,
+        }),
+    )
+    .await;
+    emit(
+        &state,
+        "synthesis.complete",
+        json!({
+            "jobId": job_id,
+            "projectId": project_id,
+            "moduleId": slug,
+        }),
+    )
+    .await;
+    emit(&state, "module.installed", json!({ "id": slug })).await;
+    emit(&state, "git.changed", json!({ "projectId": project_id })).await;
+    Ok(())
 }
 
 async fn get_settings(State(state): State<AppState>) -> Result<Json<Value>, AppError> {

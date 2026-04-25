@@ -12,6 +12,7 @@ pub mod projects;
 pub mod sessions;
 pub mod settings;
 pub mod sprints;
+pub mod synthesis_jobs;
 pub mod tasks;
 pub mod tech_debt;
 

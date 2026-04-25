@@ -969,6 +969,7 @@ dependencies = [
  "futures-core",
  "hive-crypto",
  "hive-db",
+ "hive-git",
  "hive-llm",
  "hive-runtime",
  "hive-sandbox",
@@ -1022,6 +1023,16 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "hive-git"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

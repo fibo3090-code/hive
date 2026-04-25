@@ -1,4 +1,4 @@
-import { useMemo, useState, type MouseEvent } from 'react';
+import { useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import {
@@ -18,32 +18,37 @@ import { Progress } from '@/components/ui/progress';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useInstallModule, useModulesData } from '@/api/queries/useServerData';
+import { useStartSynthesis, useSynthesisJob } from '@/api/synthesis';
+import { eventStreamUrl } from '@/api/client';
 import type { ModuleCatalogItem } from '@/types/domain';
 import { toast } from 'sonner';
+import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
+import { useWorkspace } from '@/context/WorkspaceContext';
 
 const categories = ['All', 'Installed', 'Core', 'Community', 'Project', 'Synthesizer'];
-const synthesizerSteps = [
-  'Analyzing requirements',
-  'Generating interface layer',
-  'Building logic layer',
-  'Creating storage layer',
-  'Adding event handlers',
-  'Writing tests',
-  'Running eval',
-  'Packaging module',
-];
+
+type ProgressEvent = {
+  step: number;
+  total: number;
+  logLine: string;
+};
 
 export default function Modules() {
   const navigate = useNavigate();
   const { activeProject } = useHiveData();
+  const { defaultModel } = useWorkspace();
   const modulesQuery = useModulesData(activeProject?.id);
   const installModule = useInstallModule(activeProject?.id);
+  const startSynthesis = useStartSynthesis(activeProject?.id);
   const [category, setCategory] = useState('All');
   const [expandedModule, setExpandedModule] = useState<string | null>(null);
   const [showSynthesizer, setShowSynthesizer] = useState(false);
-  const [synthStep, setSynthStep] = useState(0);
-  const [synthRunning, setSynthRunning] = useState(false);
   const [search, setSearch] = useState('');
+  const [description, setDescription] = useState('');
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [progress, setProgress] = useState<ProgressEvent[]>([]);
+  const [selectedModel, setSelectedModel] = useState<ModelSelection | null>(defaultModel);
+  const jobQuery = useSynthesisJob(jobId);
 
   const modules = useMemo<ModuleCatalogItem[]>(() => modulesQuery.data ?? [], [modulesQuery.data]);
   const filtered = useMemo(() => {
@@ -58,18 +63,70 @@ export default function Modules() {
     });
   }, [category, modules, search]);
 
-  const startSynth = () => {
-    setSynthRunning(true);
-    setSynthStep(0);
-    let step = 0;
-    const interval = globalThis.setInterval(() => {
-      step += 1;
-      setSynthStep(step);
-      if (step >= synthesizerSteps.length) {
-        globalThis.clearInterval(interval);
-        setSynthRunning(false);
+  useEffect(() => {
+    if (!jobId) return;
+    const source = new EventSource(eventStreamUrl('/v1/events'));
+
+    const onProgress = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as { jobId: string; step: number; total: number; logLine: string };
+        if (data.jobId !== jobId) return;
+        setProgress((current) => [...current, { step: data.step, total: data.total, logLine: data.logLine }]);
+      } catch {
+        // ignore malformed events
       }
-    }, 900);
+    };
+
+    const onComplete = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as { jobId: string; moduleId: string };
+        if (data.jobId !== jobId) return;
+        toast.success('Module synthesis complete');
+        navigate(`/modules/${data.moduleId}`);
+      } catch {
+        // ignore malformed events
+      }
+    };
+
+    const onError = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as { jobId: string; error: string };
+        if (data.jobId !== jobId) return;
+        toast.error(data.error);
+      } catch {
+        // ignore malformed events
+      }
+    };
+
+    source.addEventListener(`synthesis.${jobId}.progress`, onProgress as EventListener);
+    source.addEventListener(`synthesis.${jobId}.complete`, onComplete as EventListener);
+    source.addEventListener(`synthesis.${jobId}.error`, onError as EventListener);
+
+    return () => source.close();
+  }, [jobId, navigate]);
+
+  useEffect(() => {
+    if (jobQuery.data?.status === 'error' && jobQuery.data.error) {
+      toast.error(jobQuery.data.error);
+    }
+  }, [jobQuery.data?.error, jobQuery.data?.status]);
+
+  const startSynth = async () => {
+    if (!description.trim()) {
+      toast.error('Describe the module first');
+      return;
+    }
+    try {
+      setProgress([]);
+      const result = await startSynthesis.mutateAsync({
+        description: description.trim(),
+        tier: activeProject?.sovereigntyTier ?? null,
+        model: selectedModel,
+      });
+      setJobId(result.jobId);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to synthesize module');
+    }
   };
 
   const handleInstall = async (event: MouseEvent, moduleId: string) => {
@@ -82,6 +139,9 @@ export default function Modules() {
       toast.error(error instanceof Error ? error.message : 'Unable to install module');
     }
   };
+
+  const currentProgress = progress.length > 0 ? progress[progress.length - 1] : undefined;
+  const progressValue = currentProgress ? (currentProgress.step / currentProgress.total) * 100 : 0;
 
   return (
     <div className="flex h-full">
@@ -111,48 +171,63 @@ export default function Modules() {
 
       <div className="flex-1 overflow-auto scrollbar-thin p-6 animate-fade-in">
         {showSynthesizer ? (
-          <div className="max-w-xl space-y-6">
+          <div className="max-w-2xl space-y-6">
             <h2 className="text-lg font-semibold">Module Synthesizer</h2>
             <p className="text-sm text-muted-foreground">
-              This flow is intentionally UI-only for now. Installed and available modules come from the backend catalog,
-              while synthesis remains a guided placeholder until orchestration lands.
+              Generate a project module into the real workspace, commit it, and stream progress back into HIVE.
             </p>
-            <textarea
-              className="w-full rounded-lg border border-border bg-card p-3 text-sm placeholder:text-muted-foreground resize-none h-24"
-              placeholder="Describe the module you want to create..."
-            />
-            <button
-              onClick={startSynth}
-              disabled={synthRunning}
-              className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            >
-              {synthRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Cpu className="h-4 w-4" />}
-              {synthRunning ? 'Synthesizing...' : 'Synthesize Module'}
-            </button>
-            {(synthRunning || synthStep > 0) && (
-              <div className="space-y-2">
-                <Progress value={(synthStep / synthesizerSteps.length) * 100} className="h-2" />
-                {synthesizerSteps.map((step, index) => {
-                  const stepColor = (() => {
-                    if (index < synthStep) return 'text-success';
-                    if (index === synthStep && synthRunning) return 'text-foreground';
-                    return 'text-muted-foreground/40';
-                  })();
-                  const stepIcon = (() => {
-                    if (index < synthStep) return <Check className="h-3.5 w-3.5" />;
-                    if (index === synthStep && synthRunning) return <Loader2 className="h-3.5 w-3.5 animate-spin" />;
-                    return <div className="h-3.5 w-3.5" />;
-                  })();
-                  return (
-                    <div
-                      key={step}
-                      className={cn('flex items-center gap-2 text-xs transition-all', stepColor)}
-                    >
-                      {stepIcon}
-                      {step}
+            <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+              <textarea
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                className="w-full rounded-lg border border-border bg-surface-2 p-3 text-sm placeholder:text-muted-foreground resize-none h-28"
+                placeholder="Describe the module you want to create..."
+              />
+              <div className="max-w-md">
+                <div className="mb-2 text-xs font-medium">Model Override</div>
+                <ModelPicker value={selectedModel} onChange={setSelectedModel} />
+              </div>
+              <button
+                onClick={() => void startSynth()}
+                disabled={startSynthesis.isPending}
+                className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {startSynthesis.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Cpu className="h-4 w-4" />}
+                {startSynthesis.isPending ? 'Starting…' : 'Synthesize Module'}
+              </button>
+            </div>
+
+            {(jobId || progress.length > 0) && (
+              <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold">Synthesis Progress</div>
+                    <div className="text-xs text-muted-foreground">Job {jobId ?? 'pending'}</div>
+                  </div>
+                  <div className="text-xs text-muted-foreground uppercase">{jobQuery.data?.status ?? 'queued'}</div>
+                </div>
+                <Progress value={progressValue} className="h-2" />
+                <div className="space-y-2">
+                  {progress.map((item, index) => (
+                    <div key={`${item.step}-${index}`} className="flex items-center gap-2 text-xs">
+                      {index === progress.length - 1 && jobQuery.data?.status !== 'completed' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5 text-success" />}
+                      <span>{item.logLine}</span>
                     </div>
-                  );
-                })}
+                  ))}
+                  {jobQuery.data?.error && (
+                    <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+                      {jobQuery.data.error}
+                    </div>
+                  )}
+                </div>
+                {Array.isArray(jobQuery.data?.generatedFilesJson) && jobQuery.data!.generatedFilesJson.length > 0 && (
+                  <div className="space-y-1 rounded-md border border-border bg-surface-2 p-3">
+                    <div className="text-xs font-medium">Generated Files</div>
+                    {jobQuery.data!.generatedFilesJson.map((file) => (
+                      <div key={file} className="font-mono text-micro text-muted-foreground">{file}</div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -12,6 +12,7 @@ members = [
     "crates/hive-sandbox",
     "crates/hive-search",
     "crates/hive-tools",
+    "crates/hive-git",
 ]
 
 [workspace.package]
@@ -74,3 +75,4 @@ hive-runtime = { path = "crates/hive-runtime" }
 hive-sandbox = { path = "crates/hive-sandbox" }
 hive-search = { path = "crates/hive-search" }
 hive-tools = { path = "crates/hive-tools" }
+hive-git = { path = "crates/hive-git" }

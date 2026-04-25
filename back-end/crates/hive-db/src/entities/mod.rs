@@ -13,5 +13,6 @@ pub mod project;
 pub mod session;
 pub mod setting;
 pub mod sprint;
+pub mod synthesis_job;
 pub mod task;
 pub mod tech_debt_item;
