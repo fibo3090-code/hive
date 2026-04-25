@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Deserialize;
+use serde_json::{json, Map, Value};
 
-use crate::chat::{ChatRequest, ChatRole, StreamChunk, StreamEvent};
+use crate::chat::{ChatRequest, ChatResponse, ChatRole, StreamChunk, StreamEvent, ToolCall};
 use crate::sse::sse_stream;
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
@@ -54,6 +55,154 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
         .collect())
 }
 
+fn render_part(role: ChatRole, content: &str) -> Value {
+    match role {
+        ChatRole::User | ChatRole::Tool => json!({ "text": content }),
+        ChatRole::Assistant | ChatRole::System => json!({ "text": content }),
+    }
+}
+
+fn request_body(request: &ChatRequest, stream: bool) -> Value {
+    let mut contents = Vec::new();
+    let mut system_parts = Vec::new();
+
+    for msg in &request.messages {
+        match msg.role {
+            ChatRole::System => {
+                if !msg.content.trim().is_empty() {
+                    system_parts.push(json!({ "text": msg.content }));
+                }
+            }
+            ChatRole::User => contents.push(json!({
+                "role": "user",
+                "parts": vec![render_part(msg.role, &msg.content)],
+            })),
+            ChatRole::Assistant => {
+                let mut parts = Vec::new();
+                if !msg.content.trim().is_empty() {
+                    parts.push(render_part(msg.role, &msg.content));
+                }
+                parts.extend(msg.tool_calls.iter().map(|call| {
+                    json!({
+                        "functionCall": {
+                            "name": call.name,
+                            "args": call.arguments,
+                        }
+                    })
+                }));
+                contents.push(json!({
+                    "role": "model",
+                    "parts": parts,
+                }));
+            }
+            ChatRole::Tool => {
+                let response = serde_json::from_str::<Value>(&msg.content)
+                    .unwrap_or_else(|_| json!({ "content": msg.content }));
+                contents.push(json!({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": msg.tool_name.clone().unwrap_or_else(|| "tool".into()),
+                            "response": response,
+                        }
+                    }],
+                }));
+            }
+        }
+    }
+
+    let mut body = json!({ "contents": contents });
+    if !system_parts.is_empty() {
+        body["systemInstruction"] = json!({ "parts": system_parts });
+    }
+
+    let mut generation = Map::new();
+    if let Some(t) = request.temperature {
+        generation.insert("temperature".into(), json!(t));
+    }
+    if let Some(m) = request.max_tokens {
+        generation.insert("maxOutputTokens".into(), json!(m));
+    }
+    if !generation.is_empty() {
+        body["generationConfig"] = Value::Object(generation);
+    }
+
+    if !request.tools.is_empty() {
+        body["tools"] = json!([{
+            "functionDeclarations": request
+                .tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.input_schema,
+                    })
+                })
+                .collect::<Vec<_>>()
+        }]);
+    }
+
+    if stream {
+        body["generationConfig"]["candidateCount"] = json!(1);
+    }
+
+    body
+}
+
+fn parse_response(value: &Value) -> Result<ChatResponse, LlmError> {
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+
+    if let Some(parts) = value
+        .get("candidates")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.get("parts"))
+        .and_then(Value::as_array)
+    {
+        for part in parts {
+            if let Some(chunk) = part.get("text").and_then(Value::as_str) {
+                text.push_str(chunk);
+            }
+            if let Some(function_call) = part.get("functionCall") {
+                let name = function_call
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| LlmError::Parse("missing gemini function name".into()))?;
+                tool_calls.push(ToolCall {
+                    id: None,
+                    name: name.to_owned(),
+                    arguments: function_call
+                        .get("args")
+                        .cloned()
+                        .unwrap_or_else(|| json!({})),
+                });
+            }
+        }
+    }
+
+    let usage = value.get("usageMetadata").cloned().unwrap_or(Value::Null);
+    Ok(ChatResponse {
+        text,
+        tool_calls,
+        tokens_in: usage
+            .get("promptTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        tokens_out: usage
+            .get("candidatesTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        finish_reason: value
+            .get("candidates")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("finishReason"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
 #[async_trait]
 impl LlmProvider for GeminiProvider {
     fn kind(&self) -> ProviderKind {
@@ -89,44 +238,11 @@ impl LlmProvider for GeminiProvider {
             key,
         );
 
-        let mut contents: Vec<serde_json::Value> = Vec::new();
-        let mut system_parts: Vec<String> = Vec::new();
-        for msg in &request.messages {
-            match msg.role {
-                ChatRole::System => system_parts.push(msg.content.clone()),
-                ChatRole::User | ChatRole::Tool => contents.push(serde_json::json!({
-                    "role": "user",
-                    "parts": [{ "text": msg.content }],
-                })),
-                ChatRole::Assistant => contents.push(serde_json::json!({
-                    "role": "model",
-                    "parts": [{ "text": msg.content }],
-                })),
-            }
-        }
-
-        let mut body = serde_json::json!({ "contents": contents });
-        if !system_parts.is_empty() {
-            body["systemInstruction"] = serde_json::json!({
-                "parts": [{ "text": system_parts.join("\n") }],
-            });
-        }
-        let mut generation: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-        if let Some(t) = request.temperature {
-            generation.insert("temperature".into(), serde_json::json!(t));
-        }
-        if let Some(m) = request.max_tokens {
-            generation.insert("maxOutputTokens".into(), serde_json::json!(m));
-        }
-        if !generation.is_empty() {
-            body["generationConfig"] = serde_json::Value::Object(generation);
-        }
-
         let response = self
             .http
             .post(url)
             .header("content-type", "application/json")
-            .json(&body)
+            .json(&request_body(&request, true))
             .send()
             .await?;
 
@@ -150,13 +266,43 @@ impl LlmProvider for GeminiProvider {
         });
         Ok(Box::pin(mapped))
     }
+
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        let key = self.config.api_key.as_deref().ok_or(LlmError::MissingKey)?;
+        let url = format!(
+            "{}/v1beta/models/{}:generateContent?key={}",
+            self.config.base_url.trim_end_matches('/'),
+            request.model,
+            key,
+        );
+        let response = self
+            .http
+            .post(url)
+            .header("content-type", "application/json")
+            .json(&request_body(&request, false))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            return Err(LlmError::ProviderStatus {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let value: Value =
+            serde_json::from_str(&body).map_err(|e| LlmError::Parse(e.to_string()))?;
+        parse_response(&value)
+    }
 }
 
 fn parse_event(msg: &crate::sse::SseMessage) -> Vec<StreamEvent> {
     if msg.data.is_empty() {
         return vec![];
     }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&msg.data) else {
+    let Ok(value) = serde_json::from_str::<Value>(&msg.data) else {
         return vec![];
     };
 
@@ -169,7 +315,7 @@ fn parse_event(msg: &crate::sse::SseMessage) -> Vec<StreamEvent> {
         .and_then(|c| c.get("parts"))
         .and_then(|p| p.get(0))
         .and_then(|p| p.get("text"))
-        .and_then(|t| t.as_str())
+        .and_then(Value::as_str)
     {
         if !text.is_empty() {
             out.push(StreamEvent::Delta(StreamChunk {
@@ -181,18 +327,18 @@ fn parse_event(msg: &crate::sse::SseMessage) -> Vec<StreamEvent> {
     if let Some(usage) = value.get("usageMetadata") {
         let tokens_in = usage
             .get("promptTokenCount")
-            .and_then(|v| v.as_u64())
+            .and_then(Value::as_u64)
             .unwrap_or(0) as u32;
         let tokens_out = usage
             .get("candidatesTokenCount")
-            .and_then(|v| v.as_u64())
+            .and_then(Value::as_u64)
             .unwrap_or(0) as u32;
         let finish = value
             .get("candidates")
             .and_then(|c| c.get(0))
             .and_then(|c| c.get("finishReason"))
-            .and_then(|r| r.as_str())
-            .map(str::to_owned);
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
         if finish.is_some() || tokens_out > 0 {
             out.push(StreamEvent::Complete {
                 tokens_in,
@@ -232,5 +378,26 @@ mod tests {
     #[test]
     fn invalid_json_is_parse_error() {
         assert!(matches!(parse_models("nope"), Err(LlmError::Parse(_))));
+    }
+
+    #[test]
+    fn parses_function_calls() {
+        let response = json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        { "text": "Working on it." },
+                        { "functionCall": { "name": "web_search", "args": { "query": "rust" } } }
+                    ]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": { "promptTokenCount": 11, "candidatesTokenCount": 5 }
+        });
+        let parsed = parse_response(&response).unwrap();
+        assert_eq!(parsed.text, "Working on it.");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].name, "web_search");
+        assert_eq!(parsed.tool_calls[0].arguments["query"], "rust");
     }
 }

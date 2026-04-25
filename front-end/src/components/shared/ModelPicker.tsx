@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Cpu, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useLlmProviders, useProviderModels, type LlmProvider } from '@/api/llm';
@@ -17,20 +17,35 @@ interface ModelPickerProps {
 
 export function ModelPicker({ value, onChange, className, disabled }: ModelPickerProps) {
   const providersQuery = useLlmProviders();
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(value?.providerId ?? null);
   const connectedProviders = useMemo(
-    () => (providersQuery.data ?? []).filter((p: LlmProvider) => p.connected || p.kind === 'ollama'),
+    () => (providersQuery.data ?? []).filter((p: LlmProvider) => p.connected),
     [providersQuery.data],
   );
 
-  const activeProviderId = value?.providerId ?? connectedProviders[0]?.id ?? null;
+  useEffect(() => {
+    if (value?.providerId) {
+      setSelectedProviderId(value.providerId);
+    } else if (!selectedProviderId && connectedProviders.length > 0) {
+      setSelectedProviderId(connectedProviders[0].id);
+    }
+  }, [value?.providerId, selectedProviderId, connectedProviders]);
+
+  const activeProviderId = selectedProviderId ?? value?.providerId ?? connectedProviders[0]?.id ?? null;
   const modelsQuery = useProviderModels(activeProviderId);
   const models = useMemo(() => modelsQuery.data ?? [], [modelsQuery.data]);
+  const hasValidSelection =
+    value?.providerId === activeProviderId && models.some((model) => model.id === value.modelId);
 
   useEffect(() => {
-    if (!value && connectedProviders.length > 0 && models.length > 0) {
-      onChange({ providerId: connectedProviders[0].id, modelId: models[0].id });
+    if (!activeProviderId) {
+      if (value) onChange(null);
+      return;
     }
-  }, [value, connectedProviders, models, onChange]);
+    if (models.length > 0 && !hasValidSelection) {
+      onChange({ providerId: activeProviderId, modelId: models[0].id });
+    }
+  }, [activeProviderId, hasValidSelection, models, onChange, value]);
 
   if (providersQuery.isLoading) {
     return <div className={cn('text-xs text-muted-foreground', className)}>Loading providers…</div>;
@@ -52,7 +67,7 @@ export function ModelPicker({ value, onChange, className, disabled }: ModelPicke
             key={p.id}
             type="button"
             disabled={disabled}
-            onClick={() => onChange({ providerId: p.id, modelId: '' })}
+            onClick={() => setSelectedProviderId(p.id)}
             className={cn(
               'rounded-md px-3 py-1.5 text-xs border transition-colors',
               activeProviderId === p.id

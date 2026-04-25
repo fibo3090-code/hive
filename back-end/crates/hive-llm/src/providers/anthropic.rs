@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Deserialize;
+use serde_json::{json, Value};
 
-use crate::chat::{ChatRequest, ChatRole, StreamChunk, StreamEvent};
+use crate::chat::{ChatRequest, ChatResponse, ChatRole, StreamChunk, StreamEvent, ToolCall};
 use crate::sse::sse_stream;
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
@@ -45,6 +46,139 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
         .collect())
 }
 
+fn render_content_blocks(message: &crate::chat::ChatMessage) -> Vec<Value> {
+    match message.role {
+        ChatRole::Tool => {
+            let parsed: Result<Value, _> = serde_json::from_str(&message.content);
+            vec![json!({
+                "type": "tool_result",
+                "tool_use_id": message.tool_call_id.clone().unwrap_or_else(|| "tool_call".into()),
+                "content": parsed.unwrap_or_else(|_| Value::String(message.content.clone())),
+            })]
+        }
+        ChatRole::Assistant if !message.tool_calls.is_empty() => {
+            let mut parts = Vec::new();
+            if !message.content.trim().is_empty() {
+                parts.push(json!({
+                    "type": "text",
+                    "text": message.content,
+                }));
+            }
+            parts.extend(message.tool_calls.iter().map(|call| {
+                json!({
+                    "type": "tool_use",
+                    "id": call.id.clone().unwrap_or_else(|| format!("call_{}", call.name)),
+                    "name": call.name,
+                    "input": call.arguments,
+                })
+            }));
+            parts
+        }
+        _ => vec![json!({
+            "type": "text",
+            "text": message.content,
+        })],
+    }
+}
+
+fn request_body(request: &ChatRequest) -> Value {
+    let mut system = Vec::new();
+    let mut turns = Vec::new();
+
+    for message in &request.messages {
+        match message.role {
+            ChatRole::System => system.push(message.content.clone()),
+            ChatRole::User => turns.push(json!({
+                "role": "user",
+                "content": render_content_blocks(message),
+            })),
+            ChatRole::Assistant => turns.push(json!({
+                "role": "assistant",
+                "content": render_content_blocks(message),
+            })),
+            ChatRole::Tool => turns.push(json!({
+                "role": "user",
+                "content": render_content_blocks(message),
+            })),
+        }
+    }
+
+    let mut body = json!({
+        "model": request.model,
+        "max_tokens": request.max_tokens.unwrap_or(4096),
+        "messages": turns,
+    });
+    if !system.is_empty() {
+        body["system"] = Value::String(system.join("\n"));
+    }
+    if let Some(t) = request.temperature {
+        body["temperature"] = json!(t);
+    }
+    if !request.tools.is_empty() {
+        body["tools"] = Value::Array(
+            request
+                .tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "input_schema": tool.input_schema,
+                    })
+                })
+                .collect(),
+        );
+    }
+    body
+}
+
+fn parse_response(value: &Value) -> Result<ChatResponse, LlmError> {
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+
+    if let Some(items) = value.get("content").and_then(Value::as_array) {
+        for item in items {
+            match item.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(chunk) = item.get("text").and_then(Value::as_str) {
+                        text.push_str(chunk);
+                    }
+                }
+                Some("tool_use") => {
+                    let name = item
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| LlmError::Parse("missing anthropic tool name".into()))?;
+                    tool_calls.push(ToolCall {
+                        id: item.get("id").and_then(Value::as_str).map(ToOwned::to_owned),
+                        name: name.to_owned(),
+                        arguments: item.get("input").cloned().unwrap_or_else(|| json!({})),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let usage = value.get("usage").cloned().unwrap_or(Value::Null);
+    Ok(ChatResponse {
+        text,
+        tool_calls,
+        tokens_in: usage
+            .get("input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        tokens_out: usage
+            .get("output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        finish_reason: value
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     fn kind(&self) -> ProviderKind {
@@ -78,48 +212,8 @@ impl LlmProvider for AnthropicProvider {
         let key = self.config.api_key.as_deref().ok_or(LlmError::MissingKey)?;
         let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
 
-        let mut system: Option<String> = None;
-        let mut turns: Vec<serde_json::Value> = Vec::new();
-        for msg in &request.messages {
-            match msg.role {
-                ChatRole::System => {
-                    system = Some(match system.take() {
-                        Some(prev) => {
-                            let content = &msg.content;
-                            format!("{prev}\n{content}")
-                        }
-                        None => msg.content.clone(),
-                    });
-                }
-                ChatRole::User | ChatRole::Assistant => {
-                    turns.push(serde_json::json!({
-                        "role": msg.role.as_str(),
-                        "content": msg.content,
-                    }));
-                }
-                // Tool messages are folded into the preceding user turn for
-                // the sprint-1 tool-less flow — we don't send them raw.
-                ChatRole::Tool => {
-                    turns.push(serde_json::json!({
-                        "role": "user",
-                        "content": msg.content,
-                    }));
-                }
-            }
-        }
-
-        let mut body = serde_json::json!({
-            "model": request.model,
-            "stream": true,
-            "max_tokens": request.max_tokens.unwrap_or(4096),
-            "messages": turns,
-        });
-        if let Some(s) = system {
-            body["system"] = serde_json::Value::String(s);
-        }
-        if let Some(t) = request.temperature {
-            body["temperature"] = serde_json::json!(t);
-        }
+        let mut body = request_body(&request);
+        body["stream"] = json!(true);
 
         let response = self
             .http
@@ -150,20 +244,47 @@ impl LlmProvider for AnthropicProvider {
         });
         Ok(Box::pin(mapped))
     }
+
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        let key = self.config.api_key.as_deref().ok_or(LlmError::MissingKey)?;
+        let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
+        let response = self
+            .http
+            .post(url)
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&request_body(&request))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            return Err(LlmError::ProviderStatus {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let value: Value =
+            serde_json::from_str(&body).map_err(|e| LlmError::Parse(e.to_string()))?;
+        parse_response(&value)
+    }
 }
 
 fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
     if msg.data.is_empty() {
         return None;
     }
-    let value: serde_json::Value = serde_json::from_str(&msg.data).ok()?;
-    let kind = value.get("type").and_then(|t| t.as_str())?;
+    let value: Value = serde_json::from_str(&msg.data).ok()?;
+    let kind = value.get("type").and_then(Value::as_str)?;
     match kind {
         "content_block_delta" => {
             let text = value
                 .get("delta")
                 .and_then(|d| d.get("text"))
-                .and_then(|t| t.as_str())?;
+                .and_then(Value::as_str)?;
             Some(StreamEvent::Delta(StreamChunk {
                 delta: text.to_owned(),
             }))
@@ -172,17 +293,17 @@ fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
             let usage = value.get("usage")?;
             let tokens_out = usage
                 .get("output_tokens")
-                .and_then(|v| v.as_u64())
+                .and_then(Value::as_u64)
                 .unwrap_or(0) as u32;
             let tokens_in = usage
                 .get("input_tokens")
-                .and_then(|v| v.as_u64())
+                .and_then(Value::as_u64)
                 .unwrap_or(0) as u32;
             let finish = value
                 .get("delta")
                 .and_then(|d| d.get("stop_reason"))
-                .and_then(|r| r.as_str())
-                .map(str::to_owned);
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
             Some(StreamEvent::Complete {
                 tokens_in,
                 tokens_out,
@@ -218,5 +339,22 @@ mod tests {
     #[test]
     fn invalid_json_is_parse_error() {
         assert!(matches!(parse_models("{"), Err(LlmError::Parse(_))));
+    }
+
+    #[test]
+    fn parses_text_and_tool_use_blocks() {
+        let response = json!({
+            "content": [
+                {"type": "text", "text": "Looking that up."},
+                {"type": "tool_use", "id": "toolu_1", "name": "web_search", "input": {"query": "rust"}}
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 4},
+            "stop_reason": "tool_use"
+        });
+        let parsed = parse_response(&response).unwrap();
+        assert_eq!(parsed.text, "Looking that up.");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].name, "web_search");
+        assert_eq!(parsed.tool_calls[0].arguments["query"], "rust");
     }
 }

@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Deserialize;
+use serde_json::{json, Value};
 
-use crate::chat::{ChatRequest, StreamChunk, StreamEvent};
+use crate::chat::{ChatRequest, ChatResponse, StreamChunk, StreamEvent, ToolCall};
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
 pub struct OllamaProvider {
@@ -73,6 +74,116 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
         .collect())
 }
 
+fn request_messages(request: &ChatRequest) -> Vec<Value> {
+    request
+        .messages
+        .iter()
+        .map(|m| match m.role {
+            crate::chat::ChatRole::Assistant if !m.tool_calls.is_empty() => json!({
+                "role": m.role.as_str(),
+                "content": m.content,
+                "tool_calls": m.tool_calls.iter().map(|call| json!({
+                    "function": {
+                        "name": call.name,
+                        "arguments": call.arguments,
+                    }
+                })).collect::<Vec<_>>(),
+            }),
+            crate::chat::ChatRole::Tool => json!({
+                "role": "tool",
+                "content": m.content,
+                "name": m.tool_name,
+            }),
+            _ => json!({
+                "role": m.role.as_str(),
+                "content": m.content,
+            }),
+        })
+        .collect()
+}
+
+fn request_body(request: &ChatRequest, stream: bool) -> Value {
+    let mut options = serde_json::Map::new();
+    if let Some(t) = request.temperature {
+        options.insert("temperature".into(), json!(t));
+    }
+    if let Some(m) = request.max_tokens {
+        options.insert("num_predict".into(), json!(m));
+    }
+
+    let mut body = json!({
+        "model": request.model,
+        "messages": request_messages(request),
+        "stream": stream,
+    });
+    if !options.is_empty() {
+        body["options"] = Value::Object(options);
+    }
+    if !request.tools.is_empty() {
+        body["tools"] = Value::Array(
+            request
+                .tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.input_schema,
+                        }
+                    })
+                })
+                .collect(),
+        );
+    }
+    body
+}
+
+fn parse_chat_response(value: &Value) -> Result<ChatResponse, LlmError> {
+    let message = value.get("message").cloned().unwrap_or(Value::Null);
+    let text = message
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    let mut tool_calls = Vec::new();
+    if let Some(items) = message.get("tool_calls").and_then(Value::as_array) {
+        for item in items {
+            let function = item
+                .get("function")
+                .ok_or_else(|| LlmError::Parse("missing ollama tool function".into()))?;
+            let name = function
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| LlmError::Parse("missing ollama tool name".into()))?;
+            tool_calls.push(ToolCall {
+                id: None,
+                name: name.to_owned(),
+                arguments: function
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            });
+        }
+    }
+
+    Ok(ChatResponse {
+        text,
+        tool_calls,
+        tokens_in: value
+            .get("prompt_eval_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32,
+        tokens_out: value.get("eval_count").and_then(Value::as_u64).unwrap_or(0) as u32,
+        finish_reason: value
+            .get("done_reason")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
 #[async_trait]
 impl LlmProvider for OllamaProvider {
     fn kind(&self) -> ProviderKind {
@@ -97,39 +208,11 @@ impl LlmProvider for OllamaProvider {
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, LlmError> {
         let url = format!("{}/api/chat", self.config.base_url.trim_end_matches('/'));
 
-        let messages: Vec<serde_json::Value> = request
-            .messages
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role": m.role.as_str(),
-                    "content": m.content,
-                })
-            })
-            .collect();
-
-        let mut options = serde_json::Map::new();
-        if let Some(t) = request.temperature {
-            options.insert("temperature".into(), serde_json::json!(t));
-        }
-        if let Some(m) = request.max_tokens {
-            options.insert("num_predict".into(), serde_json::json!(m));
-        }
-
-        let mut body = serde_json::json!({
-            "model": request.model,
-            "messages": messages,
-            "stream": true,
-        });
-        if !options.is_empty() {
-            body["options"] = serde_json::Value::Object(options);
-        }
-
         let response = self
             .http
             .post(url)
             .header("content-type", "application/json")
-            .json(&body)
+            .json(&request_body(&request, true))
             .send()
             .await?;
 
@@ -175,24 +258,45 @@ impl LlmProvider for OllamaProvider {
         };
         Ok(Box::pin(mapped))
     }
+
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        let url = format!("{}/api/chat", self.config.base_url.trim_end_matches('/'));
+        let response = self
+            .http
+            .post(url)
+            .header("content-type", "application/json")
+            .json(&request_body(&request, false))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            return Err(LlmError::ProviderStatus {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let value: Value =
+            serde_json::from_str(&body).map_err(|e| LlmError::Parse(e.to_string()))?;
+        parse_chat_response(&value)
+    }
 }
 
 fn parse_line(line: &str) -> Option<StreamEvent> {
-    let value: serde_json::Value = serde_json::from_str(line).ok()?;
-    let done = value.get("done").and_then(|d| d.as_bool()).unwrap_or(false);
+    let value: Value = serde_json::from_str(line).ok()?;
+    let done = value.get("done").and_then(Value::as_bool).unwrap_or(false);
     if done {
         let tokens_in = value
             .get("prompt_eval_count")
-            .and_then(|v| v.as_u64())
+            .and_then(Value::as_u64)
             .unwrap_or(0) as u32;
-        let tokens_out = value
-            .get("eval_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+        let tokens_out = value.get("eval_count").and_then(Value::as_u64).unwrap_or(0) as u32;
         let finish = value
             .get("done_reason")
-            .and_then(|r| r.as_str())
-            .map(str::to_owned);
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
         return Some(StreamEvent::Complete {
             tokens_in,
             tokens_out,
@@ -202,7 +306,7 @@ fn parse_line(line: &str) -> Option<StreamEvent> {
     let text = value
         .get("message")
         .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())?;
+        .and_then(Value::as_str)?;
     if text.is_empty() {
         return None;
     }

@@ -2,7 +2,7 @@
 //! LLM, streams tokens to the event bus, persists each delta, and records a
 //! `cost_events` row when done.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use futures_util::StreamExt;
 use hive_db::{
@@ -10,12 +10,12 @@ use hive_db::{
     Db,
 };
 use hive_llm::{
-    chat::{ChatMessage, ChatRequest, ChatRole, StreamEvent},
+    chat::{ChatMessage, ChatRequest, ChatRole, StreamEvent, ToolCall, ToolDefinition},
     pricing::cost_cents,
     LlmProvider, ProviderKind,
 };
 use hive_tools::{ToolContext, ToolRegistry};
-use serde_json::json;
+use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -54,20 +54,20 @@ pub struct RunTurn {
 
 #[derive(Clone, Debug)]
 struct ToolInvocation {
+    id: Option<String>,
     tool: String,
-    arguments: serde_json::Value,
-    raw: serde_json::Value,
+    arguments: Value,
+    raw: Value,
 }
 
 fn tool_protocol_prompt(registry: &ToolRegistry) -> String {
     let manifests = registry.manifests();
     format!(
-        "You may use tools before answering. Available tools are described in JSON below.\n\
-If you need a tool, respond with ONLY one XML block and no surrounding prose:\n\
+        "Fallback compatibility mode only: if native tool calling is unavailable, respond with ONLY one XML block and no surrounding prose:\n\
 <tool_call>{{\"tool\":\"tool_name\",\"arguments\":{{...}}}}</tool_call>\n\
 or for multiple sequential tool calls:\n\
 <tool_calls>[{{\"tool\":\"tool_name\",\"arguments\":{{...}}}}]</tool_calls>\n\
-Do not include markdown fences. After tool results are returned, answer normally unless another tool is needed.\n\
+Do not use this format when native tool calling works.\n\
 Tool catalog:\n{}",
         serde_json::to_string_pretty(&manifests).unwrap_or_else(|_| "[]".into())
     )
@@ -85,7 +85,7 @@ fn parse_tool_invocations(content: &str) -> Option<Vec<ToolInvocation>> {
 
     let raw = extract_block(content, "<tool_call>", "</tool_call>")
         .or_else(|| extract_block(content, "<tool_calls>", "</tool_calls>"))?;
-    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let value: Value = serde_json::from_str(raw).ok()?;
     let items = if let Some(array) = value.as_array() {
         array.clone()
     } else {
@@ -97,6 +97,7 @@ fn parse_tool_invocations(content: &str) -> Option<Vec<ToolInvocation>> {
         let tool = item.get("tool")?.as_str()?.to_owned();
         let arguments = item.get("arguments").cloned().unwrap_or_else(|| json!({}));
         out.push(ToolInvocation {
+            id: None,
             tool,
             arguments,
             raw: item,
@@ -134,6 +135,134 @@ async fn collect_response(
     Ok((accumulated, tokens_in, tokens_out, finish_reason))
 }
 
+fn tool_definitions(registry: &ToolRegistry) -> Vec<ToolDefinition> {
+    registry
+        .manifests()
+        .into_iter()
+        .map(|manifest| ToolDefinition {
+            name: manifest.name,
+            description: manifest.description,
+            input_schema: manifest.input_schema,
+        })
+        .collect()
+}
+
+fn tool_invocations_from_response(text: &str, tool_calls: &[ToolCall]) -> Option<Vec<ToolInvocation>> {
+    if !tool_calls.is_empty() {
+        return Some(
+            tool_calls
+                .iter()
+                .map(|call| ToolInvocation {
+                    id: call.id.clone(),
+                    tool: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                    raw: json!({
+                        "id": call.id,
+                        "tool": call.name,
+                        "arguments": call.arguments,
+                    }),
+                })
+                .collect(),
+        );
+    }
+    parse_tool_invocations(text)
+}
+
+fn tool_fingerprint(invocation: &ToolInvocation) -> String {
+    format!(
+        "{}:{}",
+        invocation.tool,
+        serde_json::to_string(&invocation.arguments).unwrap_or_else(|_| "null".into())
+    )
+}
+
+fn matches_schema_type(args: &Value, expected: &str) -> bool {
+    match expected {
+        "object" => args.is_object(),
+        "array" => args.is_array(),
+        "string" => args.is_string(),
+        "boolean" => args.is_boolean(),
+        "integer" => args.as_i64().is_some() || args.as_u64().is_some(),
+        "number" => args.is_number(),
+        "null" => args.is_null(),
+        _ => true,
+    }
+}
+
+fn validate_against_schema(args: &Value, schema: &Value) -> Result<(), String> {
+    if let Some(kind) = schema.get("type").and_then(Value::as_str) {
+        if !matches_schema_type(args, kind) {
+            return Err(format!("expected {kind} arguments"));
+        }
+    }
+
+    if let Some(required) = schema.get("required").and_then(Value::as_array) {
+        let Some(object) = args.as_object() else {
+            return Err("expected object arguments".into());
+        };
+        for key in required.iter().filter_map(Value::as_str) {
+            if !object.contains_key(key) {
+                return Err(format!("missing required field `{key}`"));
+            }
+        }
+    }
+
+    if let (Some(object), Some(properties)) = (args.as_object(), schema.get("properties").and_then(Value::as_object)) {
+        for (key, value) in object {
+            if let Some(property_schema) = properties.get(key) {
+                validate_against_schema(value, property_schema)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_tool_invocation(registry: &ToolRegistry, invocation: &ToolInvocation) -> Result<(), String> {
+    let Some(tool) = registry.get(&invocation.tool) else {
+        return Err(format!("tool `{}` is not registered", invocation.tool));
+    };
+    let manifest = tool.manifest();
+    validate_against_schema(&invocation.arguments, &manifest.input_schema)
+}
+
+fn tool_result_json(tool: &str, error: impl Into<String>) -> Value {
+    json!({
+        "ok": false,
+        "tool": tool,
+        "error": error.into(),
+    })
+}
+
+async fn finalize_cancelled(
+    db: &Db,
+    bus: &EventBus,
+    thread_id: &str,
+    assistant_message_id: &str,
+    final_answer: &str,
+    total_tokens_in: u32,
+    total_tokens_out: u32,
+    total_cost: i32,
+    executed_calls: &[Value],
+) -> Result<(), ChatError> {
+    let _ = chat_messages::set_tool_calls(db.conn(), assistant_message_id, json!(executed_calls)).await?;
+    let _ = chat_messages::finalize(
+        db.conn(),
+        assistant_message_id,
+        final_answer,
+        total_tokens_in as i32,
+        total_tokens_out as i32,
+        total_cost,
+        "cancelled",
+    )
+    .await?;
+    bus.emit(
+        format!("chat.{thread_id}.cancelled"),
+        json!({ "threadId": thread_id, "messageId": assistant_message_id }),
+    );
+    Ok(())
+}
+
 /// Load thread history, call the LLM, stream tokens to the bus, persist.
 pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     let RunTurn {
@@ -154,17 +283,12 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
         cancel,
     } = params;
 
-    // Verify thread exists.
     let _thread = chat_threads::get(db.conn(), &thread_id)
         .await?
         .ok_or_else(|| ChatError::NotFound(thread_id.clone()))?;
 
-    // Build message history from DB, up to `history_limit` most recent
-    // persisted messages (excluding the in-flight assistant placeholder and
-    // any cancelled/error turns).
     let mut history = chat_messages::list_by_thread(db.conn(), &thread_id).await?;
-    history
-        .retain(|m| m.id != assistant_message_id && m.status != "cancelled" && m.status != "error");
+    history.retain(|m| m.id != assistant_message_id && m.status != "cancelled" && m.status != "error");
     if history.len() > history_limit {
         let skip = history.len() - history_limit;
         history.drain(..skip);
@@ -179,6 +303,9 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     }
     if let Some(registry) = &tool_registry {
         if !registry.names().is_empty() {
+            system_parts.push(
+                "Use tools when they materially improve accuracy or execution. Call tools using the provider's native tool interface.".into(),
+            );
             system_parts.push(tool_protocol_prompt(registry));
         }
     }
@@ -196,10 +323,12 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
         messages.push(ChatMessage {
             role,
             content: row.content,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: Vec::new(),
         });
     }
 
-    // Mark the assistant message as streaming.
     let _ = chat_messages::set_status(db.conn(), &assistant_message_id, "streaming").await?;
     bus.emit(
         format!("chat.{thread_id}.streaming"),
@@ -211,95 +340,162 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     let mut total_tokens_out: u32 = 0;
     let mut total_cost = 0;
     let mut finish_reason: Option<String> = None;
-    let mut executed_calls = Vec::<serde_json::Value>::new();
-    const MAX_TOOL_ROUNDS: usize = 6;
+    let mut executed_calls = Vec::<Value>::new();
+    let mut repeated_calls: HashMap<String, usize> = HashMap::new();
+    const MAX_TOOL_ROUNDS: usize = 8;
+    const MAX_REPEAT_CALLS_PER_SIGNATURE: usize = 2;
+
+    let can_use_tools = tool_registry.as_ref().is_some_and(|registry| !registry.names().is_empty())
+        && tool_context.is_some();
 
     for _ in 0..MAX_TOOL_ROUNDS {
         if *cancel.lock().await {
-            let _ = chat_messages::set_tool_calls(
-                db.conn(),
-                &assistant_message_id,
-                json!(executed_calls),
-            )
-            .await?;
-            let _ = chat_messages::finalize(
-                db.conn(),
+            finalize_cancelled(
+                &db,
+                &bus,
+                &thread_id,
                 &assistant_message_id,
                 &final_answer,
-                total_tokens_in as i32,
-                total_tokens_out as i32,
+                total_tokens_in,
+                total_tokens_out,
                 total_cost,
-                "cancelled",
+                &executed_calls,
             )
             .await?;
-            bus.emit(
-                format!("chat.{thread_id}.cancelled"),
-                json!({ "threadId": thread_id, "messageId": assistant_message_id }),
-            );
             return Ok(());
         }
 
-        let request = ChatRequest::new(model.clone(), messages.clone());
-        let (response, tokens_in, tokens_out, finish) =
-            match collect_response(&provider, request).await {
-                Ok(collected) => collected,
-                Err(ChatError::Llm(err)) => {
-                    let detail = err.to_string();
-                    let _ = chat_messages::set_tool_calls(
-                        db.conn(),
-                        &assistant_message_id,
-                        json!(executed_calls),
-                    )
-                    .await;
-                    let _ = chat_messages::finalize(
-                        db.conn(),
-                        &assistant_message_id,
-                        &format!("[error] {detail}"),
-                        total_tokens_in as i32,
-                        total_tokens_out as i32,
-                        total_cost,
-                        "error",
-                    )
-                    .await;
-                    bus.emit(
-                        format!("chat.{thread_id}.error"),
-                        json!({
-                            "threadId": thread_id,
-                            "messageId": assistant_message_id,
-                            "error": detail,
-                        }),
-                    );
-                    return Err(ChatError::Llm(err));
-                }
-                Err(other) => return Err(other),
-            };
+        if !can_use_tools {
+            let request = ChatRequest::new(model.clone(), messages.clone());
+            let (response, tokens_in, tokens_out, finish) =
+                match collect_response(&provider, request).await {
+                    Ok(collected) => collected,
+                    Err(ChatError::Llm(err)) => {
+                        let detail = err.to_string();
+                        let _ = chat_messages::set_tool_calls(
+                            db.conn(),
+                            &assistant_message_id,
+                            json!(executed_calls),
+                        )
+                        .await;
+                        let _ = chat_messages::finalize(
+                            db.conn(),
+                            &assistant_message_id,
+                            &format!("[error] {detail}"),
+                            total_tokens_in as i32,
+                            total_tokens_out as i32,
+                            total_cost,
+                            "error",
+                        )
+                        .await;
+                        bus.emit(
+                            format!("chat.{thread_id}.error"),
+                            json!({
+                                "threadId": thread_id,
+                                "messageId": assistant_message_id,
+                                "error": detail,
+                            }),
+                        );
+                        return Err(ChatError::Llm(err));
+                    }
+                    Err(other) => return Err(other),
+                };
 
-        total_tokens_in += tokens_in;
-        total_tokens_out += tokens_out;
-        total_cost += cost_cents(provider_kind, &model, tokens_in, tokens_out);
-        finish_reason = finish;
-
-        let Some(registry) = &tool_registry else {
-            final_answer = response;
-            break;
-        };
-        let Some(ctx) = &tool_context else {
-            final_answer = response;
-            break;
-        };
-
-        let Some(invocations) = parse_tool_invocations(&response) else {
-            final_answer = response;
-            break;
-        };
-
-        if invocations.is_empty() {
+            total_tokens_in += tokens_in;
+            total_tokens_out += tokens_out;
+            total_cost += cost_cents(provider_kind, &model, tokens_in, tokens_out);
+            finish_reason = finish;
             final_answer = response;
             break;
         }
 
-        messages.push(ChatMessage::assistant(response.clone()));
+        let registry = tool_registry.as_ref().expect("checked above");
+        let ctx = tool_context.as_ref().expect("checked above");
+        let request = ChatRequest::new(model.clone(), messages.clone()).with_tools(tool_definitions(registry));
+        let response = match provider.chat(request).await {
+            Ok(response) => response,
+            Err(err) => {
+                let detail = err.to_string();
+                let _ = chat_messages::set_tool_calls(
+                    db.conn(),
+                    &assistant_message_id,
+                    json!(executed_calls),
+                )
+                .await;
+                let _ = chat_messages::finalize(
+                    db.conn(),
+                    &assistant_message_id,
+                    &format!("[error] {detail}"),
+                    total_tokens_in as i32,
+                    total_tokens_out as i32,
+                    total_cost,
+                    "error",
+                )
+                .await;
+                bus.emit(
+                    format!("chat.{thread_id}.error"),
+                    json!({
+                        "threadId": thread_id,
+                        "messageId": assistant_message_id,
+                        "error": detail,
+                    }),
+                );
+                return Err(ChatError::Llm(err));
+            }
+        };
+
+        total_tokens_in += response.tokens_in;
+        total_tokens_out += response.tokens_out;
+        total_cost += cost_cents(
+            provider_kind,
+            &model,
+            response.tokens_in,
+            response.tokens_out,
+        );
+        finish_reason = response.finish_reason.clone();
+
+        let Some(invocations) = tool_invocations_from_response(&response.text, &response.tool_calls) else {
+            final_answer = response.text;
+            break;
+        };
+        if invocations.is_empty() {
+            final_answer = response.text;
+            break;
+        }
+
+        messages.push(ChatMessage::assistant_with_tool_calls(
+            response.text.clone(),
+            response.tool_calls.clone(),
+        ));
+
+        let mut halted_for_repeat = false;
         for invocation in invocations {
+            if *cancel.lock().await {
+                finalize_cancelled(
+                    &db,
+                    &bus,
+                    &thread_id,
+                    &assistant_message_id,
+                    &final_answer,
+                    total_tokens_in,
+                    total_tokens_out,
+                    total_cost,
+                    &executed_calls,
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let fingerprint = tool_fingerprint(&invocation);
+            let seen = repeated_calls.entry(fingerprint).or_insert(0);
+            *seen += 1;
+            if *seen > MAX_REPEAT_CALLS_PER_SIGNATURE {
+                final_answer = "I stopped because the same tool call was being repeated without making progress. Please refine the request or adjust the allowed tools.".into();
+                finish_reason = Some("tool_loop_guard".into());
+                halted_for_repeat = true;
+                break;
+            }
+
             bus.emit(
                 format!("chat.{thread_id}.tool_call"),
                 json!({
@@ -309,19 +505,25 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                     "args": invocation.arguments,
                 }),
             );
-            let result = match registry
-                .invoke(&invocation.tool, invocation.arguments.clone(), ctx)
-                .await
-            {
-                Ok(value) => value,
-                Err(err) => err.to_result_json(),
+
+            let result = match validate_tool_invocation(registry, &invocation) {
+                Ok(()) => match registry
+                    .invoke(&invocation.tool, invocation.arguments.clone(), ctx)
+                    .await
+                {
+                    Ok(value) => value,
+                    Err(err) => err.to_result_json(),
+                },
+                Err(error) => tool_result_json(&invocation.tool, error),
             };
+
             executed_calls.push(json!({
                 "tool": invocation.tool,
                 "arguments": invocation.arguments,
                 "result": result,
                 "request": invocation.raw,
             }));
+
             bus.emit(
                 format!("chat.{thread_id}.tool_result"),
                 json!({
@@ -331,14 +533,19 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                     "result": result,
                 }),
             );
-            messages.push(ChatMessage {
-                role: ChatRole::Tool,
-                content: format!(
-                    "Tool `{}` returned:\n{}",
-                    invocation.tool,
-                    serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
-                ),
-            });
+
+            messages.push(ChatMessage::tool_result(
+                invocation
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| format!("tool_{}", invocation.tool)),
+                invocation.tool.clone(),
+                serde_json::to_string(&result).unwrap_or_else(|_| result.to_string()),
+            ));
+        }
+
+        if halted_for_repeat {
+            break;
         }
     }
 
@@ -378,8 +585,6 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     .await?;
     let _ = chat_threads::touch(db.conn(), &thread_id).await;
 
-    // Record the cost event. `kind = chat.completion` so Sprint 5 insights
-    // can distinguish chat turns from tool calls.
     let memo = format!("provider={provider_id} model={model}");
     let _ = cost_events::insert(
         db.conn(),
@@ -409,8 +614,6 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
             "providerId": provider_id,
         }),
     );
-    // Also emit `cost.ingested` so existing dashboard SSE invalidation picks
-    // up the new cost event row without polling.
     bus.emit(
         "cost.ingested",
         json!({ "projectId": project_id, "costCents": total_cost }),

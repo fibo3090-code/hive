@@ -8,11 +8,15 @@ pub mod pricing;
 pub mod providers;
 pub mod sse;
 
-pub use chat::{ChatMessage, ChatRequest, ChatRole, StreamChunk, StreamEvent};
+pub use chat::{
+    ChatMessage, ChatRequest, ChatResponse, ChatRole, StreamChunk, StreamEvent, ToolCall,
+    ToolDefinition,
+};
 
 use std::{fmt, pin::Pin, str::FromStr};
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -156,6 +160,40 @@ pub trait LlmProvider: Send + Sync {
             "{} does not implement chat_stream",
             self.kind().as_str()
         )))
+    }
+
+    /// Run a single chat turn and return the fully accumulated response.
+    /// Providers override this for native tool-calling support; the default
+    /// implementation falls back to `chat_stream` and only returns text.
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        let mut stream = self.chat_stream(request).await?;
+        let mut text = String::new();
+        let mut tokens_in = 0;
+        let mut tokens_out = 0;
+        let mut finish_reason = None;
+
+        while let Some(item) = stream.next().await {
+            match item? {
+                StreamEvent::Delta(chunk) => text.push_str(&chunk.delta),
+                StreamEvent::Complete {
+                    tokens_in: tin,
+                    tokens_out: tout,
+                    finish_reason: finish,
+                } => {
+                    tokens_in = tin;
+                    tokens_out = tout;
+                    finish_reason = finish;
+                }
+            }
+        }
+
+        Ok(ChatResponse {
+            text,
+            tool_calls: Vec::new(),
+            tokens_in,
+            tokens_out,
+            finish_reason,
+        })
     }
 }
 

@@ -76,6 +76,24 @@ function centsToDollars(cents: number): string {
   return `$${(cents / 100).toFixed(cents < 100 ? 4 : 2)}`;
 }
 
+function extractMentionTarget(input: string, agents: Array<{ id: string; name: string }>) {
+  const mentions = [...input.matchAll(/(^|\s)@([\w-]+)/g)];
+  for (const match of mentions) {
+    const handle = match[2]?.toLowerCase();
+    const agent = agents.find(
+      (candidate) =>
+        candidate.name.toLowerCase() === handle || candidate.id.toLowerCase() === handle,
+    );
+    if (agent) {
+      return {
+        agentId: agent.id,
+        content: input.replace(match[0], ' ').replace(/\s+/g, ' ').trim(),
+      };
+    }
+  }
+  return null;
+}
+
 function ToolCallList({ toolCalls }: { readonly toolCalls: ToolCallTrace[] }) {
   if (toolCalls.length === 0) return null;
   return (
@@ -208,14 +226,41 @@ export default function ChatCentral() {
     setShowNewPill(el.scrollHeight - el.scrollTop - el.clientHeight > 100);
   };
 
-  const handleSend = () => {
-    if (!input.trim() || !activeThreadId || sendMutation.isPending) return;
-    const payload = {
-      content: input.trim(),
-      model: modelOverride ?? defaultModel ?? null,
-    };
-    sendMutation.mutate(payload);
-    setInput('');
+  const handleSend = async () => {
+    if (!input.trim() || !activeThreadId || sendMutation.isPending || createThreadMutation.isPending) return;
+    const route = extractMentionTarget(input.trim(), state.agents);
+    const content = route?.content || input.trim();
+    if (!content) return;
+
+    let targetThreadId = activeThreadId;
+    if (route?.agentId) {
+      const existing = threads.find((thread) => thread.agentId === route.agentId);
+      if (existing) {
+        targetThreadId = existing.id;
+      } else if (projectId) {
+        const agent = state.agents.find((candidate) => candidate.id === route.agentId);
+        const created = await createThreadMutation.mutateAsync({
+          projectId,
+          agentId: route.agentId,
+          title: agent?.name ?? 'Agent',
+        });
+        targetThreadId = created.id;
+      }
+      setActiveThreadId(targetThreadId);
+    }
+
+    sendMutation.mutate(
+      {
+        threadId: targetThreadId,
+        content,
+        model: modelOverride ?? defaultModel ?? null,
+      },
+      {
+        onSuccess: () => {
+          setInput('');
+        },
+      },
+    );
   };
 
   const handleCancel = () => {
@@ -227,7 +272,7 @@ export default function ChatCentral() {
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
-      handleSend();
+      void handleSend();
     }
   };
 
@@ -449,8 +494,8 @@ export default function ChatCentral() {
               </button>
             ) : (
               <button
-                onClick={handleSend}
-                disabled={!input.trim() || sendMutation.isPending || !activeThreadId}
+                onClick={() => void handleSend()}
+                disabled={!input.trim() || sendMutation.isPending || createThreadMutation.isPending || !activeThreadId}
                 className="rounded-md bg-primary p-1.5 text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40"
                 aria-label="Send message"
               >

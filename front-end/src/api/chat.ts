@@ -84,11 +84,12 @@ export function useSendChatMessage(threadId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: {
+      threadId?: string | null;
       content: string;
       model?: { providerId: string; modelId: string } | null;
       systemPrompt?: string;
     }) =>
-      api<SendMessageResponse>(`/v1/chat-threads/${threadId}/messages`, {
+      api<SendMessageResponse>(`/v1/chat-threads/${input.threadId ?? threadId}/messages`, {
         method: 'POST',
         body: JSON.stringify({
           content: input.content,
@@ -96,8 +97,8 @@ export function useSendChatMessage(threadId: string | null | undefined) {
           systemPrompt: input.systemPrompt ?? null,
         }),
       }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
+    onSuccess: (_data, input) => {
+      qc.invalidateQueries({ queryKey: ['chat-messages', input.threadId ?? threadId] });
     },
   });
 }
