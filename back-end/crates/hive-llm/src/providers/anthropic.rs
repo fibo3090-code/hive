@@ -1,3 +1,8 @@
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc,
+};
+
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -6,6 +11,11 @@ use serde_json::{json, Value};
 use crate::chat::{ChatRequest, ChatResponse, ChatRole, StreamChunk, StreamEvent, ToolCall};
 use crate::sse::sse_stream;
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
+
+/// Anthropic Messages API version. `2023-06-01` is the durable, GA version
+/// of the Messages API (not deprecated as of this writing). New capabilities
+/// are added under this version header rather than via a new date.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 pub struct AnthropicProvider {
     http: reqwest::Client,
@@ -192,7 +202,7 @@ impl LlmProvider for AnthropicProvider {
             .http
             .get(url)
             .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", ANTHROPIC_VERSION)
             .send()
             .await?;
 
@@ -219,7 +229,7 @@ impl LlmProvider for AnthropicProvider {
             .http
             .post(url)
             .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json")
             .json(&body)
             .send()
@@ -236,10 +246,17 @@ impl LlmProvider for AnthropicProvider {
 
         let byte_stream = response.bytes_stream();
         let sse = sse_stream(byte_stream);
-        let mapped = sse.filter_map(|item| async move {
-            match item {
-                Err(e) => Some(Err(LlmError::Http(e))),
-                Ok(msg) => parse_event(&msg).map(Ok),
+        // Anthropic emits `input_tokens` in `message_start`; cumulative
+        // `output_tokens` lives on `message_delta`. Track input tokens
+        // across events so the final `Complete` event carries both.
+        let input_tokens = Arc::new(AtomicU32::new(0));
+        let mapped = sse.filter_map(move |item| {
+            let input_tokens = input_tokens.clone();
+            async move {
+                match item {
+                    Err(e) => Some(Err(LlmError::Http(e))),
+                    Ok(msg) => parse_event(&msg, &input_tokens).map(Ok),
+                }
             }
         });
         Ok(Box::pin(mapped))
@@ -252,7 +269,7 @@ impl LlmProvider for AnthropicProvider {
             .http
             .post(url)
             .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json")
             .json(&request_body(&request))
             .send()
@@ -273,21 +290,62 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
-fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
+/// Parse one Anthropic SSE event into the provider-neutral `StreamEvent`.
+///
+/// Anthropic's event taxonomy:
+/// - `message_start` — first event, carries `usage.input_tokens` on the
+///   nested `message` object. We stash it for the eventual `Complete`.
+/// - `content_block_start` / `content_block_stop` — boundary markers around
+///   text or `tool_use` blocks. Phase 1 ignores them; later phases use them
+///   to assemble multi-block output.
+/// - `content_block_delta` — incremental text or `input_json_delta` for tool
+///   arguments. Today only text is surfaced (tool args are reconstructed by
+///   the non-streaming `parse_response`).
+/// - `message_delta` — final usage with cumulative `output_tokens` and
+///   `delta.stop_reason`. We merge in the cached input tokens here.
+/// - `message_stop` — terminator. The HTTP stream ends right after.
+/// - `ping` — keep-alive; ignore.
+fn parse_event(
+    msg: &crate::sse::SseMessage,
+    input_tokens: &AtomicU32,
+) -> Option<StreamEvent> {
     if msg.data.is_empty() {
         return None;
     }
-    let value: Value = serde_json::from_str(&msg.data).ok()?;
+    let value: Value = match serde_json::from_str(&msg.data) {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::trace!(error = %err, raw = %msg.data, "anthropic: malformed sse frame, skipping");
+            return None;
+        }
+    };
     let kind = value.get("type").and_then(Value::as_str)?;
     match kind {
+        "message_start" => {
+            if let Some(tokens) = value
+                .get("message")
+                .and_then(|m| m.get("usage"))
+                .and_then(|u| u.get("input_tokens"))
+                .and_then(Value::as_u64)
+            {
+                input_tokens.store(tokens as u32, Ordering::Relaxed);
+            }
+            None
+        }
         "content_block_delta" => {
-            let text = value
-                .get("delta")
-                .and_then(|d| d.get("text"))
-                .and_then(Value::as_str)?;
-            Some(StreamEvent::Delta(StreamChunk {
-                delta: text.to_owned(),
-            }))
+            let delta = value.get("delta")?;
+            let delta_kind = delta.get("type").and_then(Value::as_str).unwrap_or("");
+            // text_delta carries assistant text; input_json_delta carries
+            // partial tool-use arguments (handled by the non-streaming
+            // path on the next round).
+            if delta_kind == "text_delta" || delta_kind.is_empty() {
+                let text = delta.get("text").and_then(Value::as_str)?;
+                Some(StreamEvent::Delta(StreamChunk {
+                    delta: text.to_owned(),
+                }))
+            } else {
+                None
+            }
         }
         "message_delta" => {
             let usage = value.get("usage")?;
@@ -295,10 +353,14 @@ fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
                 .get("output_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as u32;
-            let tokens_in = usage
+            // Anthropic also occasionally echoes input_tokens here; prefer
+            // the cached value from message_start if it's larger (cumulative).
+            let echoed_in = usage
                 .get("input_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as u32;
+            let cached_in = input_tokens.load(Ordering::Relaxed);
+            let tokens_in = cached_in.max(echoed_in);
             let finish = value
                 .get("delta")
                 .and_then(|d| d.get("stop_reason"))
@@ -310,7 +372,13 @@ fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
                 finish_reason: finish,
             })
         }
-        _ => None,
+        // Recognised-but-ignored events. Listing them explicitly stops the
+        // generic `_ => None` arm from masking a new event we should handle.
+        "content_block_start" | "content_block_stop" | "message_stop" | "ping" | "error" => None,
+        other => {
+            tracing::trace!(event = %other, "anthropic: unrecognised sse event, ignoring");
+            None
+        }
     }
 }
 
@@ -356,5 +424,75 @@ mod tests {
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].name, "web_search");
         assert_eq!(parsed.tool_calls[0].arguments["query"], "rust");
+    }
+
+    fn frame(data: &str) -> crate::sse::SseMessage {
+        crate::sse::SseMessage {
+            event: None,
+            data: data.to_owned(),
+        }
+    }
+
+    #[test]
+    fn message_start_caches_input_tokens_for_later_complete() {
+        let cache = AtomicU32::new(0);
+        let start = frame(
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":42,"output_tokens":0}}}"#,
+        );
+        assert!(parse_event(&start, &cache).is_none());
+        assert_eq!(cache.load(Ordering::Relaxed), 42);
+
+        let delta = frame(
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#,
+        );
+        match parse_event(&delta, &cache).unwrap() {
+            StreamEvent::Complete {
+                tokens_in,
+                tokens_out,
+                finish_reason,
+            } => {
+                assert_eq!(tokens_in, 42);
+                assert_eq!(tokens_out, 7);
+                assert_eq!(finish_reason.as_deref(), Some("end_turn"));
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ping_and_boundary_events_are_ignored() {
+        let cache = AtomicU32::new(0);
+        for raw in [
+            r#"{"type":"ping"}"#,
+            r#"{"type":"content_block_start","index":0}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"message_stop"}"#,
+        ] {
+            assert!(parse_event(&frame(raw), &cache).is_none(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn text_delta_is_extracted_only_for_text_blocks() {
+        let cache = AtomicU32::new(0);
+        let text =
+            frame(r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}"#);
+        match parse_event(&text, &cache).unwrap() {
+            StreamEvent::Delta(chunk) => assert_eq!(chunk.delta, "hi"),
+            other => panic!("expected Delta, got {other:?}"),
+        }
+        // input_json_delta (tool args) is ignored in streaming; tool args
+        // are reconstructed by the non-streaming chat() path.
+        let json_delta = frame(
+            r#"{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\""}}"#,
+        );
+        assert!(parse_event(&json_delta, &cache).is_none());
+    }
+
+    #[test]
+    fn malformed_frames_do_not_panic() {
+        let cache = AtomicU32::new(0);
+        assert!(parse_event(&frame("{not json"), &cache).is_none());
+        assert!(parse_event(&frame(""), &cache).is_none());
     }
 }

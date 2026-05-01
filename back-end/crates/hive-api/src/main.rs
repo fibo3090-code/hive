@@ -46,7 +46,10 @@ use tokio::{
     sync::{broadcast, Mutex, RwLock},
     task::AbortHandle,
 };
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    trace::TraceLayer,
+};
 use tracing::{info, warn};
 
 #[derive(Parser)]
@@ -154,12 +157,34 @@ enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, error, code) = match self {
-            Self::NotFound(message) => (StatusCode::NOT_FOUND, message, "not_found"),
-            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message, "bad_request"),
-            Self::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message, "internal"),
-        };
-        (status, Json(json!({ "error": error, "code": code }))).into_response()
+        match self {
+            Self::NotFound(message) => (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": message, "code": "not_found" })),
+            )
+                .into_response(),
+            Self::BadRequest(message) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": message, "code": "bad_request" })),
+            )
+                .into_response(),
+            Self::Internal(detail) => {
+                // Mint a correlation id, log the real reason behind it, and
+                // return a body that does not leak implementation details.
+                let request_id = ulid::Ulid::new().to_string();
+                tracing::error!(request_id = %request_id, %detail, "internal error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(axum::http::header::HeaderName::from_static("x-request-id"), request_id.clone())],
+                    Json(json!({
+                        "error": "internal error",
+                        "code": "internal",
+                        "requestId": request_id,
+                    })),
+                )
+                    .into_response()
+            }
+        }
     }
 }
 
@@ -586,7 +611,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route("/v1/projects/:project_id/modules/synthesize", post(start_module_synthesis))
         .route("/v1/synthesis-jobs/:job_id", get(get_synthesis_job))
         .with_state(state)
-        .layer(CorsLayer::permissive())
+        .layer(cors_layer())
         .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8787));
@@ -594,6 +619,29 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Restrict cross-origin access to the dev origins served by Vite. The API is
+/// bound to 127.0.0.1 so this is defence in depth — it stops a malicious page
+/// open in the same browser from exfiltrating provider keys via the API.
+fn cors_layer() -> CorsLayer {
+    use axum::http::HeaderValue;
+    let dev_origins = [
+        "http://127.0.0.1:8080",
+        "http://localhost:8080",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ];
+    CorsLayer::new()
+        .allow_origin(
+            dev_origins
+                .iter()
+                .filter_map(|o| HeaderValue::from_str(o).ok())
+                .collect::<Vec<_>>(),
+        )
+        .allow_methods(Any)
+        .allow_headers(Any)
+        .expose_headers([axum::http::header::HeaderName::from_static("x-request-id")])
 }
 
 async fn bootstrap_runtime(workspace_root: &StdPath) -> anyhow::Result<RuntimeState> {
@@ -1122,8 +1170,21 @@ async fn events_stream(
     let stream = async_stream::stream! {
         loop {
             match receiver.recv().await {
-                Ok(message) => yield Ok(Event::default().event(message.event).json_data(message.data).unwrap()),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Ok(message) => match Event::default().event(&message.event).json_data(&message.data) {
+                    Ok(event) => yield Ok(event),
+                    Err(err) => {
+                        tracing::warn!(
+                            event = %message.event,
+                            error = %err,
+                            "skipping malformed sse event"
+                        );
+                        continue;
+                    }
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "sse subscriber lagged");
+                    continue;
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }

@@ -36,11 +36,11 @@ const settingsNav = [
 ] as const;
 
 const routingTable = [
-  { task: 'Code Generation', model: 'GPT-4o', score: 0.92, cost: '$0.03/1K' },
-  { task: 'Code Review', model: 'Claude 3.5 Sonnet', score: 0.95, cost: '$0.015/1K' },
-  { task: 'Testing', model: 'Claude 3.5 Sonnet', score: 0.91, cost: '$0.015/1K' },
-  { task: 'Documentation', model: 'Gemini Pro', score: 0.88, cost: '$0.007/1K' },
-  { task: 'Planning', model: 'GPT-4o', score: 0.94, cost: '$0.03/1K' },
+  { task: 'Code Generation', model: 'claude-opus-4-7', score: 0.92, cost: '$15/Mtok in · $75/Mtok out' },
+  { task: 'Code Review', model: 'claude-sonnet-4-6', score: 0.95, cost: '$3/Mtok in · $15/Mtok out' },
+  { task: 'Testing', model: 'claude-sonnet-4-6', score: 0.91, cost: '$3/Mtok in · $15/Mtok out' },
+  { task: 'Documentation', model: 'gemini-2.5-flash', score: 0.88, cost: '$0.075/Mtok in · $0.30/Mtok out' },
+  { task: 'Planning', model: 'claude-opus-4-7', score: 0.94, cost: '$15/Mtok in · $75/Mtok out' },
 ] as const;
 
 const shortcuts = [

@@ -825,7 +825,25 @@ async fn ensure_project_scope_settings(
     Ok(())
 }
 
+/// Scope/key used as the "demo seed completed" sentinel. Stored in the
+/// `settings` table because it already supports atomic upsert; cheap to read
+/// at startup. Manual reseed: delete this row (or run the `seed` CLI which
+/// sets the sentinel after each successful run).
+const SEED_SENTINEL_SCOPE: &str = "system";
+const SEED_SENTINEL_KEY: &str = "seed.demo.completed";
+
 pub async fn seed_demo(db: &DatabaseConnection) -> Result<(), DbErr> {
+    // Idempotency guard: if a previous boot completed seeding, skip.
+    // Avoids races on simultaneous startup (two processes both finding
+    // an empty `projects` table) and avoids re-creating notifications
+    // when the user has only deleted some demo rows.
+    if settings::get_value(db, SEED_SENTINEL_SCOPE, SEED_SENTINEL_KEY)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+
     let project_specs = [
         ProjectSpec {
             name: "HIVE Dashboard",
@@ -977,6 +995,15 @@ pub async fn seed_demo(db: &DatabaseConnection) -> Result<(), DbErr> {
         )
         .await?;
     }
+
+    // Sentinel: subsequent calls short-circuit at the top.
+    settings::put_value(
+        db,
+        SEED_SENTINEL_SCOPE,
+        SEED_SENTINEL_KEY,
+        json!({ "at": crate::repos::now_rfc3339() }),
+    )
+    .await?;
 
     Ok(())
 }

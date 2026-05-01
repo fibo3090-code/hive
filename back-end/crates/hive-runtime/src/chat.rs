@@ -234,6 +234,13 @@ fn tool_result_json(tool: &str, error: impl Into<String>) -> Value {
     })
 }
 
+/// Saturating cast for the `cost_events.cost_cents` column, which is `i32`
+/// today. The in-memory accumulator is `i64` so very long sessions don't
+/// silently overflow; the DB column is widened in a later migration.
+fn cents_to_i32(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 async fn finalize_cancelled(
     db: &Db,
     bus: &EventBus,
@@ -242,7 +249,7 @@ async fn finalize_cancelled(
     final_answer: &str,
     total_tokens_in: u32,
     total_tokens_out: u32,
-    total_cost: i32,
+    total_cost: i64,
     executed_calls: &[Value],
 ) -> Result<(), ChatError> {
     let _ = chat_messages::set_tool_calls(db.conn(), assistant_message_id, json!(executed_calls)).await?;
@@ -252,7 +259,7 @@ async fn finalize_cancelled(
         final_answer,
         total_tokens_in as i32,
         total_tokens_out as i32,
-        total_cost,
+        cents_to_i32(total_cost),
         "cancelled",
     )
     .await?;
@@ -338,7 +345,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     let mut final_answer = String::new();
     let mut total_tokens_in: u32 = 0;
     let mut total_tokens_out: u32 = 0;
-    let mut total_cost = 0;
+    let mut total_cost: i64 = 0;
     let mut finish_reason: Option<String> = None;
     let mut executed_calls = Vec::<Value>::new();
     let mut repeated_calls: HashMap<String, usize> = HashMap::new();
@@ -384,7 +391,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                             &format!("[error] {detail}"),
                             total_tokens_in as i32,
                             total_tokens_out as i32,
-                            total_cost,
+                            cents_to_i32(total_cost),
                             "error",
                         )
                         .await;
@@ -428,7 +435,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                     &format!("[error] {detail}"),
                     total_tokens_in as i32,
                     total_tokens_out as i32,
-                    total_cost,
+                    cents_to_i32(total_cost),
                     "error",
                 )
                 .await;
@@ -579,7 +586,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
         &final_answer,
         total_tokens_in as i32,
         total_tokens_out as i32,
-        total_cost,
+        cents_to_i32(total_cost),
         "done",
     )
     .await?;
@@ -595,7 +602,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
             kind: "chat.completion",
             tokens_in: total_tokens_in as i32,
             tokens_out: total_tokens_out as i32,
-            cost_cents: total_cost,
+            cost_cents: cents_to_i32(total_cost),
             memo: Some(&memo),
         },
     )
