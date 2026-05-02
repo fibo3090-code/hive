@@ -3,9 +3,10 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "dev": "cd front-end && bun run dev",
-    "build": "cd front-end && bun run build",
-    "build:dev": "cd front-end && bun run build:dev",
+    "postinstall": "cd front-end && bun install",
+    "dev": "cd front-end && bun install && bun run dev",
+    "build": "cd front-end && bun install && bun run build",
+    "build:dev": "cd front-end && bun install && bun run build:dev",
     "preview": "cd front-end && bun run preview",
     "lint": "cd front-end && bun run lint",
     "typecheck": "cd front-end && bun run typecheck",
