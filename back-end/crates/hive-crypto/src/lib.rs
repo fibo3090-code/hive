@@ -19,12 +19,19 @@ const KEY_LEN: usize = 32;
 pub enum CryptoError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("crypto failure: {0}")]
-    Crypto(String),
+    /// All decrypt-side failures collapse to one variant. Whether the key
+    /// is wrong, the ciphertext was tampered with, or the framing is
+    /// broken, the caller and any leaked logs see the same message —
+    /// information leaks aid offline-attack iteration. The real cause
+    /// goes to `tracing::error!` for the operator.
+    #[error("decrypt failed")]
+    Decrypt,
+    /// Encrypt-side failures from the AEAD (always internal — out-of-
+    /// memory or RNG exhaustion territory). Same opacity discipline.
+    #[error("encrypt failed")]
+    Encrypt,
     #[error("master key has invalid length (expected {KEY_LEN} bytes, got {0})")]
     BadKeyLength(usize),
-    #[error("ciphertext too short")]
-    BadCiphertext,
     #[error("no home directory available")]
     NoHome,
 }
@@ -67,10 +74,10 @@ impl Crypto {
         let mut nonce_bytes = [0u8; NONCE_LEN];
         OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
-        let ct = self
-            .cipher
-            .encrypt(nonce, plaintext)
-            .map_err(|e| CryptoError::Crypto(e.to_string()))?;
+        let ct = self.cipher.encrypt(nonce, plaintext).map_err(|e| {
+            tracing::error!(error = %e, "crypto seal failed");
+            CryptoError::Encrypt
+        })?;
         let mut out = Vec::with_capacity(NONCE_LEN + ct.len());
         out.extend_from_slice(&nonce_bytes);
         out.extend_from_slice(&ct);
@@ -78,14 +85,25 @@ impl Crypto {
     }
 
     pub fn open(&self, sealed: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        if sealed.len() < NONCE_LEN + 16 {
-            return Err(CryptoError::BadCiphertext);
+        // Minimum sealed-payload length: nonce (12) + plausibly-aligned
+        // ciphertext + tag (16). 32-byte threshold raises the bar so a
+        // truncated/garbage payload gets rejected before it touches the
+        // AEAD machinery.
+        const MIN_SEALED_LEN: usize = NONCE_LEN + 32;
+        if sealed.len() < MIN_SEALED_LEN {
+            tracing::error!(
+                len = sealed.len(),
+                min = MIN_SEALED_LEN,
+                "crypto open: sealed payload below minimum length"
+            );
+            return Err(CryptoError::Decrypt);
         }
         let (nonce_bytes, ct) = sealed.split_at(NONCE_LEN);
         let nonce = Nonce::from_slice(nonce_bytes);
-        self.cipher
-            .decrypt(nonce, ct)
-            .map_err(|e| CryptoError::Crypto(e.to_string()))
+        self.cipher.decrypt(nonce, ct).map_err(|e| {
+            tracing::error!(error = %e, "crypto open failed");
+            CryptoError::Decrypt
+        })
     }
 }
 
@@ -130,6 +148,17 @@ fn write_key_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 
 #[cfg(not(unix))]
 fn write_key_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    // Non-Unix (Windows): we can't set 0o600 here. The right answer is
+    // a Windows-ACL helper that locks the ACL to the current user only;
+    // until that ships we surface a loud warning so operators know the
+    // master key file falls back to default ACLs.
+    tracing::warn!(
+        path = %path.display(),
+        "writing master key with default platform permissions; \
+         on Windows this means the file ACL may be read-accessible to \
+         other users on the machine. For shared hosts, restrict the \
+         file ACL manually or run on a Unix host."
+    );
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -150,21 +179,34 @@ mod tests {
         }
     }
 
+    /// API-key-sized payload — long enough to clear the new minimum
+    /// sealed-length floor (44 bytes; details in `open`).
+    const SAMPLE_KEY: &[u8] = b"sk-ant-1234567890abcdef1234567890abcdef";
+
     #[test]
     fn roundtrip() {
         let c = in_mem();
-        let sealed = c.seal(b"hello world").unwrap();
-        assert_ne!(sealed, b"hello world");
-        assert_eq!(c.open(&sealed).unwrap(), b"hello world");
+        let sealed = c.seal(SAMPLE_KEY).unwrap();
+        assert_ne!(sealed, SAMPLE_KEY);
+        assert_eq!(c.open(&sealed).unwrap(), SAMPLE_KEY);
     }
 
     #[test]
     fn tamper_detected() {
         let c = in_mem();
-        let mut sealed = c.seal(b"secret").unwrap();
+        let mut sealed = c.seal(SAMPLE_KEY).unwrap();
         let last = sealed.len() - 1;
         sealed[last] ^= 0x01;
-        assert!(c.open(&sealed).is_err());
+        // Decrypt failures all collapse to the opaque `Decrypt` variant.
+        assert!(matches!(c.open(&sealed), Err(CryptoError::Decrypt)));
+    }
+
+    #[test]
+    fn truncated_payload_rejected_with_opaque_error() {
+        let c = in_mem();
+        let result = c.open(&[0u8; 8]);
+        // Opaque error: callers can't tell short-payload from wrong-key.
+        assert!(matches!(result, Err(CryptoError::Decrypt)));
     }
 
     #[test]
