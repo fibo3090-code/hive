@@ -557,6 +557,18 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/projects/:project_id/insights/task-throughput",
             get(get_project_task_throughput),
         )
+        .route(
+            "/v1/projects/:project_id/insights/cost-timeline",
+            get(get_project_cost_timeline),
+        )
+        .route(
+            "/v1/projects/:project_id/insights/agent-token-usage",
+            get(get_project_agent_token_usage),
+        )
+        .route(
+            "/v1/projects/:project_id/insights/task-distribution",
+            get(get_project_task_distribution),
+        )
         .route("/v1/projects/:project_id/modules", get(list_modules))
         .route("/v1/modules/:module_id", get(get_module))
         .route(
@@ -2055,6 +2067,154 @@ async fn get_project_task_throughput(
     Ok(Json(
         read_setting_json(&state, &scope, "insights.taskThroughput", json!([])).await?,
     ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InsightsRangeQuery {
+    /// Range duration like `24h`, `2h`, `7d`. Default `24h`.
+    #[serde(default)]
+    range: Option<String>,
+    /// Bucket width for the timeline endpoint, like `5m`, `1h`. Default `1h`.
+    #[serde(default)]
+    bucket: Option<String>,
+}
+
+fn parse_duration_or(input: Option<&str>, fallback_secs: i64) -> i64 {
+    let Some(s) = input else { return fallback_secs };
+    let s = s.trim();
+    let (n, unit) = s.split_at(s.len() - 1);
+    let value: i64 = n.parse().unwrap_or(0);
+    match unit {
+        "s" => value,
+        "m" => value * 60,
+        "h" => value * 3_600,
+        "d" => value * 86_400,
+        _ => fallback_secs,
+    }
+}
+
+/// Cost over time, bucketed.
+///
+/// Reads `cost_events` for the project within `range` and aggregates into
+/// fixed-width time buckets. Returned as `[{ time: ISO8601, cents, tokens }]`.
+async fn get_project_cost_timeline(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<InsightsRangeQuery>,
+) -> Result<Json<Value>, AppError> {
+    use chrono::{DateTime, Duration, Utc};
+
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+
+    let range_secs = parse_duration_or(query.range.as_deref(), 86_400);
+    let bucket_secs = parse_duration_or(query.bucket.as_deref(), 3_600).max(60);
+
+    let cutoff = Utc::now() - Duration::seconds(range_secs);
+    let events = cost_events::list_by_project(database.conn(), &project_id).await?;
+
+    // In-memory bucketing avoids per-backend SQL (SQLite has no date_trunc).
+    // For dashboards on small datasets this is fine; if the table grows past
+    // ~100k rows we'll push the aggregation to SQL.
+    let mut buckets: std::collections::BTreeMap<i64, (i64, i64)> = std::collections::BTreeMap::new();
+    for event in &events {
+        let Ok(ts) = DateTime::parse_from_rfc3339(&event.created_at) else {
+            continue;
+        };
+        let ts_utc = ts.with_timezone(&Utc);
+        if ts_utc < cutoff {
+            continue;
+        }
+        let bucket_key = ts_utc.timestamp() / bucket_secs * bucket_secs;
+        let entry = buckets.entry(bucket_key).or_insert((0, 0));
+        entry.0 += event.cost_cents;
+        entry.1 += i64::from(event.tokens_in) + i64::from(event.tokens_out);
+    }
+
+    let series: Vec<Value> = buckets
+        .into_iter()
+        .map(|(ts, (cents, tokens))| {
+            let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(Utc::now);
+            json!({
+                "time": dt.to_rfc3339(),
+                "cents": cents,
+                "tokens": tokens,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!(series)))
+}
+
+/// Sum of input + output tokens per agent over the range.
+async fn get_project_agent_token_usage(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<InsightsRangeQuery>,
+) -> Result<Json<Value>, AppError> {
+    use chrono::{DateTime, Duration, Utc};
+
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+
+    let range_secs = parse_duration_or(query.range.as_deref(), 86_400);
+    let cutoff = Utc::now() - Duration::seconds(range_secs);
+
+    let events = cost_events::list_by_project(database.conn(), &project_id).await?;
+    let mut by_agent: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for event in events {
+        let Ok(ts) = DateTime::parse_from_rfc3339(&event.created_at) else {
+            continue;
+        };
+        if ts.with_timezone(&Utc) < cutoff {
+            continue;
+        }
+        let key = event.agent_id.unwrap_or_else(|| "unattributed".into());
+        let total = i64::from(event.tokens_in) + i64::from(event.tokens_out);
+        *by_agent.entry(key).or_default() += total;
+    }
+
+    let mut series: Vec<Value> = by_agent
+        .into_iter()
+        .map(|(agent_id, tokens)| json!({ "agentId": agent_id, "tokens": tokens }))
+        .collect();
+    series.sort_by(|a, b| {
+        b["tokens"]
+            .as_i64()
+            .unwrap_or(0)
+            .cmp(&a["tokens"].as_i64().unwrap_or(0))
+    });
+
+    Ok(Json(json!(series)))
+}
+
+/// Count of tasks grouped by status for the project.
+async fn get_project_task_distribution(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+
+    let task_rows = tasks::list_by_project(database.conn(), &project_id).await?;
+    let mut by_status: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for task in task_rows {
+        *by_status.entry(task.status.clone()).or_default() += 1;
+    }
+
+    let series: Vec<Value> = by_status
+        .into_iter()
+        .map(|(status, count)| json!({ "status": status, "count": count }))
+        .collect();
+
+    Ok(Json(json!(series)))
 }
 
 async fn list_modules(

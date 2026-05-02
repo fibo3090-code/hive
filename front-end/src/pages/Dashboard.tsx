@@ -1,6 +1,11 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useHiveData } from '@/api/queries/useHiveData';
-import { useActivityFeedData } from '@/api/queries/useServerData';
+import {
+  useActivityFeedData,
+  useAgentTokenUsageData,
+  useCostTimelineData,
+  useTaskDistributionData,
+} from '@/api/queries/useServerData';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ConfidenceBar } from '@/components/shared/ConfidenceBar';
 import {
@@ -41,34 +46,8 @@ const commitFeed: Array<{ hash: string; message: string; author: string; time: s
 const activityIcons = { Bot, GitCommit, AlertTriangle, TestTube2, FileText, DollarSign, Eye } as const;
 type ActivityFeedEntry = ActivityFeedItem & { activityIcon: LucideIcon };
 
-/* ─── Token Usage Timeline ─── */
-const tokenTimelineData = [
-  { time: '00:00', tokens: 0, cost: 0 },
-  { time: '00:10', tokens: 28, cost: 12 },
-  { time: '00:20', tokens: 65, cost: 31 },
-  { time: '00:30', tokens: 112, cost: 52 },
-  { time: '00:40', tokens: 168, cost: 78 },
-  { time: '00:50', tokens: 215, cost: 98 },
-  { time: '01:00', tokens: 278, cost: 118 },
-  { time: '01:10', tokens: 310, cost: 130 },
-  { time: '01:20', tokens: 342, cost: 142 },
-];
-
-const agentTokenData = [
-  { name: 'Planning', tokens: 125, color: 'hsl(var(--primary))' },
-  { name: 'Frontend', tokens: 98, color: 'hsl(var(--success))' },
-  { name: 'Backend', tokens: 112, color: 'hsl(var(--info))' },
-  { name: 'QA', tokens: 45, color: 'hsl(var(--warning))' },
-  { name: 'Security', tokens: 34, color: 'hsl(var(--destructive))' },
-  { name: 'Docs', tokens: 28, color: 'hsl(var(--muted-foreground))' },
-];
-
-const taskStatusData = [
-  { name: 'Completed', value: 2, color: 'hsl(var(--success))' },
-  { name: 'In Progress', value: 3, color: 'hsl(var(--primary))' },
-  { name: 'Blocked', value: 1, color: 'hsl(var(--destructive))' },
-  { name: 'Queued', value: 2, color: 'hsl(var(--muted-foreground))' },
-];
+/* Real-aggregate Token Usage Timeline / Agent Tokens / Task Status are
+   computed inside the Dashboard component from the insight endpoints. */
 
 /* ─── Sprint Timeline ─── */
 function SprintTimeline() {
@@ -220,6 +199,76 @@ export default function Dashboard() {
   const { data: activityFeedRaw = [] } = useActivityFeedData(activeProject?.id);
   const { agents, tasks, alerts, session, healthScore } = state;
   const [timeFilter, setTimeFilter] = useState('1h');
+
+  // Live insight aggregates. The `range` matches the segmented control
+  // above the timeline; `bucket` is chosen to give ~10–20 points across
+  // the chart for any range.
+  const insightRange = timeFilter === '1h' ? '1h' : timeFilter === '24h' ? '24h' : '7d';
+  const insightBucket =
+    timeFilter === '1h' ? '5m' : timeFilter === '24h' ? '1h' : '6h';
+  const { data: costTimelineRaw = [] } = useCostTimelineData(
+    activeProject?.id,
+    insightRange,
+    insightBucket,
+  );
+  const { data: agentTokenRaw = [] } = useAgentTokenUsageData(
+    activeProject?.id,
+    insightRange,
+  );
+  const { data: taskDistributionRaw = [] } = useTaskDistributionData(activeProject?.id);
+
+  const tokenTimelineData = useMemo(
+    () =>
+      costTimelineRaw.map((point) => {
+        const dt = new Date(point.time);
+        const hh = dt.getHours().toString().padStart(2, '0');
+        const mm = dt.getMinutes().toString().padStart(2, '0');
+        return { time: `${hh}:${mm}`, tokens: point.tokens, cost: point.cents };
+      }),
+    [costTimelineRaw],
+  );
+
+  const agentColors = [
+    'hsl(var(--primary))',
+    'hsl(var(--success))',
+    'hsl(var(--info))',
+    'hsl(var(--warning))',
+    'hsl(var(--destructive))',
+    'hsl(var(--muted-foreground))',
+  ];
+  const agentTokenData = useMemo(() => {
+    return agentTokenRaw.slice(0, 6).map((row, idx) => {
+      const agent = agents.find((a) => a.id === row.agentId);
+      return {
+        name: agent?.name ?? row.agentId,
+        tokens: row.tokens,
+        color: agentColors[idx % agentColors.length],
+      };
+    });
+  }, [agentTokenRaw, agents]);
+
+  const taskStatusColors: Record<string, string> = {
+    completed: 'hsl(var(--success))',
+    'in-progress': 'hsl(var(--primary))',
+    in_progress: 'hsl(var(--primary))',
+    blocked: 'hsl(var(--destructive))',
+    queued: 'hsl(var(--muted-foreground))',
+    todo: 'hsl(var(--muted-foreground))',
+    pending: 'hsl(var(--muted-foreground))',
+  };
+  const taskStatusData = useMemo(
+    () =>
+      taskDistributionRaw.map((row) => ({
+        name: row.status
+          .replace(/[-_]/g, ' ')
+          .replace(/\b\w/g, (c) => c.toUpperCase()),
+        value: row.count,
+        color:
+          taskStatusColors[row.status.toLowerCase()] ??
+          'hsl(var(--muted-foreground))',
+      })),
+    [taskDistributionRaw],
+  );
   const [alertsExpanded, setAlertsExpanded] = useState(true);
   const [showMoreActivity, setShowMoreActivity] = useState(false);
 

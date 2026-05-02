@@ -61,6 +61,63 @@ export const useSpendTimelineData = (projectId?: string | null) =>
   useProjectResourceQuery<TimelinePoint[]>(projectId, 'spend-timeline', 'insights/spend');
 export const useTaskThroughputData = (projectId?: string | null) =>
   useProjectResourceQuery<TimelinePoint[]>(projectId, 'task-throughput', 'insights/task-throughput');
+
+export interface CostTimelinePoint {
+  /** ISO 8601 bucket start. */
+  time: string;
+  /** Total cost in cents within the bucket. */
+  cents: number;
+  /** Total tokens (in + out) within the bucket. */
+  tokens: number;
+}
+export interface AgentTokenUsageRow {
+  agentId: string;
+  tokens: number;
+}
+export interface TaskDistributionRow {
+  status: string;
+  count: number;
+}
+
+export const useCostTimelineData = (
+  projectId?: string | null,
+  range = '24h',
+  bucket = '1h',
+) =>
+  useQuery({
+    queryKey: ['insights', 'cost-timeline', projectId, range, bucket],
+    queryFn: () =>
+      api<CostTimelinePoint[]>(
+        `/v1/projects/${projectId}/insights/cost-timeline?range=${range}&bucket=${bucket}`,
+      ),
+    enabled: Boolean(projectId),
+    staleTime: 30_000,
+  });
+
+export const useAgentTokenUsageData = (
+  projectId?: string | null,
+  range = '24h',
+) =>
+  useQuery({
+    queryKey: ['insights', 'agent-token-usage', projectId, range],
+    queryFn: () =>
+      api<AgentTokenUsageRow[]>(
+        `/v1/projects/${projectId}/insights/agent-token-usage?range=${range}`,
+      ),
+    enabled: Boolean(projectId),
+    staleTime: 30_000,
+  });
+
+export const useTaskDistributionData = (projectId?: string | null) =>
+  useQuery({
+    queryKey: ['insights', 'task-distribution', projectId],
+    queryFn: () =>
+      api<TaskDistributionRow[]>(
+        `/v1/projects/${projectId}/insights/task-distribution`,
+      ),
+    enabled: Boolean(projectId),
+    staleTime: 30_000,
+  });
 export const useModulesData = (projectId?: string | null) =>
   useProjectResourceQuery<ModuleCatalogItem[]>(projectId, 'modules', 'modules');
 
