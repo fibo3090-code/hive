@@ -1,81 +1,196 @@
 import { useEffect } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { eventStreamUrl } from '@/api/client';
+
+/**
+ * Map of backend SSE event names to the `QueryKey` prefixes that should
+ * be invalidated when one fires. Each handler optionally drills down via
+ * the event payload — e.g. `agent.spawned` only invalidates the lineage
+ * of the parent it actually spawned under, not every agent in the
+ * project.
+ *
+ * The payload type is `unknown` because we don't trust the wire shape;
+ * each handler narrows safely with `getString` / optional chaining.
+ */
+type Invalidator = (payload: unknown) => readonly QueryKey[];
+
+function getString(payload: unknown, key: string): string | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const value = (payload as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+const HANDLERS: Record<string, Invalidator> = {
+  // Project-level scope. `projects` alone is broader than ideal but
+  // necessary because the active-project query keys vary per consumer.
+  'project.updated': () => [['projects'], ['projects', 'active'], ['settings']],
+
+  // Agent lifecycle. Status events scope to the project; spawn events
+  // scope to the parent's lineage subtree as well.
+  'agent.status': (p) => {
+    const projectId = getString(p, 'projectId');
+    const agentId = getString(p, 'agentId');
+    return [
+      projectId ? ['agents', projectId] : ['agents'],
+      agentId ? ['agent-messages', agentId] : ['agent-messages'],
+      agentId ? ['agent-lineage', agentId] : ['agent-lineage'],
+    ];
+  },
+  'agent.spawned': (p) => {
+    const projectId = getString(p, 'projectId');
+    const parentId = getString(p, 'parentId');
+    return [
+      projectId ? ['agents', projectId] : ['agents'],
+      parentId ? ['agent-lineage', parentId] : ['agent-lineage'],
+    ];
+  },
+
+  'task.status': (p) => {
+    const projectId = getString(p, 'projectId');
+    return [
+      projectId ? ['tasks', projectId] : ['tasks'],
+      projectId ? ['insights', 'task-distribution', projectId] : ['insights', 'task-distribution'],
+    ];
+  },
+
+  'alert.created': () => [['alerts']],
+  'alert.dismissed': () => [['alerts']],
+  'notification.created': () => [['notifications']],
+
+  'session.toggled': () => [['session'], ['projects']],
+  'session.closed': () => [['session'], ['session-history']],
+
+  'cost.ingested': (p) => {
+    const projectId = getString(p, 'projectId');
+    return [
+      ['projects'],
+      ['spend-timeline'],
+      projectId ? ['insights', 'cost-timeline', projectId] : ['insights', 'cost-timeline'],
+      projectId ? ['insights', 'agent-token-usage', projectId] : ['insights', 'agent-token-usage'],
+    ];
+  },
+
+  'module.installed': () => [['modules'], ['module']],
+
+  'llm_provider.updated': (p) => {
+    const id = getString(p, 'id');
+    return [
+      ['llm-providers'],
+      id ? ['llm-providers', id, 'models'] : ['llm-providers'],
+    ];
+  },
+  'llm_provider.tested': (p) => {
+    const id = getString(p, 'id');
+    return [
+      ['llm-providers'],
+      id ? ['llm-providers', id, 'models'] : ['llm-providers'],
+    ];
+  },
+
+  'workspace.updated': (p) => {
+    const projectId = getString(p, 'projectId');
+    return [projectId ? ['workspace-info', projectId] : ['workspace-info']];
+  },
+
+  'chat.thread.created': (p) => {
+    const projectId = getString(p, 'projectId');
+    return [projectId ? ['chat-threads', projectId] : ['chat-threads']];
+  },
+
+  // Git events scope to the project so other projects' caches don't
+  // refetch on every commit.
+  'git.changed': (p) => {
+    const projectId = getString(p, 'projectId');
+    if (projectId) {
+      return [
+        ['git-status', projectId],
+        ['git-branches', projectId],
+        ['git-log', projectId],
+        ['git-tree', projectId],
+        ['git-diff', projectId],
+        ['git-file', projectId],
+      ];
+    }
+    return [['git-status'], ['git-branches'], ['git-log'], ['git-tree'], ['git-diff'], ['git-file']];
+  },
+
+  'synthesis.progress': (p) => {
+    const jobId = getString(p, 'jobId');
+    return [jobId ? ['synthesis-job', jobId] : ['synthesis-job']];
+  },
+  'synthesis.complete': (p) => {
+    const jobId = getString(p, 'jobId');
+    const projectId = getString(p, 'projectId');
+    return [
+      jobId ? ['synthesis-job', jobId] : ['synthesis-job'],
+      ['modules'],
+      ['module'],
+      projectId ? ['git-status', projectId] : ['git-status'],
+      projectId ? ['git-log', projectId] : ['git-log'],
+      projectId ? ['git-tree', projectId] : ['git-tree'],
+      projectId ? ['git-diff', projectId] : ['git-diff'],
+    ];
+  },
+  'synthesis.error': (p) => {
+    const jobId = getString(p, 'jobId');
+    return [jobId ? ['synthesis-job', jobId] : ['synthesis-job']];
+  },
+};
 
 /**
  * Global SSE subscription that invalidates TanStack Query caches based on
  * backend events. Chat-specific streaming events (`chat.<thread_id>.token`,
- * `…complete`, `…cancelled`, `…error`) are handled separately in
- * `useChatStream` so this hook doesn't thrash the message-history cache on
- * every token.
+ * `…complete`, `…cancelled`, `…error`, `…context_trim`) are handled
+ * separately in `useChatStream` so this hook doesn't thrash the
+ * message-history cache on every token.
+ *
+ * Each event's `QueryKey` invalidation is scoped via the event payload
+ * (e.g. `git.changed` only refetches *that* project's git queries, not
+ * every project's). Drops the typical refetch volume from O(events × all
+ * project queries) to O(events × ~3 keys).
  */
 export function useSse() {
   const qc = useQueryClient();
 
   useEffect(() => {
     const source = new EventSource(eventStreamUrl('/v1/events'));
-    const invalidate = (...keys: ReadonlyArray<readonly unknown[]>) => {
-      keys.forEach((queryKey) => {
+
+    const handle = (eventName: string) => (event: MessageEvent) => {
+      const handler = HANDLERS[eventName];
+      if (!handler) return;
+      let payload: unknown = null;
+      try {
+        payload = event.data ? JSON.parse(event.data) : null;
+      } catch {
+        // Malformed payload — fall through with `null` so the handler's
+        // fallback keys (the broad ones) still fire.
+      }
+      const keys = handler(payload);
+      for (const queryKey of keys) {
         qc.invalidateQueries({ queryKey });
-      });
+      }
     };
 
-    source.addEventListener('project.updated', () => {
-      invalidate(['projects'], ['projects', 'active'], ['settings']);
-    });
-    source.addEventListener('agent.status', () => {
-      invalidate(['agents'], ['agent-messages'], ['agent-lineage']);
-    });
-    source.addEventListener('task.status', () => {
-      invalidate(['tasks']);
-    });
-    source.addEventListener('alert.created', () => {
-      invalidate(['alerts']);
-    });
-    source.addEventListener('alert.dismissed', () => {
-      invalidate(['alerts']);
-    });
-    source.addEventListener('notification.created', () => {
-      invalidate(['notifications']);
-    });
-    source.addEventListener('session.toggled', () => {
-      invalidate(['session'], ['projects']);
-    });
-    source.addEventListener('session.closed', () => {
-      invalidate(['session'], ['session-history']);
-    });
-    source.addEventListener('cost.ingested', () => {
-      invalidate(['projects'], ['spend-timeline']);
-    });
-    source.addEventListener('module.installed', () => {
-      invalidate(['modules'], ['module']);
-    });
-    source.addEventListener('llm_provider.updated', () => {
-      invalidate(['llm-providers']);
-    });
-    source.addEventListener('llm_provider.tested', () => {
-      invalidate(['llm-providers']);
-    });
-    source.addEventListener('workspace.updated', () => {
-      invalidate(['workspace-info']);
-    });
-    source.addEventListener('chat.thread.created', () => {
-      invalidate(['chat-threads']);
-    });
-    source.addEventListener('git.changed', () => {
-      invalidate(['git-status'], ['git-branches'], ['git-log'], ['git-tree'], ['git-diff'], ['git-file']);
-    });
-    source.addEventListener('synthesis.progress', () => {
-      invalidate(['synthesis-job']);
-    });
-    source.addEventListener('synthesis.complete', () => {
-      invalidate(['synthesis-job'], ['modules'], ['module'], ['git-status'], ['git-log'], ['git-tree'], ['git-diff']);
-    });
-    source.addEventListener('synthesis.error', () => {
-      invalidate(['synthesis-job']);
-    });
+    const listeners: Array<[string, EventListener]> = [];
+    for (const eventName of Object.keys(HANDLERS)) {
+      const listener = handle(eventName) as EventListener;
+      source.addEventListener(eventName, listener);
+      listeners.push([eventName, listener]);
+    }
+
+    // Surface connection errors so a silent disconnect doesn't masquerade
+    // as a working stream. EventSource auto-reconnects internally; this
+    // log is for ops visibility.
+    source.onerror = () => {
+      if (source.readyState === EventSource.CLOSED) {
+        console.warn('[sse] connection closed by server');
+      }
+    };
 
     return () => {
+      for (const [eventName, listener] of listeners) {
+        source.removeEventListener(eventName, listener);
+      }
       source.close();
     };
   }, [qc]);

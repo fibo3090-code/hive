@@ -111,59 +111,102 @@ fn parse_tool_invocations(content: &str) -> Option<Vec<ToolInvocation>> {
     Some(out)
 }
 
+/// Outcome of `collect_response` — either the stream finished cleanly,
+/// or the cancel flag flipped mid-stream and we tore down early.
+struct CollectOutcome {
+    accumulated: String,
+    tokens_in: u32,
+    tokens_out: u32,
+    finish_reason: Option<String>,
+    cancelled: bool,
+}
+
 async fn collect_response(
     provider: &Arc<dyn LlmProvider>,
     request: ChatRequest,
-) -> Result<(String, u32, u32, Option<String>), ChatError> {
+    cancel: &Arc<Mutex<bool>>,
+) -> Result<CollectOutcome, ChatError> {
     let mut stream = provider.chat_stream(request).await?;
     let mut accumulated = String::new();
     let mut tokens_in = 0;
     let mut tokens_out = 0;
     let mut finish_reason = None;
+    // Poll the cancel flag every 50ms so a flip during a long stream
+    // tears the request down within ~50ms instead of after the full
+    // response. The interval cost is negligible vs network latency.
+    let mut cancel_poll = tokio::time::interval(std::time::Duration::from_millis(50));
+    cancel_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    while let Some(next) = stream.next().await {
-        match next {
-            Ok(StreamEvent::Delta(chunk)) => accumulated.push_str(&chunk.delta),
-            Ok(StreamEvent::Start { input_tokens: tin }) => {
-                // Capture early — providers that emit Start (Anthropic)
-                // give us input tokens before the final Complete arrives.
-                if tin > tokens_in {
-                    tokens_in = tin;
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel_poll.tick() => {
+                if *cancel.lock().await {
+                    // Drop the stream. reqwest cancels the underlying
+                    // request when the response future is dropped, so
+                    // the network is reclaimed promptly.
+                    drop(stream);
+                    return Ok(CollectOutcome {
+                        accumulated,
+                        tokens_in,
+                        tokens_out,
+                        finish_reason,
+                        cancelled: true,
+                    });
                 }
             }
-            Ok(StreamEvent::Complete {
-                tokens_in: tin,
-                tokens_out: tout,
-                finish_reason: fin,
-            }) => {
-                // Some providers emit multiple Complete events (OpenAI's
-                // pre-emit on finish_reason chunk, then usage chunk;
-                // Gemini's repeated `usageMetadata`). All providers report
-                // cumulative tokens, so `max` is the safe merge. Preserve
-                // any previously-seen finish_reason if the new event omits
-                // one.
-                if tin > tokens_in {
-                    tokens_in = tin;
-                }
-                if tout > tokens_out {
-                    tokens_out = tout;
-                }
-                if fin.is_some() {
-                    finish_reason = fin;
+            next = stream.next() => {
+                let Some(next) = next else { break };
+                match next {
+                    Ok(StreamEvent::Delta(chunk)) => accumulated.push_str(&chunk.delta),
+                    Ok(StreamEvent::Start { input_tokens: tin }) => {
+                        // Capture early — providers that emit Start (Anthropic)
+                        // give us input tokens before the final Complete arrives.
+                        if tin > tokens_in {
+                            tokens_in = tin;
+                        }
+                    }
+                    Ok(StreamEvent::Complete {
+                        tokens_in: tin,
+                        tokens_out: tout,
+                        finish_reason: fin,
+                    }) => {
+                        // Some providers emit multiple Complete events (OpenAI's
+                        // pre-emit on finish_reason chunk, then usage chunk;
+                        // Gemini's repeated `usageMetadata`). All providers report
+                        // cumulative tokens, so `max` is the safe merge. Preserve
+                        // any previously-seen finish_reason if the new event omits
+                        // one.
+                        if tin > tokens_in {
+                            tokens_in = tin;
+                        }
+                        if tout > tokens_out {
+                            tokens_out = tout;
+                        }
+                        if fin.is_some() {
+                            finish_reason = fin;
+                        }
+                    }
+                    // Tool-call boundary events: today, tool calls are materialised
+                    // from the non-streaming `chat()` round-trip. These variants
+                    // exist for forward compatibility; routing them to SSE
+                    // `tool_call` events is a follow-up.
+                    Ok(StreamEvent::ToolCallStart { .. })
+                    | Ok(StreamEvent::ToolCallDelta { .. })
+                    | Ok(StreamEvent::ToolCallEnd { .. }) => {}
+                    Err(err) => return Err(ChatError::Llm(err)),
                 }
             }
-            // Tool-call boundary events: today, tool calls are materialised
-            // from the non-streaming `chat()` round-trip. These variants
-            // exist for forward compatibility (Phase 4 will route them to
-            // SSE `tool_call` events). For now, ignore.
-            Ok(StreamEvent::ToolCallStart { .. })
-            | Ok(StreamEvent::ToolCallDelta { .. })
-            | Ok(StreamEvent::ToolCallEnd { .. }) => {}
-            Err(err) => return Err(ChatError::Llm(err)),
         }
     }
 
-    Ok((accumulated, tokens_in, tokens_out, finish_reason))
+    Ok(CollectOutcome {
+        accumulated,
+        tokens_in,
+        tokens_out,
+        finish_reason,
+        cancelled: false,
+    })
 }
 
 fn tool_definitions(registry: &ToolRegistry) -> Vec<ToolDefinition> {
@@ -438,8 +481,23 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     let mut finish_reason: Option<String> = None;
     let mut executed_calls = Vec::<Value>::new();
     let mut repeated_calls: HashMap<String, usize> = HashMap::new();
-    const MAX_TOOL_ROUNDS: usize = 8;
-    const MAX_REPEAT_CALLS_PER_SIGNATURE: usize = 2;
+    /// Hard ceiling on the LLM⇄tool round-trip count per assistant turn.
+    ///
+    /// Matches the original plan's "max 30 tool rounds" budget. Most real
+    /// tasks finish well under this; the cap is a safety net against
+    /// pathological loops that the per-fingerprint repeat guard didn't
+    /// catch (e.g. the model permuting args slightly each iteration).
+    const MAX_TOOL_ROUNDS: usize = 30;
+    /// Per-fingerprint repeat ceiling. A `(tool, args)` pair is allowed
+    /// to fire this many times before the loop guard halts the turn.
+    /// Kept tight (≤3) — legitimate retries with identical args after a
+    /// transient error remain rare; loops are common.
+    const MAX_REPEAT_CALLS_PER_SIGNATURE: usize = 3;
+    /// Hard ceiling on total tool-call dispatches per turn, summed across
+    /// all rounds and tools. Bounds runaway parallel-tool storms even when
+    /// each individual call is unique (no fingerprint collision).
+    const MAX_TOTAL_TOOL_CALLS: usize = 60;
+    let mut total_tool_calls: usize = 0;
 
     let can_use_tools = tool_registry.as_ref().is_some_and(|registry| !registry.names().is_empty())
         && tool_context.is_some();
@@ -463,8 +521,8 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
 
         if !can_use_tools {
             let request = ChatRequest::new(model.clone(), messages.clone());
-            let (response, tokens_in, tokens_out, finish) =
-                match collect_response(&provider, request).await {
+            let outcome =
+                match collect_response(&provider, request, &cancel).await {
                     Ok(collected) => collected,
                     Err(ChatError::Llm(err)) => {
                         let detail = err.to_string();
@@ -497,11 +555,30 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                     Err(other) => return Err(other),
                 };
 
-            total_tokens_in += tokens_in;
-            total_tokens_out += tokens_out;
-            total_cost += cost_cents(provider_kind, &model, tokens_in, tokens_out);
-            finish_reason = finish;
-            final_answer = response;
+            total_tokens_in += outcome.tokens_in;
+            total_tokens_out += outcome.tokens_out;
+            total_cost +=
+                cost_cents(provider_kind, &model, outcome.tokens_in, outcome.tokens_out);
+            finish_reason = outcome.finish_reason;
+            final_answer = outcome.accumulated;
+            // If cancellation flipped during streaming, stop here. The
+            // caller path below already emits cancelled / persists state
+            // when it sees the cancel flag set; we just take that path.
+            if outcome.cancelled {
+                finalize_cancelled(
+                    &db,
+                    &bus,
+                    &thread_id,
+                    &assistant_message_id,
+                    &final_answer,
+                    total_tokens_in,
+                    total_tokens_out,
+                    total_cost,
+                    &executed_calls,
+                )
+                .await?;
+                return Ok(());
+            }
             break;
         }
 
@@ -582,11 +659,26 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                 return Ok(());
             }
 
+            // Total-call cap: catches runaway parallel storms even when
+            // each call has a unique fingerprint.
+            total_tool_calls += 1;
+            if total_tool_calls > MAX_TOTAL_TOOL_CALLS {
+                final_answer = format!(
+                    "I stopped after exceeding the per-turn tool-call budget ({MAX_TOTAL_TOOL_CALLS}). Refine the request or adjust the allowed tools."
+                );
+                finish_reason = Some("tool_call_budget_exceeded".into());
+                halted_for_repeat = true;
+                break;
+            }
+
             let fingerprint = tool_fingerprint(&invocation);
             let seen = repeated_calls.entry(fingerprint).or_insert(0);
             *seen += 1;
             if *seen > MAX_REPEAT_CALLS_PER_SIGNATURE {
-                final_answer = "I stopped because the same tool call was being repeated without making progress. Please refine the request or adjust the allowed tools.".into();
+                final_answer = format!(
+                    "I stopped because the same `{}` tool call was repeated {} times without making progress. Refine the request or adjust the allowed tools.",
+                    invocation.tool, seen
+                );
                 finish_reason = Some("tool_loop_guard".into());
                 halted_for_repeat = true;
                 break;
