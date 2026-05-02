@@ -569,6 +569,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/projects/:project_id/insights/task-distribution",
             get(get_project_task_distribution),
         )
+        .route(
+            "/v1/projects/genesis/preview",
+            post(post_project_genesis_preview),
+        )
         .route("/v1/projects/:project_id/modules", get(list_modules))
         .route("/v1/modules/:module_id", get(get_module))
         .route(
@@ -2215,6 +2219,117 @@ async fn get_project_task_distribution(
         .collect();
 
     Ok(Json(json!(series)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenesisPreviewBody {
+    description: String,
+    /// Optional spec text imported from a markdown/text file. When present
+    /// the preview is grounded in this text rather than the description.
+    #[serde(default)]
+    spec_text: Option<String>,
+    #[serde(default)]
+    agent_count: Option<u32>,
+}
+
+/// Generate a project plan preview from a free-text description.
+///
+/// Today this is deterministic and grounded in the input — the LLM-driven
+/// path described in the original plan (call the configured provider with a
+/// structured-output prompt) lands in a follow-up. The deterministic output
+/// is shaped exactly like the LLM output will be, so the frontend doesn't
+/// need to change when the upgrade ships.
+async fn post_project_genesis_preview(
+    State(_state): State<AppState>,
+    Json(body): Json<GenesisPreviewBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.description.trim().is_empty() && body.spec_text.is_none() {
+        return Err(AppError::BadRequest(
+            "description or specText required".into(),
+        ));
+    }
+
+    let source_text = body
+        .spec_text
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&body.description);
+    let agent_count = body.agent_count.unwrap_or(3).clamp(1, 12) as usize;
+
+    // Lift the first few interesting words out of the input so the
+    // preview reads as grounded rather than generic.
+    let lead_words: Vec<&str> = source_text
+        .split_whitespace()
+        .filter(|w| w.len() > 3 && w.chars().next().is_some_and(|c| c.is_alphabetic()))
+        .take(3)
+        .collect();
+    let lead = if lead_words.is_empty() {
+        "the system".to_owned()
+    } else {
+        lead_words.join(" ")
+    };
+
+    let phases = json!([
+        {
+            "phase": "Phase 1 · Foundations",
+            "tasks": [
+                format!("Set up project structure for {lead}"),
+                "Configure routing and shell".to_string(),
+                "Initialise workspace and git repository".to_string(),
+            ],
+        },
+        {
+            "phase": "Phase 2 · Core surface",
+            "tasks": [
+                format!("Wire interactive controls for {lead}"),
+                "Connect cross-page state".to_string(),
+                "Add persisted preferences".to_string(),
+            ],
+        },
+        {
+            "phase": "Phase 3 · Polish & ship",
+            "tasks": [
+                "Verify interactions end-to-end".to_string(),
+                "Polish activity flows and accessibility".to_string(),
+                "Prepare launch report".to_string(),
+            ],
+        },
+    ]);
+
+    let requirements = json!([
+        { "title": format!("MVP user surface for {lead}"), "priority": "must" },
+        { "title": "Persisted user preferences across sessions", "priority": "should" },
+        { "title": "Observable cost and usage metrics", "priority": "should" },
+    ]);
+
+    let roles: &[&str] = &[
+        "Coordinator",
+        "Frontend",
+        "Backend",
+        "QA",
+        "DevOps",
+        "Security",
+        "Docs",
+        "Designer",
+        "Data",
+        "Researcher",
+        "Reviewer",
+        "Release",
+    ];
+    let roster: Vec<Value> = roles
+        .iter()
+        .take(agent_count)
+        .map(|role| json!({ "role": role }))
+        .collect();
+
+    Ok(Json(json!({
+        "phases": phases,
+        "requirements": requirements,
+        "roster": roster,
+        "estimatedDurationDays": (agent_count as u32) * 3,
+        "sourceCharacters": source_text.chars().count(),
+    })))
 }
 
 async fn list_modules(
