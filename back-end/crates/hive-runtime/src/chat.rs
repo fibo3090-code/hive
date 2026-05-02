@@ -367,8 +367,57 @@ async fn finalize_cancelled(
     Ok(())
 }
 
+/// Hard wall-clock budget for a single assistant turn. When exceeded,
+/// the cancel flag is flipped (so the inner `collect_response` loop
+/// drops the upstream stream), the partial message is persisted with
+/// `status='timeout'`, and a `chat.<thread>.error` event fires.
+///
+/// 180s is generous for chat with tools (one slow `web_fetch` can eat
+/// 30s on its own). Future work: per-agent override via a column on
+/// `agents`.
+const DEFAULT_TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
 /// Load thread history, call the LLM, stream tokens to the bus, persist.
+///
+/// Wraps the inner work in a wall-clock timeout. On timeout we flip the
+/// shared cancel flag so the streaming loop unwinds cleanly via the
+/// existing cancel path, then surface a `timeout` status to the user.
 pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
+    let cancel = params.cancel.clone();
+    let bus = params.bus.clone();
+    let db = params.db.clone();
+    let thread_id = params.thread_id.clone();
+    let assistant_message_id = params.assistant_message_id.clone();
+
+    match tokio::time::timeout(DEFAULT_TURN_TIMEOUT, run_turn_inner(params)).await {
+        Ok(result) => result,
+        Err(_elapsed) => {
+            tracing::warn!(
+                thread_id = %thread_id,
+                message_id = %assistant_message_id,
+                budget_secs = DEFAULT_TURN_TIMEOUT.as_secs(),
+                "chat turn exceeded wall-clock budget"
+            );
+            // Flip cancel so any still-running inner futures drop their
+            // streams promptly on the next 50ms poll tick.
+            *cancel.lock().await = true;
+            let _ = chat_messages::set_status(db.conn(), &assistant_message_id, "timeout").await;
+            bus.emit(
+                format!("chat.{thread_id}.error"),
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "messageId": assistant_message_id,
+                    "error": "turn exceeded wall-clock budget",
+                    "reason": "turn_timeout",
+                    "budgetSecs": DEFAULT_TURN_TIMEOUT.as_secs(),
+                }),
+            );
+            Ok(())
+        }
+    }
+}
+
+async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     let RunTurn {
         db,
         bus,
@@ -694,14 +743,34 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                 }),
             );
 
+            // Per-tool wall-clock timeout. The default budget is generous
+            // enough for `web_fetch` of a slow site or a `shell_exec`
+            // build step; runaway tools surface as a structured error so
+            // the model can self-correct on the next round rather than
+            // hanging the whole turn.
+            const PER_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
             let result = match validate_tool_invocation(registry, &invocation) {
-                Ok(()) => match registry
-                    .invoke(&invocation.tool, invocation.arguments.clone(), ctx)
-                    .await
-                {
-                    Ok(value) => value,
-                    Err(err) => err.to_result_json(),
-                },
+                Ok(()) => {
+                    let invoke_fut = registry.invoke(&invocation.tool, invocation.arguments.clone(), ctx);
+                    match tokio::time::timeout(PER_TOOL_TIMEOUT, invoke_fut).await {
+                        Ok(Ok(value)) => value,
+                        Ok(Err(err)) => err.to_result_json(),
+                        Err(_elapsed) => {
+                            tracing::warn!(
+                                tool = %invocation.tool,
+                                budget_secs = PER_TOOL_TIMEOUT.as_secs(),
+                                "tool invocation exceeded per-tool budget"
+                            );
+                            json!({
+                                "ok": false,
+                                "tool": invocation.tool,
+                                "error": "timeout",
+                                "reason": "per_tool_timeout",
+                                "budgetSecs": PER_TOOL_TIMEOUT.as_secs(),
+                            })
+                        }
+                    }
+                }
                 Err(error) => tool_result_json(&invocation.tool, error),
             };
 
@@ -722,13 +791,24 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                 }),
             );
 
+            // Pass plain strings through unwrapped so the model sees
+            // `hello` not `"hello"`. Non-string values get JSON-encoded;
+            // `serde_json::Value` is by construction serialisable so the
+            // result is unwrap-safe (the previous `.unwrap_or_else` →
+            // `Display` fallback produced non-JSON for nested structures
+            // and corrupted the LLM's view of the tool result).
+            let result_text = match &result {
+                Value::String(s) => s.clone(),
+                other => serde_json::to_string(other)
+                    .expect("serde_json::Value always serialises to JSON"),
+            };
             messages.push(ChatMessage::tool_result(
                 invocation
                     .id
                     .clone()
                     .unwrap_or_else(|| format!("call_{}", ulid::Ulid::new())),
                 invocation.tool.clone(),
-                serde_json::to_string(&result).unwrap_or_else(|_| result.to_string()),
+                result_text,
             ));
         }
 

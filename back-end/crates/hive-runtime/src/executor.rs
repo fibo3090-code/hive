@@ -8,10 +8,11 @@
 //! registry assembly, or chat-message persistence.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use hive_db::{repos::agent_messages, Db};
 use serde_json::json;
-use tokio::sync::{mpsc, Notify, RwLock};
+use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::events::EventBus;
@@ -40,8 +41,17 @@ pub struct AgentExecutor {
     inbox_tx: mpsc::Sender<InboxItem>,
     state: Arc<RwLock<ExecutorState>>,
     resume: Arc<Notify>,
-    handle: JoinHandle<()>,
+    /// Stored as `Option` so `terminate()` can take ownership and
+    /// `.await` the task's exit. Once taken, the handle is gone — a
+    /// second `terminate()` is a no-op.
+    handle: Mutex<Option<JoinHandle<()>>>,
 }
+
+/// Hard ceiling on how long `terminate()` waits for the inner task to
+/// unwind after `abort()`. Tasks parked on `.await` exit on the next
+/// poll which is essentially instant; this is a safety net so a stuck
+/// task doesn't block the caller forever.
+const TERMINATE_GRACE: Duration = Duration::from_secs(5);
 
 impl AgentExecutor {
     pub fn agent_id(&self) -> &str {
@@ -70,14 +80,39 @@ impl AgentExecutor {
         }
     }
 
+    /// Mark the executor terminated, abort the inner task, and wait
+    /// briefly for it to actually exit. Awaiting matters because rapid
+    /// re-creation of the same executor would otherwise race against a
+    /// still-draining inbox; once this returns, the channel is closed
+    /// and the task has either finished its current `.await` step or
+    /// hit the abort grace window.
     pub async fn terminate(&self) {
         *self.state.write().await = ExecutorState::Terminated;
         self.resume.notify_waiters();
-        self.handle.abort();
+        let mut slot = self.handle.lock().await;
+        if let Some(handle) = slot.take() {
+            handle.abort();
+            let _ = tokio::time::timeout(TERMINATE_GRACE, handle).await;
+        }
     }
 
     pub async fn state(&self) -> ExecutorState {
         *self.state.read().await
+    }
+}
+
+impl Drop for AgentExecutor {
+    /// Belt-and-braces cleanup: if the executor is dropped without an
+    /// explicit `terminate()` (e.g. registry teardown on shutdown), make
+    /// sure the inner task is aborted so it can't outlive its registry
+    /// entry. Dropping a `JoinHandle` without abort would leave the task
+    /// running detached.
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.handle.try_lock() {
+            if let Some(handle) = slot.take() {
+                handle.abort();
+            }
+        }
     }
 }
 
@@ -99,7 +134,12 @@ pub fn spawn_executor(
     bus: EventBus,
     driver: DriverSlot,
 ) -> AgentExecutor {
-    let (inbox_tx, mut inbox_rx) = mpsc::channel::<InboxItem>(64);
+    // Inbox capacity: 256 is generous for normal agent traffic but
+    // bounded so a runaway dispatcher applies backpressure rather than
+    // exhausting memory. A future change can add priority lanes (the
+    // plan describes a `priority: Critical|Normal` split where Normal
+    // can drop with a warn under saturation).
+    let (inbox_tx, mut inbox_rx) = mpsc::channel::<InboxItem>(256);
     let state = Arc::new(RwLock::new(ExecutorState::Running));
     let resume = Arc::new(Notify::new());
 
@@ -156,7 +196,7 @@ pub fn spawn_executor(
         inbox_tx,
         state,
         resume,
-        handle,
+        handle: Mutex::new(Some(handle)),
     }
 }
 

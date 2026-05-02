@@ -181,8 +181,8 @@ export function useChatStream(threadId: string | null | undefined) {
             toolCalls: current?.toolCalls ?? [],
           },
         });
-      } catch {
-        /* ignore malformed chunks */
+      } catch (err) {
+        console.warn('[chat-stream] malformed token chunk', err);
       }
     };
 
@@ -209,8 +209,12 @@ export function useChatStream(threadId: string | null | undefined) {
           },
         });
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
       }
     };
 
@@ -228,8 +232,12 @@ export function useChatStream(threadId: string | null | undefined) {
           },
         });
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
       }
     };
 
@@ -247,8 +255,12 @@ export function useChatStream(threadId: string | null | undefined) {
           },
         });
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
       }
     };
 
@@ -274,8 +286,12 @@ export function useChatStream(threadId: string | null | undefined) {
             toolCalls,
           },
         });
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
       }
     };
 
@@ -308,8 +324,12 @@ export function useChatStream(threadId: string | null | undefined) {
             toolCalls,
           },
         });
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
       }
     };
 
@@ -344,8 +364,12 @@ export function useChatStream(threadId: string | null | undefined) {
             },
           },
         });
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
       }
     };
 

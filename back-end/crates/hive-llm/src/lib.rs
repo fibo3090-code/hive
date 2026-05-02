@@ -251,9 +251,16 @@ pub trait LlmProvider: Send + Sync {
 }
 
 /// Build a boxed client for the given config.
+///
+/// Uses `connect_timeout` rather than the all-up `timeout`. The all-up
+/// timeout aborts streaming responses too (so a 15s total kills any
+/// slow-token model), which is the wrong default for an LLM client.
+/// Stream consumers (`hive_runtime::chat::run_turn`) enforce their own
+/// per-turn wall-clock budget.
 pub fn client_for(config: ProviderConfig) -> Box<dyn LlmProvider> {
     let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .pool_idle_timeout(std::time::Duration::from_secs(60))
         .build()
         .expect("reqwest client builds");
     match config.kind {

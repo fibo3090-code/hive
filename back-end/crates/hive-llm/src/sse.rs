@@ -60,6 +60,10 @@ fn parse_frame(frame: &str) -> Option<SseMessage> {
         }
     }
     if data_lines.is_empty() && msg.event.is_none() {
+        // Likely a heartbeat-only frame (`: ping\n\n`) or a comment
+        // line we trimmed. Surface at trace level so the operator can
+        // see them when they care without polluting info logs.
+        tracing::trace!(raw = %frame, "sse: skipping frame with no data or event");
         return None;
     }
     msg.data = data_lines.join("\n");

@@ -131,4 +131,22 @@ impl ExecutorRegistry {
         }
         Ok(all.len())
     }
+
+    /// Graceful shutdown: terminate every executor, await the abort, drain
+    /// the map. Called from the API server's signal handler so SIGTERM
+    /// during a streaming turn lets the in-flight work exit cleanly.
+    pub async fn shutdown(&self) {
+        let executors: Vec<Arc<AgentExecutor>> = {
+            let map = self.inner.read().await;
+            map.values().cloned().collect()
+        };
+        let count = executors.len();
+        for exec in &executors {
+            exec.terminate().await;
+        }
+        self.inner.write().await.clear();
+        if count > 0 {
+            tracing::info!(count, "ExecutorRegistry: shutdown complete");
+        }
+    }
 }
