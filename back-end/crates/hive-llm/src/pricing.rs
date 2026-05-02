@@ -119,15 +119,71 @@ pub fn price_for(kind: ProviderKind, model: &str) -> Price {
 
 /// Compute cost in cents (rounded up) for a turn's token usage.
 ///
-/// Returns `i64` so the in-memory accumulator can survive long sessions
-/// without overflowing (`i32` saturates at ~$21M). Callers persisting to the
-/// `i32` DB column should clamp at the boundary; a follow-up migration widens
-/// the column to `i64` end-to-end.
+/// Returns `i64`; both `cost_events.cost_cents` and `chat_messages.cost_cents`
+/// are now i64 columns end-to-end (migration `m20260428_cost_cents_i64`).
 pub fn cost_cents(kind: ProviderKind, model: &str, tokens_in: u32, tokens_out: u32) -> i64 {
     let p = price_for(kind, model);
     let dollars = (f64::from(tokens_in) / 1_000_000.0) * p.input_per_mtok
         + (f64::from(tokens_out) / 1_000_000.0) * p.output_per_mtok;
     (dollars * 100.0).ceil() as i64
+}
+
+/// Manifest of models the pricing table is required to recognise. New
+/// production-supported models must be added here so the drift-detection
+/// test fails the build until pricing exists for them.
+///
+/// "Recognised" here means the lookup hits a *specific* arm rather than
+/// the per-provider fallback. Keep this list short and curated; older
+/// dated suffixes inherit family pricing automatically.
+pub const KNOWN_MODELS: &[(ProviderKind, &str)] = &[
+    // Anthropic
+    (ProviderKind::Anthropic, "claude-opus-4-7"),
+    (ProviderKind::Anthropic, "claude-sonnet-4-6"),
+    (ProviderKind::Anthropic, "claude-haiku-4-5"),
+    (ProviderKind::Anthropic, "claude-haiku-4-5-20251001"),
+    // OpenAI
+    (ProviderKind::Openai, "gpt-5"),
+    (ProviderKind::Openai, "gpt-5-mini"),
+    (ProviderKind::Openai, "gpt-4.1"),
+    (ProviderKind::Openai, "gpt-4.1-mini"),
+    (ProviderKind::Openai, "gpt-4o"),
+    (ProviderKind::Openai, "gpt-4o-mini"),
+    // Gemini
+    (ProviderKind::Gemini, "gemini-2.5-pro"),
+    (ProviderKind::Gemini, "gemini-2.5-flash"),
+    (ProviderKind::Gemini, "gemini-2.5-flash-lite"),
+];
+
+/// Whether `(provider, model)` resolves to a *specific* pricing arm rather
+/// than the per-provider fallback. Used by tests and could power a future
+/// "approximate cost (estimate)" UI badge.
+pub fn pricing_is_known(kind: ProviderKind, model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    match kind {
+        ProviderKind::Anthropic => {
+            m.contains("opus") || m.contains("haiku") || m.contains("sonnet")
+        }
+        ProviderKind::Openai => {
+            m.starts_with("gpt-5")
+                || m.contains("gpt-4.1-mini")
+                || m.contains("gpt-4.1")
+                || m.contains("gpt-4o-mini")
+                || m.contains("gpt-4o")
+                || m.contains("o3-mini")
+                || m.contains("o4-mini")
+                || m.starts_with("o3")
+                || m.starts_with("o1")
+                || m.contains("chatgpt-4o")
+        }
+        ProviderKind::Gemini => {
+            m.contains("flash-lite")
+                || m.contains("flash")
+                || m.contains("2.5-pro")
+                || m.contains("3-pro")
+                || m.contains("ultra")
+        }
+        ProviderKind::Ollama => true, // Ollama is always free
+    }
 }
 
 #[cfg(test)]
@@ -197,6 +253,28 @@ mod tests {
         );
         assert!(pro > flash);
         assert!(flash > lite);
+    }
+
+    #[test]
+    fn pricing_table_covers_known_models() {
+        // Every entry in `KNOWN_MODELS` must resolve to a specific pricing
+        // arm, never the per-provider fallback. New models added to the
+        // manifest fail the build until pricing exists for them.
+        for (kind, model) in KNOWN_MODELS {
+            assert!(
+                pricing_is_known(*kind, model),
+                "pricing not specific for ({kind:?}, {model}) — add a match arm in price_for and pricing_is_known"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_model_resolves_to_fallback() {
+        assert!(!pricing_is_known(
+            ProviderKind::Anthropic,
+            "claude-whatever-99"
+        ));
+        assert!(!pricing_is_known(ProviderKind::Openai, "gpt-99"));
     }
 
     #[test]

@@ -16,7 +16,10 @@ pub struct Model {
     pub provider_id: Option<String>,
     pub tokens_in: i32,
     pub tokens_out: i32,
-    pub cost_cents: i32,
+    /// `i64` so long sessions don't saturate. Schema widened in migration
+    /// `m20260428_cost_cents_i64` for Postgres; SQLite stores integers
+    /// variable-width so the same column survives.
+    pub cost_cents: i64,
     pub parent_message_id: Option<String>,
     pub status: String,
     pub created_at: String,

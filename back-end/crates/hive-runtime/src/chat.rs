@@ -293,13 +293,6 @@ fn tool_result_json(tool: &str, error: impl Into<String>) -> Value {
     })
 }
 
-/// Saturating cast for the `cost_events.cost_cents` column, which is `i32`
-/// today. The in-memory accumulator is `i64` so very long sessions don't
-/// silently overflow; the DB column is widened in a later migration.
-fn cents_to_i32(value: i64) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
-}
-
 async fn finalize_cancelled(
     db: &Db,
     bus: &EventBus,
@@ -318,7 +311,7 @@ async fn finalize_cancelled(
         final_answer,
         total_tokens_in as i32,
         total_tokens_out as i32,
-        cents_to_i32(total_cost),
+        total_cost,
         "cancelled",
     )
     .await?;
@@ -450,7 +443,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                             &format!("[error] {detail}"),
                             total_tokens_in as i32,
                             total_tokens_out as i32,
-                            cents_to_i32(total_cost),
+                            total_cost,
                             "error",
                         )
                         .await;
@@ -494,7 +487,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                     &format!("[error] {detail}"),
                     total_tokens_in as i32,
                     total_tokens_out as i32,
-                    cents_to_i32(total_cost),
+                    total_cost,
                     "error",
                 )
                 .await;
@@ -645,7 +638,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
         &final_answer,
         total_tokens_in as i32,
         total_tokens_out as i32,
-        cents_to_i32(total_cost),
+        total_cost,
         "done",
     )
     .await?;
@@ -661,7 +654,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
             kind: "chat.completion",
             tokens_in: total_tokens_in as i32,
             tokens_out: total_tokens_out as i32,
-            cost_cents: cents_to_i32(total_cost),
+            cost_cents: total_cost,
             memo: Some(&memo),
         },
     )

@@ -15,7 +15,7 @@ pub struct NewMessage {
     pub provider_id: Option<String>,
     pub tokens_in: i32,
     pub tokens_out: i32,
-    pub cost_cents: i32,
+    pub cost_cents: i64,
     pub parent_message_id: Option<String>,
     pub status: String,
 }
@@ -73,7 +73,7 @@ pub async fn finalize(
     content: &str,
     tokens_in: i32,
     tokens_out: i32,
-    cost_cents: i32,
+    cost_cents: i64,
     status: &str,
 ) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
