@@ -5,8 +5,8 @@
   "scripts": {
     "postinstall": "cd front-end && bun install",
     "dev": "cd front-end && bun install && bun run dev",
-    "build": "cd front-end && bun install && bun run build",
-    "build:dev": "cd front-end && bun install && bun run build:dev",
+    "build": "cd front-end && bun install && bun run build && rm -rf ../dist && cp -r dist ../dist",
+    "build:dev": "cd front-end && bun install && bun run build:dev && rm -rf ../dist && cp -r dist ../dist",
     "preview": "cd front-end && bun run preview",
     "lint": "cd front-end && bun run lint",
     "typecheck": "cd front-end && bun run typecheck",
