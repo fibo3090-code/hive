@@ -10,6 +10,7 @@ pub mod integration;
 pub mod llm_provider;
 pub mod notification;
 pub mod project;
+pub mod project_workspace;
 pub mod session;
 pub mod setting;
 pub mod sprint;
