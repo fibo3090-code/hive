@@ -4,6 +4,7 @@
 //! Sprint 1 adds streaming text completions via `chat_stream`.
 
 pub mod chat;
+pub mod model_metadata;
 pub mod pricing;
 pub mod providers;
 pub mod sse;
@@ -101,9 +102,46 @@ impl FromStr for ProviderKind {
 pub struct ModelInfo {
     pub id: String,
     pub label: String,
-    pub context_window: Option<u32>,
+    /// Maximum input context window in tokens. `u64` because next-gen
+    /// frontier models exceed `u32::MAX` (Gemini's 10M+ tier).
+    pub context_window: Option<u64>,
     pub supports_tools: bool,
     pub supports_streaming: bool,
+}
+
+impl ModelInfo {
+    /// Construct a `ModelInfo` after validating the basics. Returns `None`
+    /// (and logs a `warn`) if the row would mislead the frontend — empty
+    /// id/label, or a zero context window where one was claimed.
+    pub fn build(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        context_window: Option<u64>,
+        supports_tools: bool,
+        supports_streaming: bool,
+    ) -> Option<Self> {
+        let id = id.into();
+        let label = label.into();
+        if id.trim().is_empty() {
+            tracing::warn!("model row dropped: empty id");
+            return None;
+        }
+        if label.trim().is_empty() {
+            tracing::warn!(id = %id, "model row dropped: empty label");
+            return None;
+        }
+        if context_window == Some(0) {
+            tracing::warn!(id = %id, "model row dropped: zero context window");
+            return None;
+        }
+        Some(Self {
+            id,
+            label,
+            context_window,
+            supports_tools,
+            supports_streaming,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

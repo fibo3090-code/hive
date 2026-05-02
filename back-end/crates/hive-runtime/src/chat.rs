@@ -96,8 +96,11 @@ fn parse_tool_invocations(content: &str) -> Option<Vec<ToolInvocation>> {
     for item in items {
         let tool = item.get("tool")?.as_str()?.to_owned();
         let arguments = item.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        // XML-fallback invocations have no native id. Mint a ULID so
+        // parallel calls remain distinguishable in persisted records and
+        // SSE tool_call events.
         out.push(ToolInvocation {
-            id: None,
+            id: Some(format!("call_{}", ulid::Ulid::new())),
             tool,
             arguments,
             raw: item,
@@ -189,10 +192,31 @@ fn matches_schema_type(args: &Value, expected: &str) -> bool {
     }
 }
 
+/// Validate `args` against a JSON Schema-shaped subset.
+///
+/// We don't pull in the full `jsonschema` crate (extra dependency) but we
+/// cover the constraints that matter for tool dispatch: `type`, `required`,
+/// nested `properties`, `enum`, and array `items`. Unsupported keywords are
+/// silently ignored — better to let a permissive schema through than block
+/// a legitimate tool call on a constraint we don't model yet.
 fn validate_against_schema(args: &Value, schema: &Value) -> Result<(), String> {
     if let Some(kind) = schema.get("type").and_then(Value::as_str) {
         if !matches_schema_type(args, kind) {
             return Err(format!("expected {kind} arguments"));
+        }
+    }
+
+    // `enum`: value must be one of the listed candidates (deep equality).
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array) {
+        if !allowed.iter().any(|candidate| candidate == args) {
+            let rendered: Vec<String> = allowed
+                .iter()
+                .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "?".into()))
+                .collect();
+            return Err(format!(
+                "value must be one of [{}]",
+                rendered.join(", ")
+            ));
         }
     }
 
@@ -210,8 +234,17 @@ fn validate_against_schema(args: &Value, schema: &Value) -> Result<(), String> {
     if let (Some(object), Some(properties)) = (args.as_object(), schema.get("properties").and_then(Value::as_object)) {
         for (key, value) in object {
             if let Some(property_schema) = properties.get(key) {
-                validate_against_schema(value, property_schema)?;
+                validate_against_schema(value, property_schema)
+                    .map_err(|e| format!("`{key}`: {e}"))?;
             }
+        }
+    }
+
+    // Array items: every element must satisfy the items schema.
+    if let (Some(array), Some(items_schema)) = (args.as_array(), schema.get("items")) {
+        for (idx, item) in array.iter().enumerate() {
+            validate_against_schema(item, items_schema)
+                .map_err(|e| format!("[{idx}]: {e}"))?;
         }
     }
 
@@ -545,7 +578,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                 invocation
                     .id
                     .clone()
-                    .unwrap_or_else(|| format!("tool_{}", invocation.tool)),
+                    .unwrap_or_else(|| format!("call_{}", ulid::Ulid::new())),
                 invocation.tool.clone(),
                 serde_json::to_string(&result).unwrap_or_else(|_| result.to_string()),
             ));
@@ -627,4 +660,85 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_type_check() {
+        let schema = json!({ "type": "object" });
+        assert!(validate_against_schema(&json!({}), &schema).is_ok());
+        assert!(validate_against_schema(&json!("foo"), &schema).is_err());
+    }
+
+    #[test]
+    fn schema_required_field() {
+        let schema = json!({ "type": "object", "required": ["query"] });
+        assert!(validate_against_schema(&json!({"query": "rust"}), &schema).is_ok());
+        let err = validate_against_schema(&json!({}), &schema).unwrap_err();
+        assert!(err.contains("query"));
+    }
+
+    #[test]
+    fn schema_nested_properties_with_path_prefix() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "required": ["kind"],
+                }
+            }
+        });
+        let err =
+            validate_against_schema(&json!({"filter": {}}), &schema).unwrap_err();
+        assert!(err.contains("filter"), "{err}");
+        assert!(err.contains("kind"), "{err}");
+    }
+
+    #[test]
+    fn schema_enum_constraint() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "mode": { "enum": ["fast", "deep"] }
+            }
+        });
+        assert!(
+            validate_against_schema(&json!({"mode": "fast"}), &schema).is_ok()
+        );
+        assert!(
+            validate_against_schema(&json!({"mode": "balanced"}), &schema).is_err()
+        );
+    }
+
+    #[test]
+    fn schema_array_items() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "tags": { "type": "array", "items": { "type": "string" } }
+            }
+        });
+        assert!(validate_against_schema(
+            &json!({"tags": ["a", "b"]}),
+            &schema,
+        )
+        .is_ok());
+        let err = validate_against_schema(&json!({"tags": [1]}), &schema).unwrap_err();
+        assert!(err.contains("string"));
+    }
+
+    #[test]
+    fn unknown_constraints_do_not_block() {
+        // We don't model `pattern`/`minLength` etc.; they pass through.
+        let schema = json!({
+            "type": "string",
+            "pattern": "^foo$",
+            "minLength": 100
+        });
+        assert!(validate_against_schema(&json!("anything"), &schema).is_ok());
+    }
 }

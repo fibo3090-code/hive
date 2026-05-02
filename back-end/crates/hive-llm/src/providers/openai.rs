@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::chat::{ChatRequest, ChatResponse, StreamChunk, StreamEvent, ToolCall};
+use crate::model_metadata::{context_window_for, supports_tools};
 use crate::sse::sse_stream;
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
@@ -39,14 +40,15 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
             id.starts_with("gpt-")
                 || id.starts_with("o1")
                 || id.starts_with("o3")
+                || id.starts_with("o4")
                 || id.starts_with("chatgpt")
         })
-        .map(|e| ModelInfo {
-            label: e.id.clone(),
-            id: e.id,
-            context_window: None,
-            supports_tools: true,
-            supports_streaming: true,
+        .filter_map(|e| {
+            let id = e.id;
+            let label = id.clone();
+            let context = Some(context_window_for(ProviderKind::Openai, &id));
+            let tools = supports_tools(ProviderKind::Openai, &id);
+            ModelInfo::build(id, label, context, tools, true)
         })
         .collect())
 }
@@ -142,11 +144,33 @@ fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
             .get("arguments")
             .and_then(Value::as_str)
             .unwrap_or("{}");
+        // Malformed JSON in `arguments` is a model error, not a transport
+        // error — fail soft so the downstream schema validator can return a
+        // structured tool-error to the LLM and let it self-correct on the
+        // next turn. Logging a warn keeps it visible to operators.
+        let parsed_args: Value = match serde_json::from_str(arguments) {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::warn!(
+                    tool = name,
+                    raw = arguments,
+                    error = %err,
+                    "openai: malformed tool arguments — passing empty object so the tool layer can return a structured error"
+                );
+                Value::Object(serde_json::Map::new())
+            }
+        };
         tool_calls.push(ToolCall {
-            id: item.get("id").and_then(Value::as_str).map(ToOwned::to_owned),
+            // Native id when OpenAI supplies one; ULID fallback so parallel
+            // tool calls remain distinguishable in our persisted records.
+            id: Some(
+                item.get("id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("call_{}", ulid::Ulid::new())),
+            ),
             name: name.to_owned(),
-            arguments: serde_json::from_str(arguments)
-                .map_err(|e| LlmError::Parse(format!("openai tool args: {e}")))?,
+            arguments: parsed_args,
         });
     }
 
@@ -382,5 +406,49 @@ mod tests {
         assert_eq!(calls[0].id.as_deref(), Some("call_1"));
         assert_eq!(calls[0].name, "web_search");
         assert_eq!(calls[0].arguments["query"], "rust");
+    }
+
+    #[test]
+    fn malformed_tool_arguments_become_empty_object_not_parse_error() {
+        // The model returned non-JSON in the arguments string. The provider
+        // layer must not blow up the whole turn — the schema validator
+        // downstream returns a structured error instead.
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call_x",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": "{not json"
+                        }
+                    }]
+                }
+            }]
+        });
+        let calls = parse_tool_calls(&value).expect("provider must not fail the turn");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].arguments, json!({}));
+    }
+
+    #[test]
+    fn missing_id_gets_ulid_fallback() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "web_search",
+                            "arguments": "{}"
+                        }
+                    }]
+                }
+            }]
+        });
+        let calls = parse_tool_calls(&value).unwrap();
+        assert!(calls[0]
+            .id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("call_")));
     }
 }

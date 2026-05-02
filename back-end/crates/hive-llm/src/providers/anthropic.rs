@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::chat::{ChatRequest, ChatResponse, ChatRole, StreamChunk, StreamEvent, ToolCall};
+use crate::model_metadata::{context_window_for, supports_tools};
 use crate::sse::sse_stream;
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
@@ -46,12 +47,12 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
     Ok(parsed
         .data
         .into_iter()
-        .map(|e| ModelInfo {
-            label: e.display_name.clone().unwrap_or_else(|| e.id.clone()),
-            id: e.id,
-            context_window: None,
-            supports_tools: true,
-            supports_streaming: true,
+        .filter_map(|e| {
+            let id = e.id;
+            let label = e.display_name.unwrap_or_else(|| id.clone());
+            let context = Some(context_window_for(ProviderKind::Anthropic, &id));
+            let tools = supports_tools(ProviderKind::Anthropic, &id);
+            ModelInfo::build(id, label, context, tools, true)
         })
         .collect())
 }
@@ -75,9 +76,13 @@ fn render_content_blocks(message: &crate::chat::ChatMessage) -> Vec<Value> {
                 }));
             }
             parts.extend(message.tool_calls.iter().map(|call| {
+                // Anthropic supplies `id` natively; fallback only fires when
+                // we synthesise a call (XML/text path). A ULID guarantees
+                // distinguishable IDs even when the same tool is called more
+                // than once in the same turn.
                 json!({
                     "type": "tool_use",
-                    "id": call.id.clone().unwrap_or_else(|| format!("call_{}", call.name)),
+                    "id": call.id.clone().unwrap_or_else(|| format!("call_{}", ulid::Ulid::new())),
                     "name": call.name,
                     "input": call.arguments,
                 })

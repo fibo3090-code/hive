@@ -71,3 +71,20 @@ export function useSetProviderKey() {
     },
   });
 }
+
+/**
+ * Force a fresh fetch of the provider's model list, ignoring the in-memory
+ * server-side cache. Wired to the `Refresh Models` button in Settings;
+ * useful right after the user adds a new model on their provider account
+ * or rotates a key.
+ */
+export function useRefreshProviderModels() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (providerId: string) =>
+      api<LlmModel[]>(`/v1/llm-providers/${providerId}/refresh-models`, { method: 'POST' }),
+    onSuccess: (_data, providerId) => {
+      qc.invalidateQueries({ queryKey: ['llm-providers', providerId, 'models'] });
+    },
+  });
+}

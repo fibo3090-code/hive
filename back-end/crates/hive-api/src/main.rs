@@ -574,6 +574,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             get(list_llm_provider_models),
         )
         .route(
+            "/v1/llm-providers/:id/refresh-models",
+            post(refresh_llm_provider_models),
+        )
+        .route(
             "/v1/projects/:project_id/chat-threads",
             get(list_chat_threads),
         )
@@ -2947,25 +2951,47 @@ async fn test_llm_provider(
     Ok(Json(serde_json::to_value(&outcome).unwrap_or(Value::Null)))
 }
 
+/// In-memory model-list cache TTL. `GET /v1/llm-providers/:id/models` hits
+/// the cache while it's fresh; saves a few hundred ms per page load and
+/// avoids hammering provider list endpoints with their rate limits.
+/// Mutating endpoints (key change, test success) invalidate explicitly.
+const MODEL_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+
 async fn list_llm_provider_models(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    const TTL: Duration = Duration::from_secs(5 * 60);
     {
         let cache = state.model_cache.read().await;
         if let Some((at, models)) = cache.get(&id) {
-            if at.elapsed() < TTL {
+            if at.elapsed() < MODEL_CACHE_TTL {
                 return Ok(Json(json!(models)));
             }
         }
     }
+    fetch_and_cache_models(&state, &id).await
+}
 
-    let database = db(&state).await;
-    let provider = llm_providers::get(database.conn(), &id)
+/// Force a fresh fetch (ignoring the in-memory cache). Wired to the
+/// `Refresh Models` button in Settings — useful right after the user
+/// adds a new model on their provider account or rotates a key.
+async fn refresh_llm_provider_models(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    state.model_cache.write().await.remove(&id);
+    fetch_and_cache_models(&state, &id).await
+}
+
+async fn fetch_and_cache_models(
+    state: &AppState,
+    id: &str,
+) -> Result<Json<Value>, AppError> {
+    let database = db(state).await;
+    let provider = llm_providers::get(database.conn(), id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("llm provider {id} not found")))?;
-    let config = build_provider_config(&state, &provider).await?;
+    let config = build_provider_config(state, &provider).await?;
     let client = client_for(config);
     let models = client
         .list_models()
@@ -2976,9 +3002,9 @@ async fn list_llm_provider_models(
         .model_cache
         .write()
         .await
-        .insert(id.clone(), (Instant::now(), models.clone()));
+        .insert(id.to_owned(), (Instant::now(), models.clone()));
 
-    let _ = llm_providers::set_connected(database.conn(), &id, true).await?;
+    let _ = llm_providers::set_connected(database.conn(), id, true).await?;
 
     Ok(Json(json!(models)))
 }
@@ -2994,8 +3020,11 @@ async fn probe_ollama(db: &Db, http: &reqwest::Client) {
         Ok(r) => {
             warn!(status = %r.status(), "Ollama probe returned non-2xx");
         }
-        Err(_) => {
-            info!("Ollama: not detected (skip)");
+        Err(err) => {
+            // Surface the connect failure at info level so operators can
+            // see *why* Ollama isn't appearing as connected. Common causes:
+            // not running, listening on a non-default port, firewall.
+            info!(error = %err, "Ollama: not detected (skip)");
         }
     }
 }
