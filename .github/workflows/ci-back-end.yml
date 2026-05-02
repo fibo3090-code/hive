@@ -115,3 +115,38 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --all-targets
+
+  # Dependency CVE audit. Fails the workflow on Critical/High advisories
+  # — Medium and below are reported but not blocking. Allow-listed
+  # advisories live in `back-end/Cargo.audit.toml` (commit alongside the
+  # rationale).
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: back-end
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
+        with:
+          toolchain: 1.94.1
+
+      - name: Cache cargo audit binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-bin-v0.21
+
+      - name: Install cargo-audit
+        run: |
+          if ! command -v cargo-audit >/dev/null 2>&1; then
+            cargo install cargo-audit --locked --version 0.21.* || \
+              cargo install cargo-audit --locked
+          fi
+
+      - name: cargo audit
+        run: cargo audit --deny warnings

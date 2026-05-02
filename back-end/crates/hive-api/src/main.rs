@@ -403,8 +403,8 @@ struct SynthesizeModuleBody {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().with_env_filter("info").init();
     dotenvy::dotenv().ok();
+    init_tracing();
 
     let cli = Cli::parse();
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -461,7 +461,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/v1/healthz", get(healthz))
-        .route("/v1/readyz", get(healthz))
+        .route("/v1/readyz", get(readyz))
         .route("/v1/setup/status", get(setup_status))
         .route("/v1/setup/database", post(setup_database))
         .route("/v1/setup/seed", post(seed_database))
@@ -639,6 +639,27 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Initialise tracing. Filter from `HIVE_LOG` (same syntax as `RUST_LOG`,
+/// e.g. `info,hive_runtime=debug`); falls back to `info` if unset. JSON
+/// formatting kicks in when `HIVE_LOG_JSON` is any non-empty value, so
+/// production deployments can pipe straight into a log aggregator while
+/// the dev console keeps the human-readable form.
+fn init_tracing() {
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+    let env_filter = std::env::var("HIVE_LOG")
+        .ok()
+        .and_then(|raw| EnvFilter::try_new(raw).ok())
+        .unwrap_or_else(|| EnvFilter::new("info"));
+
+    let registry = tracing_subscriber::registry().with(env_filter);
+    if std::env::var("HIVE_LOG_JSON").is_ok_and(|v| !v.is_empty()) {
+        registry.with(fmt::layer().json()).init();
+    } else {
+        registry.with(fmt::layer().compact().with_target(false)).init();
+    }
 }
 
 /// Restrict cross-origin access to the dev origins served by Vite. The API is
@@ -1115,9 +1136,48 @@ async fn session_payload(database: &Db, project_id: &str) -> Result<Value, AppEr
     }
 }
 
+/// Liveness — process is up. Always 200. Used by orchestrators to decide
+/// "is this container alive at all" — distinct from readiness which gates
+/// "should I send traffic to it yet".
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
     let current = state.inner.read().await;
     Json(json!({ "ok": true, "db": current.engine }))
+}
+
+/// Readiness — process is alive AND able to serve. 200 only when:
+/// - the configured database accepts a trivial query
+/// - `needs_setup == false` (the first-run flow has completed)
+///
+/// Returns 503 + a structured reason otherwise so a load balancer
+/// drops traffic during database hiccups instead of returning failures
+/// to users.
+async fn readyz(State(state): State<AppState>) -> Response {
+    use sea_orm::ConnectionTrait;
+    let snapshot = state.inner.read().await;
+    if snapshot.needs_setup {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "ok": false, "reason": "needs_setup" })),
+        )
+            .into_response();
+    }
+    let engine = snapshot.engine.clone();
+    drop(snapshot);
+
+    let database = db(&state).await;
+    let backend = database.conn().get_database_backend();
+    let probe = sea_orm::Statement::from_string(backend, "SELECT 1".to_owned());
+    match database.conn().execute(probe).await {
+        Ok(_) => Json(json!({ "ok": true, "db": engine })).into_response(),
+        Err(err) => {
+            tracing::warn!(error = %err, "readyz: db probe failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "ok": false, "reason": "db_probe_failed" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn setup_status(State(state): State<AppState>) -> Json<SetupStatus> {
