@@ -213,15 +213,29 @@ pub trait LlmProvider: Send + Sync {
         while let Some(item) = stream.next().await {
             match item? {
                 StreamEvent::Delta(chunk) => text.push_str(&chunk.delta),
+                StreamEvent::Start { input_tokens: tin } => {
+                    if tin > tokens_in {
+                        tokens_in = tin;
+                    }
+                }
                 StreamEvent::Complete {
                     tokens_in: tin,
                     tokens_out: tout,
                     finish_reason: finish,
                 } => {
-                    tokens_in = tin;
-                    tokens_out = tout;
-                    finish_reason = finish;
+                    if tin > tokens_in {
+                        tokens_in = tin;
+                    }
+                    if tout > tokens_out {
+                        tokens_out = tout;
+                    }
+                    if finish.is_some() {
+                        finish_reason = finish;
+                    }
                 }
+                StreamEvent::ToolCallStart { .. }
+                | StreamEvent::ToolCallDelta { .. }
+                | StreamEvent::ToolCallEnd { .. } => {}
             }
         }
 

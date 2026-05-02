@@ -122,15 +122,41 @@ async fn collect_response(
     while let Some(next) = stream.next().await {
         match next {
             Ok(StreamEvent::Delta(chunk)) => accumulated.push_str(&chunk.delta),
+            Ok(StreamEvent::Start { input_tokens: tin }) => {
+                // Capture early — providers that emit Start (Anthropic)
+                // give us input tokens before the final Complete arrives.
+                if tin > tokens_in {
+                    tokens_in = tin;
+                }
+            }
             Ok(StreamEvent::Complete {
                 tokens_in: tin,
                 tokens_out: tout,
                 finish_reason: fin,
             }) => {
-                tokens_in = tin;
-                tokens_out = tout;
-                finish_reason = fin;
+                // Some providers emit multiple Complete events (OpenAI's
+                // pre-emit on finish_reason chunk, then usage chunk;
+                // Gemini's repeated `usageMetadata`). All providers report
+                // cumulative tokens, so `max` is the safe merge. Preserve
+                // any previously-seen finish_reason if the new event omits
+                // one.
+                if tin > tokens_in {
+                    tokens_in = tin;
+                }
+                if tout > tokens_out {
+                    tokens_out = tout;
+                }
+                if fin.is_some() {
+                    finish_reason = fin;
+                }
             }
+            // Tool-call boundary events: today, tool calls are materialised
+            // from the non-streaming `chat()` round-trip. These variants
+            // exist for forward compatibility (Phase 4 will route them to
+            // SSE `tool_call` events). For now, ignore.
+            Ok(StreamEvent::ToolCallStart { .. })
+            | Ok(StreamEvent::ToolCallDelta { .. })
+            | Ok(StreamEvent::ToolCallEnd { .. }) => {}
             Err(err) => return Err(ChatError::Llm(err)),
         }
     }

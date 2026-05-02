@@ -251,9 +251,12 @@ impl LlmProvider for AnthropicProvider {
 
         let byte_stream = response.bytes_stream();
         let sse = sse_stream(byte_stream);
-        // Anthropic emits `input_tokens` in `message_start`; cumulative
-        // `output_tokens` lives on `message_delta`. Track input tokens
-        // across events so the final `Complete` event carries both.
+        // Anthropic emits `input_tokens` on `message_start` (captured in
+        // an atomic so it survives across SSE frames) and `output_tokens`
+        // on `message_delta`. The parser emits a separate `Start` event
+        // so the runtime can decouple input-token capture from the final
+        // `Complete` event — useful when `message_delta` omits the
+        // input field.
         let input_tokens = Arc::new(AtomicU32::new(0));
         let mapped = sse.filter_map(move |item| {
             let input_tokens = input_tokens.clone();
@@ -333,7 +336,13 @@ fn parse_event(
                 .and_then(|u| u.get("input_tokens"))
                 .and_then(Value::as_u64)
             {
-                input_tokens.store(tokens as u32, Ordering::Relaxed);
+                let tokens = tokens as u32;
+                input_tokens.store(tokens, Ordering::Relaxed);
+                // Emit a Start event so the runtime can capture input
+                // tokens immediately, decoupled from the eventual Complete.
+                return Some(StreamEvent::Start {
+                    input_tokens: tokens,
+                });
             }
             None
         }
@@ -439,12 +448,15 @@ mod tests {
     }
 
     #[test]
-    fn message_start_caches_input_tokens_for_later_complete() {
+    fn message_start_emits_start_event_and_caches_input_tokens() {
         let cache = AtomicU32::new(0);
         let start = frame(
             r#"{"type":"message_start","message":{"usage":{"input_tokens":42,"output_tokens":0}}}"#,
         );
-        assert!(parse_event(&start, &cache).is_none());
+        match parse_event(&start, &cache).expect("Start expected") {
+            StreamEvent::Start { input_tokens } => assert_eq!(input_tokens, 42),
+            other => panic!("expected Start, got {other:?}"),
+        }
         assert_eq!(cache.load(Ordering::Relaxed), 42);
 
         let delta = frame(

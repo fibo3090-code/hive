@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -227,10 +229,20 @@ impl LlmProvider for OpenAiProvider {
 
         let byte_stream = response.bytes_stream();
         let sse = sse_stream(byte_stream);
-        let mapped = sse.filter_map(|item| async move {
-            match item {
-                Err(e) => Some(Err(LlmError::Http(e))),
-                Ok(msg) => parse_event(&msg).map(Ok),
+        // OpenAI's stream emits `finish_reason` on one chunk and `usage` on
+        // a separate chunk (when `stream_options.include_usage: true` is
+        // set, which we always do). Without state, the runtime would see
+        // two Complete events and only the last one's tokens would survive.
+        // Track the pending finish_reason so we emit a single, merged
+        // Complete on whichever event fires last.
+        let state = Arc::new(Mutex::new(StreamState::default()));
+        let mapped = sse.filter_map(move |item| {
+            let state = state.clone();
+            async move {
+                match item {
+                    Err(e) => Some(Err(LlmError::Http(e))),
+                    Ok(msg) => parse_event(&msg, &state).map(Ok),
+                }
             }
         });
         Ok(Box::pin(mapped))
@@ -293,12 +305,27 @@ impl LlmProvider for OpenAiProvider {
     }
 }
 
-fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
+/// Per-stream parser state. Caches the `finish_reason` so we can include
+/// it in the (later) usage-chunk Complete event without losing it.
+#[derive(Default)]
+struct StreamState {
+    finish_reason: Option<String>,
+}
+
+fn parse_event(msg: &crate::sse::SseMessage, state: &Mutex<StreamState>) -> Option<StreamEvent> {
     if msg.data.is_empty() || msg.data == "[DONE]" {
         return None;
     }
-    let value: Value = serde_json::from_str(&msg.data).ok()?;
+    let value: Value = match serde_json::from_str(&msg.data) {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::trace!(error = %err, raw = %msg.data, "openai: malformed sse frame");
+            return None;
+        }
+    };
 
+    // Usage chunk arrives last (when `stream_options.include_usage` is on).
+    // Emit Complete with both the real tokens AND the cached finish_reason.
     if let Some(usage) = value.get("usage") {
         if usage.is_object() {
             let tokens_in = usage
@@ -309,10 +336,15 @@ fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
                 .get("completion_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as u32;
+            let finish = state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .finish_reason
+                .clone();
             return Some(StreamEvent::Complete {
                 tokens_in,
                 tokens_out,
-                finish_reason: None,
+                finish_reason: finish,
             });
         }
     }
@@ -333,11 +365,18 @@ fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
             delta: delta.to_owned(),
         }));
     }
-    if finish.is_some() {
+
+    if let Some(reason) = finish {
+        // Cache and pre-emit a Complete with tokens=0; if usage arrives
+        // after this (the common path), it overrides with real tokens
+        // and copies the cached finish_reason. If usage never arrives
+        // (older API or `include_usage:false`), the runtime keeps this
+        // event's finish_reason and only loses the token counts.
+        state.lock().unwrap_or_else(|e| e.into_inner()).finish_reason = Some(reason.clone());
         return Some(StreamEvent::Complete {
             tokens_in: 0,
             tokens_out: 0,
-            finish_reason: finish,
+            finish_reason: Some(reason),
         });
     }
     None
@@ -429,6 +468,66 @@ mod tests {
         let calls = parse_tool_calls(&value).expect("provider must not fail the turn");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].arguments, json!({}));
+    }
+
+    fn frame(data: &str) -> crate::sse::SseMessage {
+        crate::sse::SseMessage {
+            event: None,
+            data: data.to_owned(),
+        }
+    }
+
+    #[test]
+    fn finish_reason_chunk_caches_reason_for_usage_complete() {
+        let state = Mutex::new(StreamState::default());
+
+        // First, a finish_reason chunk arrives with no tokens.
+        let finish = frame(
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+        );
+        match parse_event(&finish, &state).expect("Complete pre-emit") {
+            StreamEvent::Complete {
+                tokens_in,
+                tokens_out,
+                finish_reason,
+            } => {
+                assert_eq!(tokens_in, 0);
+                assert_eq!(tokens_out, 0);
+                assert_eq!(finish_reason.as_deref(), Some("stop"));
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+
+        // Then the usage chunk arrives — should re-emit Complete with the
+        // cached finish_reason and the real token counts. The runtime then
+        // takes the merged max-tokens with stable finish_reason.
+        let usage = frame(
+            r#"{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":34,"total_tokens":46}}"#,
+        );
+        match parse_event(&usage, &state).expect("Complete from usage") {
+            StreamEvent::Complete {
+                tokens_in,
+                tokens_out,
+                finish_reason,
+            } => {
+                assert_eq!(tokens_in, 12);
+                assert_eq!(tokens_out, 34);
+                assert_eq!(finish_reason.as_deref(), Some("stop"));
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn done_marker_is_skipped() {
+        let state = Mutex::new(StreamState::default());
+        assert!(parse_event(&frame("[DONE]"), &state).is_none());
+    }
+
+    #[test]
+    fn malformed_frames_do_not_panic() {
+        let state = Mutex::new(StreamState::default());
+        assert!(parse_event(&frame("{not"), &state).is_none());
     }
 
     #[test]
