@@ -11,7 +11,9 @@ use hive_db::{
 };
 use hive_llm::{
     chat::{ChatMessage, ChatRequest, ChatRole, StreamEvent, ToolCall, ToolDefinition},
+    model_metadata::context_window_for,
     pricing::cost_cents,
+    token_budget::trim_to_fit,
     LlmProvider, ProviderKind,
 };
 use hive_tools::{ToolContext, ToolRegistry};
@@ -386,6 +388,41 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
             tool_name: None,
             tool_calls: Vec::new(),
         });
+    }
+
+    // Pre-flight context budgeting. Reserve room for the response and the
+    // tool catalog (if tools are enabled), then trim oldest non-system
+    // messages until we fit. Emit `context_trim` so the UI can show
+    // "older messages omitted to fit context".
+    let context_window = context_window_for(provider_kind, &model);
+    // Reserve 4k tokens for the response, ~10% safety margin on the rest.
+    const RESERVED_OUTPUT: u64 = 4_096;
+    let safety_budget = context_window
+        .saturating_sub(RESERVED_OUTPUT)
+        .saturating_sub(context_window / 10);
+    let projected_tools: Vec<ToolDefinition> = tool_registry
+        .as_ref()
+        .map(tool_definitions)
+        .unwrap_or_default();
+    let trim_outcome = trim_to_fit(&mut messages, &projected_tools, safety_budget);
+    if trim_outcome.dropped > 0 {
+        tracing::info!(
+            thread_id = %thread_id,
+            dropped = trim_outcome.dropped,
+            estimated_tokens = trim_outcome.estimated_tokens_after,
+            context_window,
+            "trimmed oldest history to fit context budget"
+        );
+        bus.emit(
+            format!("chat.{thread_id}.context_trim"),
+            json!({
+                "threadId": thread_id,
+                "messageId": assistant_message_id,
+                "dropped": trim_outcome.dropped,
+                "estimatedTokens": trim_outcome.estimated_tokens_after,
+                "contextWindow": context_window,
+            }),
+        );
     }
 
     let _ = chat_messages::set_status(db.conn(), &assistant_message_id, "streaming").await?;

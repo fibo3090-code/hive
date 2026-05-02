@@ -8,6 +8,7 @@ pub mod model_metadata;
 pub mod pricing;
 pub mod providers;
 pub mod sse;
+pub mod token_budget;
 
 pub use chat::{
     ChatMessage, ChatRequest, ChatResponse, ChatRole, StreamChunk, StreamEvent, ToolCall,
