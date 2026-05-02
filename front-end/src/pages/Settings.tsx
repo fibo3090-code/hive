@@ -5,7 +5,13 @@ import {
   Shield, Bell, Keyboard, Palette, Database, Info, Plug, FileLock, Wrench,
   Plus, Trash2, Check, Save, RefreshCw, Loader2,
 } from 'lucide-react';
-import { useLlmProviders, useSetProviderKey, useTestProvider, type LlmProvider } from '@/api/llm';
+import {
+  useLlmProviders,
+  useRefreshProviderModels,
+  useSetProviderKey,
+  useTestProvider,
+  type LlmProvider,
+} from '@/api/llm';
 import { useInitWorkspace, useWorkspaceInfo } from '@/api/tools';
 import { ModelPicker } from '@/components/shared/ModelPicker';
 import { Switch } from '@/components/ui/switch';
@@ -421,8 +427,11 @@ function LlmProvidersSection() {
   const { data: providers = [], isLoading, refetch } = useLlmProviders();
   const setKey = useSetProviderKey();
   const testProvider = useTestProvider();
+  const refreshModels = useRefreshProviderModels();
   const [drafts, setDrafts] = useState<Record<string, { apiKey: string; baseUrl: string }>>({});
-  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; sampleCount: number; error: string | null }>>({});
+  const [testResults, setTestResults] = useState<
+    Record<string, { ok: boolean; sampleCount: number; error: string | null; testedKeyHash: string }>
+  >({});
 
   const getDraft = (p: LlmProvider) =>
     drafts[p.id] ?? { apiKey: '', baseUrl: p.baseUrl ?? '' };
@@ -432,27 +441,85 @@ function LlmProvidersSection() {
       ...prev,
       [id]: { ...(prev[id] ?? { apiKey: '', baseUrl: '' }), ...patchDraft },
     }));
+    // Editing the key invalidates any prior successful test result. The
+    // hash of the draft below is what gates Save; clearing matches the
+    // convention used by every "edit then re-test" auth UI.
+    if (patchDraft.apiKey !== undefined) {
+      setTestResults((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    }
+  };
+
+  // Gating policy: if the user typed a new API key, Save is disabled
+  // until that exact key has been tested and returned ok. Editing only
+  // the base URL (leaving the key blank) skips the gate.
+  const isSaveAllowed = (p: LlmProvider, d: { apiKey: string; baseUrl: string }): boolean => {
+    if (!d.apiKey) return true; // base-url-only update
+    const result = testResults[p.id];
+    return result?.ok === true && result.testedKeyHash === d.apiKey;
   };
 
   const onSave = async (p: LlmProvider) => {
     const d = getDraft(p);
+    if (!isSaveAllowed(p, d)) {
+      toast.error('Test the key first — Save is gated on a successful Test');
+      return;
+    }
     await setKey.mutateAsync({
       providerId: p.id,
       apiKey: d.apiKey || undefined,
       baseUrl: d.baseUrl || undefined,
     });
     updateDraft(p.id, { apiKey: '' });
+    setTestResults((current) => {
+      const next = { ...current };
+      delete next[p.id];
+      return next;
+    });
     toast.success(`${p.name} updated`);
   };
 
   const onTest = async (p: LlmProvider) => {
+    const d = getDraft(p);
+    // If the user typed a new key, persist it transiently before testing
+    // so the backend has something to test with. We tag the result with
+    // the key text so a later edit invalidates the gate.
+    if (d.apiKey) {
+      try {
+        await setKey.mutateAsync({
+          providerId: p.id,
+          apiKey: d.apiKey,
+          baseUrl: d.baseUrl || undefined,
+        });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Failed to stage key for test');
+        return;
+      }
+    }
     const res = await testProvider.mutateAsync(p.id);
     setTestResults((current) => ({
       ...current,
-      [p.id]: { ok: res.ok, sampleCount: res.sampleModels.length, error: res.error },
+      [p.id]: {
+        ok: res.ok,
+        sampleCount: res.sampleModels.length,
+        error: res.error,
+        testedKeyHash: d.apiKey,
+      },
     }));
     if (res.ok) toast.success(`${p.name} connected`);
     else toast.error(`${p.name}: ${res.error ?? 'failed'}`);
+  };
+
+  const onRefreshModels = async (p: LlmProvider) => {
+    try {
+      const models = await refreshModels.mutateAsync(p.id);
+      toast.success(`${p.name}: refreshed (${models.length} models)`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Refresh failed');
+    }
   };
 
   return (
@@ -506,7 +573,8 @@ function LlmProvidersSection() {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => void onSave(p)}
-                disabled={setKey.isPending}
+                disabled={setKey.isPending || !isSaveAllowed(p, d)}
+                title={!isSaveAllowed(p, d) ? 'Test the key first' : undefined}
                 className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 Save
@@ -519,6 +587,16 @@ function LlmProvidersSection() {
                 {testProvider.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
                 Test Connection
               </button>
+              {p.connected && (
+                <button
+                  onClick={() => void onRefreshModels(p)}
+                  disabled={refreshModels.isPending}
+                  className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-50"
+                >
+                  <RefreshCw className={cn('h-3 w-3', refreshModels.isPending && 'animate-spin')} />
+                  Refresh Models
+                </button>
+              )}
             </div>
             {testResult && (
               <div className={cn('text-xs rounded-md px-3 py-2', testResult.ok ? 'bg-success/5 text-success' : 'bg-destructive/5 text-destructive')}>
