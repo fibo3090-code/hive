@@ -27,35 +27,45 @@ impl MigrationName for Migration {
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        // INSERT defaults if the scope is empty. Use ON CONFLICT DO NOTHING
-        // so the migration is rerunnable; on Postgres the same SQL works,
-        // on SQLite we use the same syntax (Sea-ORM normalises).
         let conn = manager.get_connection();
         let backend = conn.get_database_backend();
+        let now = chrono::Utc::now().to_rfc3339();
 
-        // (scope, key, json_value)
+        // (scope, key, json_value). Stored as raw JSON strings — the
+        // settings.value column is a JSON-typed column on Postgres and a
+        // TEXT column with valid JSON on SQLite.
         let defaults: &[(&str, &str, &str)] = &[
             ("search", "provider", "\"searxng\""),
             ("search", "searxng_url", "\"http://localhost:8888\""),
         ];
 
+        // Use parameter bindings rather than string interpolation: the
+        // values are constants today, but treating SQL fragments as
+        // templates is the wrong default to set in this codebase.
+        let insert_sql = match backend {
+            DatabaseBackend::Sqlite => {
+                "INSERT OR IGNORE INTO settings (scope, key, value, updated_at) VALUES (?, ?, ?, ?)"
+            }
+            DatabaseBackend::Postgres => {
+                "INSERT INTO settings (scope, key, value, updated_at) VALUES ($1, $2, $3::jsonb, $4) ON CONFLICT (scope, key) DO NOTHING"
+            }
+            DatabaseBackend::MySql => {
+                "INSERT IGNORE INTO settings (scope, key, value, updated_at) VALUES (?, ?, ?, ?)"
+            }
+        };
+
         for (scope, key, value) in defaults {
-            let sql = match backend {
-                DatabaseBackend::Sqlite => format!(
-                    "INSERT OR IGNORE INTO settings (scope, key, value, updated_at) \
-                     VALUES ('{scope}', '{key}', '{value}', datetime('now'))"
-                ),
-                DatabaseBackend::Postgres => format!(
-                    "INSERT INTO settings (scope, key, value, updated_at) \
-                     VALUES ('{scope}', '{key}', '{value}'::jsonb, NOW()) \
-                     ON CONFLICT (scope, key) DO NOTHING"
-                ),
-                DatabaseBackend::MySql => format!(
-                    "INSERT IGNORE INTO settings (scope, key, value, updated_at) \
-                     VALUES ('{scope}', '{key}', '{value}', NOW())"
-                ),
-            };
-            conn.execute(Statement::from_string(backend, sql)).await?;
+            conn.execute(Statement::from_sql_and_values(
+                backend,
+                insert_sql,
+                [
+                    (*scope).into(),
+                    (*key).into(),
+                    (*value).into(),
+                    now.clone().into(),
+                ],
+            ))
+            .await?;
         }
 
         Ok(())
@@ -64,9 +74,10 @@ impl MigrationTrait for Migration {
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let conn = manager.get_connection();
         let backend = conn.get_database_backend();
-        conn.execute(Statement::from_string(
+        conn.execute(Statement::from_sql_and_values(
             backend,
-            "DELETE FROM settings WHERE scope = 'search'".to_owned(),
+            "DELETE FROM settings WHERE scope = ?",
+            ["search".into()],
         ))
         .await?;
         Ok(())
