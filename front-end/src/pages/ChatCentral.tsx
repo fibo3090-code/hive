@@ -20,6 +20,17 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 function CodeBlock({ language, code }: { readonly language: string; readonly code: string }) {
   const [copied, setCopied] = useState(false);
+  // Track the pending "reset copied" timer in a ref so we can cancel it
+  // when the component unmounts mid-flight. Without this, an unmount
+  // between Copy and the 1.5s reset triggers `setState on unmounted`.
+  const resetTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (resetTimerRef.current !== null) {
+        clearTimeout(resetTimerRef.current);
+      }
+    };
+  }, []);
   return (
     <div className="rounded-md border border-border bg-surface-2 mt-2 overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1.5 bg-surface-3 border-b border-border">
@@ -29,7 +40,13 @@ function CodeBlock({ language, code }: { readonly language: string; readonly cod
             onClick={() => {
               navigator.clipboard.writeText(code);
               setCopied(true);
-              globalThis.setTimeout(() => setCopied(false), 1500);
+              if (resetTimerRef.current !== null) {
+                clearTimeout(resetTimerRef.current);
+              }
+              resetTimerRef.current = globalThis.setTimeout(() => {
+                setCopied(false);
+                resetTimerRef.current = null;
+              }, 1500) as unknown as number;
             }}
             className="text-muted-foreground hover:text-foreground p-0.5"
             aria-label="Copy code"
