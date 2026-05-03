@@ -13,7 +13,7 @@ pub struct CreateProject {
     pub name: String,
     pub description: Option<String>,
     pub sovereignty_tier: String,
-    pub budget_total_cents: i32,
+    pub budget_total_cents: i64,
     pub status: String,
 }
 
@@ -23,7 +23,7 @@ pub struct UpdateProject {
     pub name: Option<String>,
     pub description: Option<Option<String>>,
     pub sovereignty_tier: Option<String>,
-    pub budget_total_cents: Option<i32>,
+    pub budget_total_cents: Option<i64>,
     pub status: Option<String>,
     pub health_score: Option<i32>,
     pub spec_completion: Option<i32>,

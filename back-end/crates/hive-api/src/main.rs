@@ -23,8 +23,8 @@ use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
         agent_messages, agents, alerts, audit, chat_messages, chat_threads, cost_events,
-        llm_providers, notes, notifications, projects, sessions, settings, sprints,
-        synthesis_jobs, tasks, tech_debt,
+        llm_providers, notes, notifications, project_workspaces, projects, sessions, settings,
+        sprints, synthesis_jobs, tasks, tech_debt,
     },
     seed::seed_demo,
     Db,
@@ -223,7 +223,7 @@ struct CreateProjectBody {
     name: String,
     description: Option<String>,
     sovereignty_tier: String,
-    budget_total_cents: i32,
+    budget_total_cents: i64,
     status: Option<String>,
 }
 
@@ -233,7 +233,7 @@ struct UpdateProjectBody {
     name: Option<String>,
     description: Option<Option<String>>,
     sovereignty_tier: Option<String>,
-    budget_total_cents: Option<i32>,
+    budget_total_cents: Option<i64>,
     status: Option<String>,
     health_score: Option<i32>,
     spec_completion: Option<i32>,
@@ -294,7 +294,7 @@ struct ReorderSprintsBody {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExtendBudgetBody {
-    new_total_cents: i32,
+    new_total_cents: i64,
 }
 
 #[derive(Deserialize)]
@@ -807,20 +807,38 @@ async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppEr
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    let mut search_provider = stored_tools
-        .get("searchProvider")
-        .and_then(Value::as_str)
-        .unwrap_or("searxng")
-        .to_owned();
+    // Prefer the dedicated `search.*` settings rows (seeded by
+    // m20260518_search_config) over the JSON blob. The blob path stays
+    // as a legacy fallback so a user who flipped the toggle before this
+    // commit doesn't get reset.
+    let database = db(state).await;
+    let provider_row = settings::get_value(database.conn(), "search", "provider")
+        .await?
+        .and_then(|v| v.as_str().map(str::to_owned));
+    let searxng_row = settings::get_value(database.conn(), "search", "searxng_url")
+        .await?
+        .and_then(|v| v.as_str().map(str::to_owned));
+
+    let mut search_provider = provider_row
+        .or_else(|| {
+            stored_tools
+                .get("searchProvider")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "searxng".into());
     if search_provider != "tavily" && search_provider != "searxng" {
         search_provider = "searxng".into();
     }
 
-    let searxng_url = stored_tools
-        .get("searxngUrl")
-        .and_then(Value::as_str)
-        .unwrap_or("http://localhost:8888")
-        .to_owned();
+    let searxng_url = searxng_row
+        .or_else(|| {
+            stored_tools
+                .get("searxngUrl")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "http://localhost:8888".into());
     let enabled_tools = stored_tools
         .get("enabledTools")
         .and_then(|value| value.as_array())
@@ -997,6 +1015,7 @@ async fn build_tooling(
         &mut registry,
         db(state).await.clone(),
         state.executors.clone(),
+        EventBus::new(state.events.clone()),
     );
     let registry = registry.filtered(&enabled_tools);
 
@@ -2458,12 +2477,28 @@ async fn get_workspace_info(
     let _project = projects::get(database.conn(), &project_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+
+    // Prefer the persisted row from `project_workspaces` (Phase 3.1
+    // schema). Fall back to filesystem inspection only when no row
+    // exists yet (the project was created before workspace init).
+    if let Some(row) = project_workspaces::get_by_project(database.conn(), &project_id).await? {
+        return Ok(Json(json!(WorkspaceInfo {
+            project_id,
+            sandbox_kind: row.sandbox_kind,
+            status: row.status,
+            root_path: row.root_path,
+        })));
+    }
+
     let data_dir = state.inner.read().await.data_dir.clone();
     let root = workspace_dir(&data_dir, &project_id);
-    let status = if root.exists() { "ready" } else { "missing" };
+    // No DB row yet — surface `uninitialised` honestly so the UI shows
+    // the Init button. Don't claim `ready` just because the directory
+    // happens to exist on disk; the row is the source of truth.
+    let status = if root.exists() { "uninitialised" } else { "missing" };
     Ok(Json(json!(WorkspaceInfo {
         project_id,
-        sandbox_kind: "local-fs".into(),
+        sandbox_kind: "local".into(),
         status: status.into(),
         root_path: root.to_string_lossy().into_owned(),
     })))
@@ -2485,17 +2520,32 @@ async fn init_workspace(
     GitRepo::new(root.clone())
         .init()
         .map_err(|e| AppError::Internal(format!("init git repo: {e}")))?;
+
+    // Persist the workspace row so the choice (sandbox kind, root path)
+    // survives across restarts and so subsequent /workspace/info calls
+    // return the same answer.
+    let upsert = project_workspaces::UpsertWorkspace {
+        project_id: project_id.clone(),
+        sandbox_kind: project_workspaces::SandboxKind::Local,
+        root_path: root.to_string_lossy().into_owned(),
+        container_id: None,
+        status: project_workspaces::WorkspaceStatus::Ready,
+        last_error: None,
+    };
+    let row = project_workspaces::upsert(database.conn(), upsert).await?;
+    let _ = project_workspaces::mark_started(database.conn(), &project_id).await;
+
     emit(
         &state,
         "workspace.updated",
-        json!({ "projectId": project_id, "status": "ready" }),
+        json!({ "projectId": project_id, "status": row.status }),
     )
     .await;
     Ok(Json(json!(WorkspaceInfo {
         project_id,
-        sandbox_kind: "local-fs".into(),
-        status: "ready".into(),
-        root_path: root.to_string_lossy().into_owned(),
+        sandbox_kind: row.sandbox_kind,
+        status: row.status,
+        root_path: row.root_path,
     })))
 }
 
@@ -3074,6 +3124,35 @@ async fn update_settings(
     }
 
     settings::put_value(database.conn(), "global", "defaultModel", default_model).await?;
+
+    // Persist the search provider + URL into the dedicated `search.*`
+    // settings rows so the read path (`current_tools_sandbox_settings`)
+    // stays consistent across restarts and the JSON-blob fallback isn't
+    // needed.
+    if let Some(tools) = next_settings.get("toolsSandbox") {
+        if let Some(provider) = tools.get("searchProvider").and_then(Value::as_str) {
+            if provider == "tavily" || provider == "searxng" {
+                settings::put_value(
+                    database.conn(),
+                    "search",
+                    "provider",
+                    Value::String(provider.to_owned()),
+                )
+                .await?;
+            }
+        }
+        if let Some(url) = tools.get("searxngUrl").and_then(Value::as_str) {
+            if !url.trim().is_empty() {
+                settings::put_value(
+                    database.conn(),
+                    "search",
+                    "searxng_url",
+                    Value::String(url.to_owned()),
+                )
+                .await?;
+            }
+        }
+    }
 
     if let Some(api_key) = pending_tavily_key {
         let sealed = state
