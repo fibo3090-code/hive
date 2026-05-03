@@ -4,9 +4,11 @@
 //! Sprint 1 adds streaming text completions via `chat_stream`.
 
 pub mod chat;
+pub mod model_metadata;
 pub mod pricing;
 pub mod providers;
 pub mod sse;
+pub mod token_budget;
 
 pub use chat::{
     ChatMessage, ChatRequest, ChatResponse, ChatRole, StreamChunk, StreamEvent, ToolCall,
@@ -101,9 +103,46 @@ impl FromStr for ProviderKind {
 pub struct ModelInfo {
     pub id: String,
     pub label: String,
-    pub context_window: Option<u32>,
+    /// Maximum input context window in tokens. `u64` because next-gen
+    /// frontier models exceed `u32::MAX` (Gemini's 10M+ tier).
+    pub context_window: Option<u64>,
     pub supports_tools: bool,
     pub supports_streaming: bool,
+}
+
+impl ModelInfo {
+    /// Construct a `ModelInfo` after validating the basics. Returns `None`
+    /// (and logs a `warn`) if the row would mislead the frontend — empty
+    /// id/label, or a zero context window where one was claimed.
+    pub fn build(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        context_window: Option<u64>,
+        supports_tools: bool,
+        supports_streaming: bool,
+    ) -> Option<Self> {
+        let id = id.into();
+        let label = label.into();
+        if id.trim().is_empty() {
+            tracing::warn!("model row dropped: empty id");
+            return None;
+        }
+        if label.trim().is_empty() {
+            tracing::warn!(id = %id, "model row dropped: empty label");
+            return None;
+        }
+        if context_window == Some(0) {
+            tracing::warn!(id = %id, "model row dropped: zero context window");
+            return None;
+        }
+        Some(Self {
+            id,
+            label,
+            context_window,
+            supports_tools,
+            supports_streaming,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -175,15 +214,29 @@ pub trait LlmProvider: Send + Sync {
         while let Some(item) = stream.next().await {
             match item? {
                 StreamEvent::Delta(chunk) => text.push_str(&chunk.delta),
+                StreamEvent::Start { input_tokens: tin } => {
+                    if tin > tokens_in {
+                        tokens_in = tin;
+                    }
+                }
                 StreamEvent::Complete {
                     tokens_in: tin,
                     tokens_out: tout,
                     finish_reason: finish,
                 } => {
-                    tokens_in = tin;
-                    tokens_out = tout;
-                    finish_reason = finish;
+                    if tin > tokens_in {
+                        tokens_in = tin;
+                    }
+                    if tout > tokens_out {
+                        tokens_out = tout;
+                    }
+                    if finish.is_some() {
+                        finish_reason = finish;
+                    }
                 }
+                StreamEvent::ToolCallStart { .. }
+                | StreamEvent::ToolCallDelta { .. }
+                | StreamEvent::ToolCallEnd { .. } => {}
             }
         }
 
@@ -198,9 +251,16 @@ pub trait LlmProvider: Send + Sync {
 }
 
 /// Build a boxed client for the given config.
+///
+/// Uses `connect_timeout` rather than the all-up `timeout`. The all-up
+/// timeout aborts streaming responses too (so a 15s total kills any
+/// slow-token model), which is the wrong default for an LLM client.
+/// Stream consumers (`hive_runtime::chat::run_turn`) enforce their own
+/// per-turn wall-clock budget.
 pub fn client_for(config: ProviderConfig) -> Box<dyn LlmProvider> {
     let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .pool_idle_timeout(std::time::Duration::from_secs(60))
         .build()
         .expect("reqwest client builds");
     match config.kind {

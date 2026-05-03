@@ -123,6 +123,15 @@ export function useCancelChatMessage() {
  * the `complete` or `cancelled` event fires we invalidate the history query
  * so the final persisted message replaces the live buffer.
  */
+export interface ContextTrimNotice {
+  /** How many oldest messages were dropped before the LLM call. */
+  dropped: number;
+  /** Estimated tokens after trimming. */
+  estimatedTokens: number;
+  /** Effective context window for the model. */
+  contextWindow: number;
+}
+
 export interface StreamingState {
   [messageId: string]:
     | {
@@ -132,6 +141,8 @@ export interface StreamingState {
         tokensOut?: number;
         costCents?: number;
         toolCalls?: ToolCallTrace[];
+        /** Set if pre-flight context trimming kicked in. */
+        contextTrim?: ContextTrimNotice;
       }
     | undefined;
 }
@@ -170,8 +181,8 @@ export function useChatStream(threadId: string | null | undefined) {
             toolCalls: current?.toolCalls ?? [],
           },
         });
-      } catch {
-        /* ignore malformed chunks */
+      } catch (err) {
+        console.warn('[chat-stream] malformed token chunk', err);
       }
     };
 
@@ -198,8 +209,12 @@ export function useChatStream(threadId: string | null | undefined) {
           },
         });
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
       }
     };
 
@@ -217,8 +232,12 @@ export function useChatStream(threadId: string | null | undefined) {
           },
         });
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
       }
     };
 
@@ -236,8 +255,12 @@ export function useChatStream(threadId: string | null | undefined) {
           },
         });
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
       }
     };
 
@@ -263,8 +286,12 @@ export function useChatStream(threadId: string | null | undefined) {
             toolCalls,
           },
         });
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
       }
     };
 
@@ -297,13 +324,53 @@ export function useChatStream(threadId: string | null | undefined) {
             toolCalls,
           },
         });
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
       }
     };
 
     const onMessage = () => {
       qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
+    };
+
+    const onContextTrim = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          threadId: string;
+          messageId: string;
+          dropped: number;
+          estimatedTokens: number;
+          contextWindow: number;
+        };
+        if (data.threadId !== threadId) return;
+        const current = streamingRef.current[data.messageId];
+        update({
+          ...streamingRef.current,
+          [data.messageId]: {
+            content: current?.content ?? '',
+            status: current?.status ?? 'streaming',
+            tokensIn: current?.tokensIn,
+            tokensOut: current?.tokensOut,
+            costCents: current?.costCents,
+            toolCalls: current?.toolCalls ?? [],
+            contextTrim: {
+              dropped: data.dropped,
+              estimatedTokens: data.estimatedTokens,
+              contextWindow: data.contextWindow,
+            },
+          },
+        });
+      } catch (err) {
+        // SSE frame failed JSON.parse. The connection is still healthy
+        // — frames can race or be malformed by an upstream proxy. Log
+        // at warn so it shows in the dev console; if frame loss is
+        // ever a real issue, the count tells the story.
+        console.warn('[chat-stream] malformed event', err);
+      }
     };
 
     source.addEventListener(`chat.${threadId}.token`, onToken as EventListener);
@@ -313,6 +380,7 @@ export function useChatStream(threadId: string | null | undefined) {
     source.addEventListener(`chat.${threadId}.message`, onMessage as EventListener);
     source.addEventListener(`chat.${threadId}.tool_call`, onToolCall as EventListener);
     source.addEventListener(`chat.${threadId}.tool_result`, onToolResult as EventListener);
+    source.addEventListener(`chat.${threadId}.context_trim`, onContextTrim as EventListener);
 
     return () => {
       source.close();

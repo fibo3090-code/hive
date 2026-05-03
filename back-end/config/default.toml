@@ -1,6 +1,6 @@
 [server]
-host = "0.0.0.0"
-port = 3001
+host = "127.0.0.1"
+port = 8787
 
 [database]
 # Set to "sqlite://./hive.db?mode=rwc" for local mode

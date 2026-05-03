@@ -8,6 +8,7 @@ pub mod cost_events;
 pub mod llm_providers;
 pub mod notes;
 pub mod notifications;
+pub mod project_workspaces;
 pub mod projects;
 pub mod sessions;
 pub mod settings;

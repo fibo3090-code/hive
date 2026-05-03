@@ -88,7 +88,7 @@ pub struct NewCostEvent<'a> {
     pub kind: &'a str,
     pub tokens_in: i32,
     pub tokens_out: i32,
-    pub cost_cents: i32,
+    pub cost_cents: i64,
     pub memo: Option<&'a str>,
 }
 

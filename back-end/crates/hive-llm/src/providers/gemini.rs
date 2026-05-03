@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::chat::{ChatRequest, ChatResponse, ChatRole, StreamChunk, StreamEvent, ToolCall};
+use crate::model_metadata::{context_window_for, supports_tools};
 use crate::sse::sse_stream;
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
@@ -29,8 +30,9 @@ struct Entry {
     name: String,
     #[serde(default, rename = "displayName")]
     display_name: Option<String>,
+    /// Input token limit. `u64` because next-gen Gemini exceeds u32.
     #[serde(default, rename = "inputTokenLimit")]
-    input_token_limit: Option<u32>,
+    input_token_limit: Option<u64>,
     #[serde(default, rename = "supportedGenerationMethods")]
     supported_methods: Vec<String>,
 }
@@ -42,15 +44,15 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
         .models
         .into_iter()
         .filter(|e| e.supported_methods.iter().any(|m| m == "generateContent"))
-        .map(|e| {
+        .filter_map(|e| {
             let id = e.name.strip_prefix("models/").unwrap_or(&e.name).to_owned();
-            ModelInfo {
-                label: e.display_name.unwrap_or_else(|| id.clone()),
-                id,
-                context_window: e.input_token_limit,
-                supports_tools: true,
-                supports_streaming: true,
-            }
+            let label = e.display_name.unwrap_or_else(|| id.clone());
+            // API value is authoritative; family lookup is the fallback.
+            let context = e
+                .input_token_limit
+                .or_else(|| Some(context_window_for(ProviderKind::Gemini, &id)));
+            let tools = supports_tools(ProviderKind::Gemini, &id);
+            ModelInfo::build(id, label, context, tools, true)
         })
         .collect())
 }
@@ -170,8 +172,12 @@ fn parse_response(value: &Value) -> Result<ChatResponse, LlmError> {
                     .get("name")
                     .and_then(Value::as_str)
                     .ok_or_else(|| LlmError::Parse("missing gemini function name".into()))?;
+                // Gemini's `functionCall` has no native id; the round-trip
+                // back to Gemini is keyed by `name`. Mint a ULID anyway so
+                // every persisted call is uniquely addressable for SSE
+                // tool_call events and the executed_calls list.
                 tool_calls.push(ToolCall {
-                    id: None,
+                    id: Some(format!("call_{}", ulid::Ulid::new())),
                     name: name.to_owned(),
                     arguments: function_call
                         .get("args")
@@ -399,5 +405,30 @@ mod tests {
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].name, "web_search");
         assert_eq!(parsed.tool_calls[0].arguments["query"], "rust");
+        // Each call gets a stable ULID for our own bookkeeping; Gemini
+        // doesn't echo it but our SSE events and chat_messages need it.
+        assert!(parsed.tool_calls[0]
+            .id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("call_")));
+    }
+
+    #[test]
+    fn parallel_calls_have_distinct_ids() {
+        let response = json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        { "functionCall": { "name": "web_search", "args": { "q": "a" } } },
+                        { "functionCall": { "name": "web_search", "args": { "q": "b" } } }
+                    ]
+                }
+            }]
+        });
+        let parsed = parse_response(&response).unwrap();
+        assert_eq!(parsed.tool_calls.len(), 2);
+        let ids: Vec<_> = parsed.tool_calls.iter().filter_map(|c| c.id.as_deref()).collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
     }
 }

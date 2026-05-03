@@ -9,10 +9,10 @@
   },
   "defaultModel": null,
   "llmProviders": [
-    { "name": "OpenAI", "connected": true, "apiKey": "sk-demo-openai-1234", "maskedKey": "••••••••••sk-1234", "revealKey": false },
-    { "name": "Anthropic", "connected": true, "apiKey": "ant-demo-anthropic-5678", "maskedKey": "••••••••••ant-5678", "revealKey": false },
-    { "name": "Google", "connected": false, "apiKey": "gemini-demo-key-2468", "maskedKey": "••••••••••gem-2468", "revealKey": false },
-    { "name": "Local (Ollama)", "connected": false, "revealKey": false }
+    { "name": "OpenAI", "connected": false, "apiKey": null, "maskedKey": null },
+    { "name": "Anthropic", "connected": false, "apiKey": null, "maskedKey": null },
+    { "name": "Google", "connected": false, "apiKey": null, "maskedKey": null },
+    { "name": "Local (Ollama)", "connected": false, "apiKey": null, "maskedKey": null }
   ],
   "router": { "enabled": true, "explorationRate": 10 },
   "toolsSandbox": {

@@ -12,11 +12,25 @@ interface CostForecastModalProps {
 export function CostForecastModal({ open, onOpenChange }: CostForecastModalProps) {
   const { state, toggleSession } = useHiveData();
 
+  // Family-based cost/token estimates. Substring match is intentional so
+  // dated suffixes (`claude-opus-4-7-20260201`) inherit the family numbers
+  // without code edits. Authoritative pricing lives server-side.
+  const estimateForModel = (model: string): { estimatedCost: number; estimatedTokens: number } => {
+    const id = model.toLowerCase();
+    if (id.includes('opus') || id.startsWith('gpt-5')) {
+      return { estimatedCost: 12.5, estimatedTokens: 35 };
+    }
+    if (id.includes('sonnet') || id.includes('gpt-4.1')) {
+      return { estimatedCost: 8.2, estimatedTokens: 28 };
+    }
+    if (id.includes('haiku') || id.includes('mini') || id.includes('flash')) {
+      return { estimatedCost: 1.4, estimatedTokens: 12 };
+    }
+    return { estimatedCost: 4.1, estimatedTokens: 18 };
+  };
+
   const agentCosts = state.agents.filter(a => a.status !== 'deprecated').map(a => {
-    const estimatedCostIfClaude = a.model === 'Claude 3.5' ? 8.2 : 4.1;
-    const estimatedCost = a.model === 'GPT-4o' ? 12.5 : estimatedCostIfClaude;
-    const estimatedTokensIfClaude = a.model === 'Claude 3.5' ? 28 : 18;
-    const estimatedTokens = a.model === 'GPT-4o' ? 35 : estimatedTokensIfClaude;
+    const { estimatedCost, estimatedTokens } = estimateForModel(a.model);
     return { name: a.name, model: a.model, estimatedCost, estimatedTokens };
   });
 

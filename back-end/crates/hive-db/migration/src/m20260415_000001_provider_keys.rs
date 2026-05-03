@@ -55,11 +55,26 @@ impl MigrationTrait for Migration {
             ("ollama", "Ollama", "ollama", "http://localhost:11434"),
         ];
 
+        // Each backend has its own "insert if absent" syntax. Dispatch by
+        // `DatabaseBackend` so this migration runs cleanly on SQLite,
+        // Postgres, and MySQL — the original "INSERT OR IGNORE" was
+        // SQLite-only and would fail on the other two.
+        let insert_sql = match backend {
+            sea_orm_migration::sea_orm::DatabaseBackend::Sqlite => {
+                "INSERT OR IGNORE INTO llm_providers (id, name, connected, kind, base_url, created_at, updated_at) VALUES (?, ?, 0, ?, ?, ?, ?)"
+            }
+            sea_orm_migration::sea_orm::DatabaseBackend::Postgres => {
+                "INSERT INTO llm_providers (id, name, connected, kind, base_url, created_at, updated_at) VALUES ($1, $2, 0, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING"
+            }
+            sea_orm_migration::sea_orm::DatabaseBackend::MySql => {
+                "INSERT IGNORE INTO llm_providers (id, name, connected, kind, base_url, created_at, updated_at) VALUES (?, ?, 0, ?, ?, ?, ?)"
+            }
+        };
+
         for (id, name, kind, base_url) in seeds {
-            let sql = "INSERT OR IGNORE INTO llm_providers (id, name, connected, kind, base_url, created_at, updated_at) VALUES (?, ?, 0, ?, ?, ?, ?)";
             db.execute(Statement::from_sql_and_values(
                 backend,
-                sql,
+                insert_sql,
                 [
                     (*id).into(),
                     (*name).into(),

@@ -13,7 +13,10 @@ pub struct Model {
     pub kind: String,
     pub tokens_in: i32,
     pub tokens_out: i32,
-    pub cost_cents: i32,
+    /// `i64` so the column can survive long-running tenants. The schema is
+    /// widened for Postgres in `m20260428_cost_cents_i64`; SQLite stores
+    /// integers in a variable-width form so no schema change is required.
+    pub cost_cents: i64,
     pub memo: Option<String>,
     pub created_at: String,
 }

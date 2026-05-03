@@ -129,11 +129,17 @@ impl Tool for FsWriteTool {
 
 pub struct FsListTool;
 
+/// Cap directory listings so an agent listing `node_modules` doesn't
+/// blow its own context budget.
+const DEFAULT_FS_LIST_MAX: usize = 1_000;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FsListArgs {
     #[serde(default = "default_list_path")]
     path: String,
+    #[serde(default)]
+    max_entries: Option<usize>,
 }
 
 fn default_list_path() -> String {
@@ -146,7 +152,9 @@ impl Tool for FsListTool {
         ToolManifest {
             name: "fs_list".into(),
             description: "List the entries of a directory in the project \
-                workspace. Returns entries as [{path, isDir, size}]."
+                workspace. Returns entries as [{path, isDir, size}]. \
+                Caps at maxEntries (default 1000) and surfaces a \
+                `truncated: true` flag when more entries existed."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -154,6 +162,10 @@ impl Tool for FsListTool {
                     "path": {
                         "type": "string",
                         "description": "Workspace-relative directory path. Defaults to '.'.",
+                    },
+                    "maxEntries": {
+                        "type": "integer",
+                        "description": "Maximum entries to return (defaults to 1000).",
                     },
                 },
             }),
@@ -165,9 +177,15 @@ impl Tool for FsListTool {
         let args: FsListArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
         let entries = ctx.sandbox.list(&args.path).await?;
+        let limit = args.max_entries.unwrap_or(DEFAULT_FS_LIST_MAX);
+        let total = entries.len();
+        let truncated = total > limit;
+        let returned: Vec<_> = entries.into_iter().take(limit).collect();
         Ok(json!({
             "path": args.path,
-            "entries": entries,
+            "entries": returned,
+            "totalEntries": total,
+            "truncated": truncated,
         }))
     }
 }

@@ -46,7 +46,10 @@ use tokio::{
     sync::{broadcast, Mutex, RwLock},
     task::AbortHandle,
 };
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    trace::TraceLayer,
+};
 use tracing::{info, warn};
 
 #[derive(Parser)]
@@ -154,12 +157,34 @@ enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, error, code) = match self {
-            Self::NotFound(message) => (StatusCode::NOT_FOUND, message, "not_found"),
-            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message, "bad_request"),
-            Self::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message, "internal"),
-        };
-        (status, Json(json!({ "error": error, "code": code }))).into_response()
+        match self {
+            Self::NotFound(message) => (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": message, "code": "not_found" })),
+            )
+                .into_response(),
+            Self::BadRequest(message) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": message, "code": "bad_request" })),
+            )
+                .into_response(),
+            Self::Internal(detail) => {
+                // Mint a correlation id, log the real reason behind it, and
+                // return a body that does not leak implementation details.
+                let request_id = ulid::Ulid::new().to_string();
+                tracing::error!(request_id = %request_id, %detail, "internal error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(axum::http::header::HeaderName::from_static("x-request-id"), request_id.clone())],
+                    Json(json!({
+                        "error": "internal error",
+                        "code": "internal",
+                        "requestId": request_id,
+                    })),
+                )
+                    .into_response()
+            }
+        }
     }
 }
 
@@ -378,8 +403,8 @@ struct SynthesizeModuleBody {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().with_env_filter("info").init();
     dotenvy::dotenv().ok();
+    init_tracing();
 
     let cli = Cli::parse();
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -436,7 +461,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/v1/healthz", get(healthz))
-        .route("/v1/readyz", get(healthz))
+        .route("/v1/readyz", get(readyz))
         .route("/v1/setup/status", get(setup_status))
         .route("/v1/setup/database", post(setup_database))
         .route("/v1/setup/seed", post(seed_database))
@@ -532,6 +557,22 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/projects/:project_id/insights/task-throughput",
             get(get_project_task_throughput),
         )
+        .route(
+            "/v1/projects/:project_id/insights/cost-timeline",
+            get(get_project_cost_timeline),
+        )
+        .route(
+            "/v1/projects/:project_id/insights/agent-token-usage",
+            get(get_project_agent_token_usage),
+        )
+        .route(
+            "/v1/projects/:project_id/insights/task-distribution",
+            get(get_project_task_distribution),
+        )
+        .route(
+            "/v1/projects/genesis/preview",
+            post(post_project_genesis_preview),
+        )
         .route("/v1/projects/:project_id/modules", get(list_modules))
         .route("/v1/modules/:module_id", get(get_module))
         .route(
@@ -547,6 +588,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route(
             "/v1/llm-providers/:id/models",
             get(list_llm_provider_models),
+        )
+        .route(
+            "/v1/llm-providers/:id/refresh-models",
+            post(refresh_llm_provider_models),
         )
         .route(
             "/v1/projects/:project_id/chat-threads",
@@ -586,7 +631,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route("/v1/projects/:project_id/modules/synthesize", post(start_module_synthesis))
         .route("/v1/synthesis-jobs/:job_id", get(get_synthesis_job))
         .with_state(state)
-        .layer(CorsLayer::permissive())
+        .layer(cors_layer())
         .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8787));
@@ -594,6 +639,50 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Initialise tracing. Filter from `HIVE_LOG` (same syntax as `RUST_LOG`,
+/// e.g. `info,hive_runtime=debug`); falls back to `info` if unset. JSON
+/// formatting kicks in when `HIVE_LOG_JSON` is any non-empty value, so
+/// production deployments can pipe straight into a log aggregator while
+/// the dev console keeps the human-readable form.
+fn init_tracing() {
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+    let env_filter = std::env::var("HIVE_LOG")
+        .ok()
+        .and_then(|raw| EnvFilter::try_new(raw).ok())
+        .unwrap_or_else(|| EnvFilter::new("info"));
+
+    let registry = tracing_subscriber::registry().with(env_filter);
+    if std::env::var("HIVE_LOG_JSON").is_ok_and(|v| !v.is_empty()) {
+        registry.with(fmt::layer().json()).init();
+    } else {
+        registry.with(fmt::layer().compact().with_target(false)).init();
+    }
+}
+
+/// Restrict cross-origin access to the dev origins served by Vite. The API is
+/// bound to 127.0.0.1 so this is defence in depth — it stops a malicious page
+/// open in the same browser from exfiltrating provider keys via the API.
+fn cors_layer() -> CorsLayer {
+    use axum::http::HeaderValue;
+    let dev_origins = [
+        "http://127.0.0.1:8080",
+        "http://localhost:8080",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ];
+    CorsLayer::new()
+        .allow_origin(
+            dev_origins
+                .iter()
+                .filter_map(|o| HeaderValue::from_str(o).ok())
+                .collect::<Vec<_>>(),
+        )
+        .allow_methods(Any)
+        .allow_headers(Any)
+        .expose_headers([axum::http::header::HeaderName::from_static("x-request-id")])
 }
 
 async fn bootstrap_runtime(workspace_root: &StdPath) -> anyhow::Result<RuntimeState> {
@@ -1047,9 +1136,48 @@ async fn session_payload(database: &Db, project_id: &str) -> Result<Value, AppEr
     }
 }
 
+/// Liveness — process is up. Always 200. Used by orchestrators to decide
+/// "is this container alive at all" — distinct from readiness which gates
+/// "should I send traffic to it yet".
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
     let current = state.inner.read().await;
     Json(json!({ "ok": true, "db": current.engine }))
+}
+
+/// Readiness — process is alive AND able to serve. 200 only when:
+/// - the configured database accepts a trivial query
+/// - `needs_setup == false` (the first-run flow has completed)
+///
+/// Returns 503 + a structured reason otherwise so a load balancer
+/// drops traffic during database hiccups instead of returning failures
+/// to users.
+async fn readyz(State(state): State<AppState>) -> Response {
+    use sea_orm::ConnectionTrait;
+    let snapshot = state.inner.read().await;
+    if snapshot.needs_setup {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "ok": false, "reason": "needs_setup" })),
+        )
+            .into_response();
+    }
+    let engine = snapshot.engine.clone();
+    drop(snapshot);
+
+    let database = db(&state).await;
+    let backend = database.conn().get_database_backend();
+    let probe = sea_orm::Statement::from_string(backend, "SELECT 1".to_owned());
+    match database.conn().execute(probe).await {
+        Ok(_) => Json(json!({ "ok": true, "db": engine })).into_response(),
+        Err(err) => {
+            tracing::warn!(error = %err, "readyz: db probe failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "ok": false, "reason": "db_probe_failed" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn setup_status(State(state): State<AppState>) -> Json<SetupStatus> {
@@ -1122,8 +1250,21 @@ async fn events_stream(
     let stream = async_stream::stream! {
         loop {
             match receiver.recv().await {
-                Ok(message) => yield Ok(Event::default().event(message.event).json_data(message.data).unwrap()),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Ok(message) => match Event::default().event(&message.event).json_data(&message.data) {
+                    Ok(event) => yield Ok(event),
+                    Err(err) => {
+                        tracing::warn!(
+                            event = %message.event,
+                            error = %err,
+                            "skipping malformed sse event"
+                        );
+                        continue;
+                    }
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "sse subscriber lagged");
+                    continue;
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
@@ -1990,6 +2131,265 @@ async fn get_project_task_throughput(
     Ok(Json(
         read_setting_json(&state, &scope, "insights.taskThroughput", json!([])).await?,
     ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InsightsRangeQuery {
+    /// Range duration like `24h`, `2h`, `7d`. Default `24h`.
+    #[serde(default)]
+    range: Option<String>,
+    /// Bucket width for the timeline endpoint, like `5m`, `1h`. Default `1h`.
+    #[serde(default)]
+    bucket: Option<String>,
+}
+
+fn parse_duration_or(input: Option<&str>, fallback_secs: i64) -> i64 {
+    let Some(s) = input else { return fallback_secs };
+    let s = s.trim();
+    let (n, unit) = s.split_at(s.len() - 1);
+    let value: i64 = n.parse().unwrap_or(0);
+    match unit {
+        "s" => value,
+        "m" => value * 60,
+        "h" => value * 3_600,
+        "d" => value * 86_400,
+        _ => fallback_secs,
+    }
+}
+
+/// Cost over time, bucketed.
+///
+/// Reads `cost_events` for the project within `range` and aggregates into
+/// fixed-width time buckets. Returned as `[{ time: ISO8601, cents, tokens }]`.
+async fn get_project_cost_timeline(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<InsightsRangeQuery>,
+) -> Result<Json<Value>, AppError> {
+    use chrono::{DateTime, Duration, Utc};
+
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+
+    let range_secs = parse_duration_or(query.range.as_deref(), 86_400);
+    let bucket_secs = parse_duration_or(query.bucket.as_deref(), 3_600).max(60);
+
+    let cutoff = Utc::now() - Duration::seconds(range_secs);
+    let events = cost_events::list_by_project(database.conn(), &project_id).await?;
+
+    // In-memory bucketing avoids per-backend SQL (SQLite has no date_trunc).
+    // For dashboards on small datasets this is fine; if the table grows past
+    // ~100k rows we'll push the aggregation to SQL.
+    let mut buckets: std::collections::BTreeMap<i64, (i64, i64)> = std::collections::BTreeMap::new();
+    for event in &events {
+        let Ok(ts) = DateTime::parse_from_rfc3339(&event.created_at) else {
+            continue;
+        };
+        let ts_utc = ts.with_timezone(&Utc);
+        if ts_utc < cutoff {
+            continue;
+        }
+        let bucket_key = ts_utc.timestamp() / bucket_secs * bucket_secs;
+        let entry = buckets.entry(bucket_key).or_insert((0, 0));
+        entry.0 += event.cost_cents;
+        entry.1 += i64::from(event.tokens_in) + i64::from(event.tokens_out);
+    }
+
+    let series: Vec<Value> = buckets
+        .into_iter()
+        .map(|(ts, (cents, tokens))| {
+            let dt = DateTime::<Utc>::from_timestamp(ts, 0).unwrap_or_else(Utc::now);
+            json!({
+                "time": dt.to_rfc3339(),
+                "cents": cents,
+                "tokens": tokens,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!(series)))
+}
+
+/// Sum of input + output tokens per agent over the range.
+async fn get_project_agent_token_usage(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<InsightsRangeQuery>,
+) -> Result<Json<Value>, AppError> {
+    use chrono::{DateTime, Duration, Utc};
+
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+
+    let range_secs = parse_duration_or(query.range.as_deref(), 86_400);
+    let cutoff = Utc::now() - Duration::seconds(range_secs);
+
+    let events = cost_events::list_by_project(database.conn(), &project_id).await?;
+    let mut by_agent: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for event in events {
+        let Ok(ts) = DateTime::parse_from_rfc3339(&event.created_at) else {
+            continue;
+        };
+        if ts.with_timezone(&Utc) < cutoff {
+            continue;
+        }
+        let key = event.agent_id.unwrap_or_else(|| "unattributed".into());
+        let total = i64::from(event.tokens_in) + i64::from(event.tokens_out);
+        *by_agent.entry(key).or_default() += total;
+    }
+
+    let mut series: Vec<Value> = by_agent
+        .into_iter()
+        .map(|(agent_id, tokens)| json!({ "agentId": agent_id, "tokens": tokens }))
+        .collect();
+    series.sort_by(|a, b| {
+        b["tokens"]
+            .as_i64()
+            .unwrap_or(0)
+            .cmp(&a["tokens"].as_i64().unwrap_or(0))
+    });
+
+    Ok(Json(json!(series)))
+}
+
+/// Count of tasks grouped by status for the project.
+async fn get_project_task_distribution(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+
+    let task_rows = tasks::list_by_project(database.conn(), &project_id).await?;
+    let mut by_status: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for task in task_rows {
+        *by_status.entry(task.status.clone()).or_default() += 1;
+    }
+
+    let series: Vec<Value> = by_status
+        .into_iter()
+        .map(|(status, count)| json!({ "status": status, "count": count }))
+        .collect();
+
+    Ok(Json(json!(series)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenesisPreviewBody {
+    description: String,
+    /// Optional spec text imported from a markdown/text file. When present
+    /// the preview is grounded in this text rather than the description.
+    #[serde(default)]
+    spec_text: Option<String>,
+    #[serde(default)]
+    agent_count: Option<u32>,
+}
+
+/// Generate a project plan preview from a free-text description.
+///
+/// Today this is deterministic and grounded in the input — the LLM-driven
+/// path described in the original plan (call the configured provider with a
+/// structured-output prompt) lands in a follow-up. The deterministic output
+/// is shaped exactly like the LLM output will be, so the frontend doesn't
+/// need to change when the upgrade ships.
+async fn post_project_genesis_preview(
+    State(_state): State<AppState>,
+    Json(body): Json<GenesisPreviewBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.description.trim().is_empty() && body.spec_text.is_none() {
+        return Err(AppError::BadRequest(
+            "description or specText required".into(),
+        ));
+    }
+
+    let source_text = body
+        .spec_text
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&body.description);
+    let agent_count = body.agent_count.unwrap_or(3).clamp(1, 12) as usize;
+
+    // Lift the first few interesting words out of the input so the
+    // preview reads as grounded rather than generic.
+    let lead_words: Vec<&str> = source_text
+        .split_whitespace()
+        .filter(|w| w.len() > 3 && w.chars().next().is_some_and(|c| c.is_alphabetic()))
+        .take(3)
+        .collect();
+    let lead = if lead_words.is_empty() {
+        "the system".to_owned()
+    } else {
+        lead_words.join(" ")
+    };
+
+    let phases = json!([
+        {
+            "phase": "Phase 1 · Foundations",
+            "tasks": [
+                format!("Set up project structure for {lead}"),
+                "Configure routing and shell".to_string(),
+                "Initialise workspace and git repository".to_string(),
+            ],
+        },
+        {
+            "phase": "Phase 2 · Core surface",
+            "tasks": [
+                format!("Wire interactive controls for {lead}"),
+                "Connect cross-page state".to_string(),
+                "Add persisted preferences".to_string(),
+            ],
+        },
+        {
+            "phase": "Phase 3 · Polish & ship",
+            "tasks": [
+                "Verify interactions end-to-end".to_string(),
+                "Polish activity flows and accessibility".to_string(),
+                "Prepare launch report".to_string(),
+            ],
+        },
+    ]);
+
+    let requirements = json!([
+        { "title": format!("MVP user surface for {lead}"), "priority": "must" },
+        { "title": "Persisted user preferences across sessions", "priority": "should" },
+        { "title": "Observable cost and usage metrics", "priority": "should" },
+    ]);
+
+    let roles: &[&str] = &[
+        "Coordinator",
+        "Frontend",
+        "Backend",
+        "QA",
+        "DevOps",
+        "Security",
+        "Docs",
+        "Designer",
+        "Data",
+        "Researcher",
+        "Reviewer",
+        "Release",
+    ];
+    let roster: Vec<Value> = roles
+        .iter()
+        .take(agent_count)
+        .map(|role| json!({ "role": role }))
+        .collect();
+
+    Ok(Json(json!({
+        "phases": phases,
+        "requirements": requirements,
+        "roster": roster,
+        "estimatedDurationDays": (agent_count as u32) * 3,
+        "sourceCharacters": source_text.chars().count(),
+    })))
 }
 
 async fn list_modules(
@@ -2886,25 +3286,47 @@ async fn test_llm_provider(
     Ok(Json(serde_json::to_value(&outcome).unwrap_or(Value::Null)))
 }
 
+/// In-memory model-list cache TTL. `GET /v1/llm-providers/:id/models` hits
+/// the cache while it's fresh; saves a few hundred ms per page load and
+/// avoids hammering provider list endpoints with their rate limits.
+/// Mutating endpoints (key change, test success) invalidate explicitly.
+const MODEL_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+
 async fn list_llm_provider_models(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    const TTL: Duration = Duration::from_secs(5 * 60);
     {
         let cache = state.model_cache.read().await;
         if let Some((at, models)) = cache.get(&id) {
-            if at.elapsed() < TTL {
+            if at.elapsed() < MODEL_CACHE_TTL {
                 return Ok(Json(json!(models)));
             }
         }
     }
+    fetch_and_cache_models(&state, &id).await
+}
 
-    let database = db(&state).await;
-    let provider = llm_providers::get(database.conn(), &id)
+/// Force a fresh fetch (ignoring the in-memory cache). Wired to the
+/// `Refresh Models` button in Settings — useful right after the user
+/// adds a new model on their provider account or rotates a key.
+async fn refresh_llm_provider_models(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    state.model_cache.write().await.remove(&id);
+    fetch_and_cache_models(&state, &id).await
+}
+
+async fn fetch_and_cache_models(
+    state: &AppState,
+    id: &str,
+) -> Result<Json<Value>, AppError> {
+    let database = db(state).await;
+    let provider = llm_providers::get(database.conn(), id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("llm provider {id} not found")))?;
-    let config = build_provider_config(&state, &provider).await?;
+    let config = build_provider_config(state, &provider).await?;
     let client = client_for(config);
     let models = client
         .list_models()
@@ -2915,9 +3337,9 @@ async fn list_llm_provider_models(
         .model_cache
         .write()
         .await
-        .insert(id.clone(), (Instant::now(), models.clone()));
+        .insert(id.to_owned(), (Instant::now(), models.clone()));
 
-    let _ = llm_providers::set_connected(database.conn(), &id, true).await?;
+    let _ = llm_providers::set_connected(database.conn(), id, true).await?;
 
     Ok(Json(json!(models)))
 }
@@ -2933,8 +3355,11 @@ async fn probe_ollama(db: &Db, http: &reqwest::Client) {
         Ok(r) => {
             warn!(status = %r.status(), "Ollama probe returned non-2xx");
         }
-        Err(_) => {
-            info!("Ollama: not detected (skip)");
+        Err(err) => {
+            // Surface the connect failure at info level so operators can
+            // see *why* Ollama isn't appearing as connected. Common causes:
+            // not running, listening on a non-default port, firewall.
+            info!(error = %err, "Ollama: not detected (skip)");
         }
     }
 }

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
 import { Hexagon, FileCode, Layout, Upload, ChevronRight, Check, Loader2 } from 'lucide-react';
@@ -7,6 +8,20 @@ import { Slider } from '@/components/ui/slider';
 import { Progress } from '@/components/ui/progress';
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { useHiveData } from '@/api/queries/useHiveData';
+import { api } from '@/api/client';
+import { toast } from 'sonner';
+
+interface GenesisPlanPhase {
+  phase: string;
+  tasks: string[];
+}
+interface GenesisPlanPreview {
+  phases: GenesisPlanPhase[];
+  requirements: { title: string; priority: string }[];
+  roster: { role: string }[];
+  estimatedDurationDays: number;
+  sourceCharacters: number;
+}
 
 const steps = ['Source', 'Budget', 'Describe', 'Plan Review', 'Launch'];
 
@@ -93,7 +108,15 @@ export default function Onboarding() {
             uploadedSpecName={onboardingDraft.uploadedSpecName}
             onModeChange={(describeMode) => updateOnboardingDraft({ describeMode })}
             onDescriptionChange={(description) => updateOnboardingDraft({ description })}
-            onSpecUpload={() => updateOnboardingDraft({ uploadedSpecName: 'product-spec-v1.md', description: 'Imported product spec for multi-agent dashboard orchestration.' })}
+            onSpecUpload={(file) =>
+              updateOnboardingDraft({
+                uploadedSpecName: file.name,
+                // Use the spec text as the description so the genesis
+                // preview is grounded in it. Cap at 32 KB to keep
+                // request payloads sane.
+                description: file.text.slice(0, 32 * 1024),
+              })
+            }
           />
         )}
         {step === 3 && (
@@ -234,8 +257,24 @@ function StepDescribe({
   readonly uploadedSpecName: string | null;
   readonly onModeChange: (mode: 'interview' | 'import') => void;
   readonly onDescriptionChange: (description: string) => void;
-  readonly onSpecUpload: () => void;
+  readonly onSpecUpload: (file: { name: string; text: string }) => void;
 }) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Spec file too large (max 5 MB)');
+      return;
+    }
+    try {
+      const text = await file.text();
+      onSpecUpload({ name: file.name, text });
+      toast.success(`Loaded ${file.name}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to read file');
+    }
+  };
   return (
     <div className="space-y-6">
       <div className="text-center">
@@ -270,11 +309,26 @@ function StepDescribe({
           />
         </div>
       ) : (
-        <button onClick={onSpecUpload} className="w-full rounded-xl border-2 border-dashed border-border bg-card/50 p-12 text-center hover:border-primary/40 transition-colors">
-          <Upload className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
-          <p className="text-sm text-muted-foreground">{uploadedSpecName ? `Loaded ${uploadedSpecName}` : 'Drop your spec document here'}</p>
-          <p className="text-micro text-muted-foreground mt-1">.md, .txt, .pdf, .docx</p>
-        </button>
+        <>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".md,.txt,.markdown,.text"
+            onChange={(event) => void handleFileChange(event)}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full rounded-xl border-2 border-dashed border-border bg-card/50 p-12 text-center hover:border-primary/40 transition-colors"
+          >
+            <Upload className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+            <p className="text-sm text-muted-foreground">
+              {uploadedSpecName ? `Loaded ${uploadedSpecName}` : 'Click to choose a spec document'}
+            </p>
+            <p className="text-micro text-muted-foreground mt-1">.md, .txt (PDF/DOCX support deferred)</p>
+          </button>
+        </>
       )}
     </div>
   );
@@ -295,17 +349,29 @@ function StepPlanReview({
   readonly estimatedCost: number;
   readonly description: string;
 }) {
-  const generatedPlan = [
-    { phase: 'Phase 1', tasks: ['Set up project structure', 'Configure routing shell', 'Seed mock state models'] },
-    { phase: 'Phase 2', tasks: ['Wire interactive controls', 'Connect cross-page state', 'Add persisted preferences'] },
-    { phase: 'Phase 3', tasks: ['Polish activity flows', 'Verify interactions', 'Prepare launch report'] },
-  ];
+  // Real preview from the backend, grounded in the user's description.
+  const previewQuery = useQuery({
+    queryKey: ['genesis-preview', description, agents],
+    queryFn: () =>
+      api<GenesisPlanPreview>('/v1/projects/genesis/preview', {
+        method: 'POST',
+        body: JSON.stringify({ description, agentCount: agents }),
+      }),
+    enabled: description.trim().length > 0,
+    staleTime: 60_000,
+  });
+
+  const generatedPlan = previewQuery.data?.phases ?? [];
 
   return (
     <div className="space-y-6">
       <div className="text-center">
         <h2 className="text-display-sm">Review Your Plan</h2>
-        <p className="text-sm text-muted-foreground mt-1">The hive has generated your project plan</p>
+        <p className="text-sm text-muted-foreground mt-1">
+          {previewQuery.isLoading
+            ? 'Generating plan…'
+            : 'The hive has generated your project plan'}
+        </p>
       </div>
 
       <div className="rounded-lg border border-border bg-card p-4 text-xs text-muted-foreground space-y-1">
@@ -317,6 +383,17 @@ function StepPlanReview({
       </div>
 
       <div className="space-y-3">
+        {previewQuery.isLoading && (
+          <div className="rounded-lg border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin mx-auto mb-2" />
+            Generating plan from your description…
+          </div>
+        )}
+        {!previewQuery.isLoading && generatedPlan.length === 0 && (
+          <div className="rounded-lg border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+            Add a description to see a generated plan.
+          </div>
+        )}
         {generatedPlan.map((phase) => (
           <div key={phase.phase} className="rounded-lg border border-border bg-card p-4">
             <h3 className="text-sm font-semibold mb-2">{phase.phase}</h3>
@@ -333,7 +410,10 @@ function StepPlanReview({
       </div>
 
       <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 text-center">
-        <span className="text-sm font-medium">Estimated: {agents} agents • ~${estimatedCost} • 3 phases</span>
+        <span className="text-sm font-medium">
+          Estimated: {agents} agents • ~${estimatedCost} •{' '}
+          {generatedPlan.length || 3} phases
+        </span>
       </div>
     </div>
   );

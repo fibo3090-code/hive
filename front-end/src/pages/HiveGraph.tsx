@@ -15,7 +15,7 @@ import { useWorkspace } from '@/context/WorkspaceContext';
 import { AgentSpawnModal } from '@/components/modals/AgentSpawnModal';
 import { toast } from 'sonner';
 
-const lockedAgents = new Set(['be-001', 'fe-001']);
+const lockedAgents = new Set<string>();
 const nodeTypes = { agentNode: AgentNode };
 
 type AgentNodeData = {
@@ -401,7 +401,7 @@ export default function HiveGraph() {
         {showLocks && (
           <div className="absolute left-4 bottom-4 rounded-lg border border-info/30 bg-card/95 p-3 text-xs shadow-lg">
             <div className="font-semibold text-info mb-1">Lock Overlay</div>
-            <div className="text-muted-foreground">Frontend Architect and Backend Engineer currently hold file locks.</div>
+            <div className="text-muted-foreground">No agent file locks held.</div>
           </div>
         )}
 

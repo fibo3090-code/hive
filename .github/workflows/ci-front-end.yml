@@ -97,3 +97,32 @@ jobs:
 
       - name: Test
         run: bun run test
+
+  # Frontend dependency CVE audit. `bun audit` first; falls back to
+  # `npm audit` if Bun's audit subcommand isn't available on the
+  # selected version. `--audit-level=high` keeps Medium/Low advisories
+  # out of the failure path so the workflow tracks blocking issues
+  # only.
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: front-end
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Audit
+        run: |
+          if bun audit --help >/dev/null 2>&1; then
+            bun audit --audit-level=high
+          else
+            npm install --no-audit --no-fund --silent
+            npm audit --audit-level=high --omit=dev
+          fi

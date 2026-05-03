@@ -238,27 +238,61 @@ const defaultState: WorkspaceState = {
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
+/**
+ * Schema version for the workspace blob in localStorage. Bump when the
+ * shape of `WorkspaceState` changes incompatibly so old blobs get
+ * dropped instead of merged into the new shape (which would crash on
+ * the first read of a renamed/typed field). UI prefs are cheap to
+ * lose; correctness is not.
+ */
+const STORAGE_VERSION = 1;
+
 function readState(): WorkspaceState {
   if (typeof globalThis.window === 'undefined') {
     return defaultState;
   }
 
+  let raw: string | null;
   try {
-    const raw = globalThis.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return defaultState;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<WorkspaceState>;
-    return {
-      ...defaultState,
-      ...parsed,
-      onboardingDraft: { ...defaultOnboardingDraft, ...parsed.onboardingDraft },
-    };
+    raw = globalThis.localStorage.getItem(STORAGE_KEY);
   } catch (error) {
-    console.error('Failed to read workspace state', error);
+    // Storage access can throw in private mode / sandboxed iframes.
+    console.warn('[workspace] localStorage unavailable', error);
     return defaultState;
   }
+  if (!raw) {
+    return defaultState;
+  }
+
+  let parsed: Partial<WorkspaceState> & { __v?: number };
+  try {
+    parsed = JSON.parse(raw) as Partial<WorkspaceState> & { __v?: number };
+  } catch (error) {
+    console.warn('[workspace] persisted blob is not JSON; resetting', error);
+    try {
+      globalThis.localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+    return defaultState;
+  }
+
+  if (parsed.__v !== STORAGE_VERSION) {
+    // Schema mismatch — drop the blob rather than merge it. Better to
+    // lose UI prefs than render a broken page.
+    try {
+      globalThis.localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+    return defaultState;
+  }
+
+  return {
+    ...defaultState,
+    ...parsed,
+    onboardingDraft: { ...defaultOnboardingDraft, ...parsed.onboardingDraft },
+  };
 }
 
 export function WorkspaceProvider({ children }: { readonly children: React.ReactNode }) {
@@ -274,7 +308,10 @@ export function WorkspaceProvider({ children }: { readonly children: React.React
     }
 
     try {
-      globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      globalThis.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ ...state, __v: STORAGE_VERSION }),
+      );
     } catch (error) {
       console.error('Failed to save workspace state', error);
     }

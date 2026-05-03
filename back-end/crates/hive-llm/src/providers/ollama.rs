@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::chat::{ChatRequest, ChatResponse, StreamChunk, StreamEvent, ToolCall};
+use crate::model_metadata::{context_window_for, supports_tools};
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
 pub struct OllamaProvider {
@@ -44,7 +45,7 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
     Ok(parsed
         .models
         .into_iter()
-        .map(|e| {
+        .filter_map(|e| {
             let suffix = e.details.as_ref().and_then(|d| {
                 match (d.family.as_deref(), d.parameter_size.as_deref()) {
                     (Some(fam), Some(size)) => Some(format!(" ({fam} · {size})")),
@@ -57,19 +58,11 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
                 Some(s) => format!("{}{s}", e.name),
                 None => e.name.clone(),
             };
-            let name_lower = e.name.to_ascii_lowercase();
-            let supports_tools = name_lower.contains("llama3.1")
-                || name_lower.contains("llama3.2")
-                || name_lower.contains("qwen2.5")
-                || name_lower.contains("mistral-nemo")
-                || name_lower.contains("command-r");
-            ModelInfo {
-                id: e.name,
-                label,
-                context_window: None,
-                supports_tools,
-                supports_streaming: true,
-            }
+            // Centralised tool-support and context-window lookup. New
+            // families gain support by editing `model_metadata.rs`.
+            let context = Some(context_window_for(ProviderKind::Ollama, &e.name));
+            let tools = supports_tools(ProviderKind::Ollama, &e.name);
+            ModelInfo::build(e.name, label, context, tools, true)
         })
         .collect())
 }

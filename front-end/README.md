@@ -65,7 +65,7 @@ Hive Frontend is a powerful web application designed for managing complex projec
 bun run dev
 ```
 
-The application will be available at `http://localhost:5173`
+The application will be available at `http://localhost:8080` (configured in `vite.config.ts`). The dev server expects the backend on `VITE_API_BASE_URL` (default `http://127.0.0.1:8787`); see `.env.example`.
 
 ### Build for Production
 

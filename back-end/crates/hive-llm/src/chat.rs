@@ -140,17 +140,52 @@ pub struct StreamChunk {
     pub delta: String,
 }
 
-/// Events emitted by a provider's streaming chat completion.
-#[derive(Clone, Debug)]
+/// Provider-neutral streaming events.
+///
+/// Every provider lowers its native event taxonomy to this enum so the
+/// runtime has one switch to write. Variants:
+///
+/// - `Start` — first event of the turn, carries `input_tokens` when the
+///   provider supplies them (Anthropic's `message_start`). Other providers
+///   that surface usage only at the end omit `Start` entirely.
+/// - `Delta(StreamChunk)` — incremental assistant text. Kept as `Delta`
+///   for source-stability with the previous taxonomy.
+/// - `ToolCallStart` / `ToolCallDelta` / `ToolCallEnd` — boundaries for
+///   tool-use blocks within the stream. Today the runtime materialises
+///   tool calls from the non-streaming `chat()` round-trip; these
+///   variants exist so future code can stream them incrementally without
+///   another taxonomy change.
+/// - `Complete` — terminal event with cumulative usage and stop reason.
+///   Always fires exactly once per successful turn.
+#[derive(Clone, Debug, PartialEq)]
 pub enum StreamEvent {
-    /// A piece of assistant text.
+    Start {
+        input_tokens: u32,
+    },
     Delta(StreamChunk),
-    /// Final turn usage — tokens and (optional) stop reason.
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        id: String,
+        args_chunk: String,
+    },
+    ToolCallEnd {
+        id: String,
+    },
     Complete {
         tokens_in: u32,
         tokens_out: u32,
         finish_reason: Option<String>,
     },
+}
+
+// Manual PartialEq impl on StreamChunk so StreamEvent can derive it.
+impl PartialEq for StreamChunk {
+    fn eq(&self, other: &Self) -> bool {
+        self.delta == other.delta
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -71,7 +71,7 @@ Hive Backend is a production-ready REST API powered by Rust, designed to handle 
    
    [server]
    host = "127.0.0.1"
-   port = 3000
+   port = 8787
    ```
 
 ### Database Setup

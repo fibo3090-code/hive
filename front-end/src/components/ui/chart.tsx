@@ -66,17 +66,25 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
     return null;
   }
 
+  // Belt-and-braces sanitiser. The color values come from the developer's
+  // `chartConfig`, but `dangerouslySetInnerHTML` is the wrong default to
+  // trust — accept only characters legal in CSS color literals so a
+  // malformed value can't break out of the variable assignment.
+  const sanitiseCss = (value: string) => value.replace(/[^A-Za-z0-9 ,.()#%/_-]/g, '');
+  const sanitiseId = (value: string) => value.replace(/[^A-Za-z0-9_-]/g, '');
+  const safeId = sanitiseId(id);
+
   return (
     <style
       dangerouslySetInnerHTML={{
         __html: Object.entries(THEMES)
           .map(
             ([theme, prefix]) => `
-${prefix} [data-chart=${id}] {
+${prefix} [data-chart=${safeId}] {
 ${colorConfig
   .map(([key, itemConfig]) => {
     const color = itemConfig.theme?.[theme as keyof typeof itemConfig.theme] || itemConfig.color;
-    return color ? `  --color-${key}: ${color};` : null;
+    return color ? `  --color-${sanitiseId(key)}: ${sanitiseCss(color)};` : null;
   })
   .join("\n")}
 }

@@ -11,7 +11,9 @@ use hive_db::{
 };
 use hive_llm::{
     chat::{ChatMessage, ChatRequest, ChatRole, StreamEvent, ToolCall, ToolDefinition},
+    model_metadata::context_window_for,
     pricing::cost_cents,
+    token_budget::trim_to_fit,
     LlmProvider, ProviderKind,
 };
 use hive_tools::{ToolContext, ToolRegistry};
@@ -96,8 +98,11 @@ fn parse_tool_invocations(content: &str) -> Option<Vec<ToolInvocation>> {
     for item in items {
         let tool = item.get("tool")?.as_str()?.to_owned();
         let arguments = item.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        // XML-fallback invocations have no native id. Mint a ULID so
+        // parallel calls remain distinguishable in persisted records and
+        // SSE tool_call events.
         out.push(ToolInvocation {
-            id: None,
+            id: Some(format!("call_{}", ulid::Ulid::new())),
             tool,
             arguments,
             raw: item,
@@ -106,33 +111,102 @@ fn parse_tool_invocations(content: &str) -> Option<Vec<ToolInvocation>> {
     Some(out)
 }
 
+/// Outcome of `collect_response` — either the stream finished cleanly,
+/// or the cancel flag flipped mid-stream and we tore down early.
+struct CollectOutcome {
+    accumulated: String,
+    tokens_in: u32,
+    tokens_out: u32,
+    finish_reason: Option<String>,
+    cancelled: bool,
+}
+
 async fn collect_response(
     provider: &Arc<dyn LlmProvider>,
     request: ChatRequest,
-) -> Result<(String, u32, u32, Option<String>), ChatError> {
+    cancel: &Arc<Mutex<bool>>,
+) -> Result<CollectOutcome, ChatError> {
     let mut stream = provider.chat_stream(request).await?;
     let mut accumulated = String::new();
     let mut tokens_in = 0;
     let mut tokens_out = 0;
     let mut finish_reason = None;
+    // Poll the cancel flag every 50ms so a flip during a long stream
+    // tears the request down within ~50ms instead of after the full
+    // response. The interval cost is negligible vs network latency.
+    let mut cancel_poll = tokio::time::interval(std::time::Duration::from_millis(50));
+    cancel_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    while let Some(next) = stream.next().await {
-        match next {
-            Ok(StreamEvent::Delta(chunk)) => accumulated.push_str(&chunk.delta),
-            Ok(StreamEvent::Complete {
-                tokens_in: tin,
-                tokens_out: tout,
-                finish_reason: fin,
-            }) => {
-                tokens_in = tin;
-                tokens_out = tout;
-                finish_reason = fin;
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel_poll.tick() => {
+                if *cancel.lock().await {
+                    // Drop the stream. reqwest cancels the underlying
+                    // request when the response future is dropped, so
+                    // the network is reclaimed promptly.
+                    drop(stream);
+                    return Ok(CollectOutcome {
+                        accumulated,
+                        tokens_in,
+                        tokens_out,
+                        finish_reason,
+                        cancelled: true,
+                    });
+                }
             }
-            Err(err) => return Err(ChatError::Llm(err)),
+            next = stream.next() => {
+                let Some(next) = next else { break };
+                match next {
+                    Ok(StreamEvent::Delta(chunk)) => accumulated.push_str(&chunk.delta),
+                    Ok(StreamEvent::Start { input_tokens: tin }) => {
+                        // Capture early — providers that emit Start (Anthropic)
+                        // give us input tokens before the final Complete arrives.
+                        if tin > tokens_in {
+                            tokens_in = tin;
+                        }
+                    }
+                    Ok(StreamEvent::Complete {
+                        tokens_in: tin,
+                        tokens_out: tout,
+                        finish_reason: fin,
+                    }) => {
+                        // Some providers emit multiple Complete events (OpenAI's
+                        // pre-emit on finish_reason chunk, then usage chunk;
+                        // Gemini's repeated `usageMetadata`). All providers report
+                        // cumulative tokens, so `max` is the safe merge. Preserve
+                        // any previously-seen finish_reason if the new event omits
+                        // one.
+                        if tin > tokens_in {
+                            tokens_in = tin;
+                        }
+                        if tout > tokens_out {
+                            tokens_out = tout;
+                        }
+                        if fin.is_some() {
+                            finish_reason = fin;
+                        }
+                    }
+                    // Tool-call boundary events: today, tool calls are materialised
+                    // from the non-streaming `chat()` round-trip. These variants
+                    // exist for forward compatibility; routing them to SSE
+                    // `tool_call` events is a follow-up.
+                    Ok(StreamEvent::ToolCallStart { .. })
+                    | Ok(StreamEvent::ToolCallDelta { .. })
+                    | Ok(StreamEvent::ToolCallEnd { .. }) => {}
+                    Err(err) => return Err(ChatError::Llm(err)),
+                }
+            }
         }
     }
 
-    Ok((accumulated, tokens_in, tokens_out, finish_reason))
+    Ok(CollectOutcome {
+        accumulated,
+        tokens_in,
+        tokens_out,
+        finish_reason,
+        cancelled: false,
+    })
 }
 
 fn tool_definitions(registry: &ToolRegistry) -> Vec<ToolDefinition> {
@@ -189,10 +263,31 @@ fn matches_schema_type(args: &Value, expected: &str) -> bool {
     }
 }
 
+/// Validate `args` against a JSON Schema-shaped subset.
+///
+/// We don't pull in the full `jsonschema` crate (extra dependency) but we
+/// cover the constraints that matter for tool dispatch: `type`, `required`,
+/// nested `properties`, `enum`, and array `items`. Unsupported keywords are
+/// silently ignored — better to let a permissive schema through than block
+/// a legitimate tool call on a constraint we don't model yet.
 fn validate_against_schema(args: &Value, schema: &Value) -> Result<(), String> {
     if let Some(kind) = schema.get("type").and_then(Value::as_str) {
         if !matches_schema_type(args, kind) {
             return Err(format!("expected {kind} arguments"));
+        }
+    }
+
+    // `enum`: value must be one of the listed candidates (deep equality).
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array) {
+        if !allowed.iter().any(|candidate| candidate == args) {
+            let rendered: Vec<String> = allowed
+                .iter()
+                .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "?".into()))
+                .collect();
+            return Err(format!(
+                "value must be one of [{}]",
+                rendered.join(", ")
+            ));
         }
     }
 
@@ -210,8 +305,17 @@ fn validate_against_schema(args: &Value, schema: &Value) -> Result<(), String> {
     if let (Some(object), Some(properties)) = (args.as_object(), schema.get("properties").and_then(Value::as_object)) {
         for (key, value) in object {
             if let Some(property_schema) = properties.get(key) {
-                validate_against_schema(value, property_schema)?;
+                validate_against_schema(value, property_schema)
+                    .map_err(|e| format!("`{key}`: {e}"))?;
             }
+        }
+    }
+
+    // Array items: every element must satisfy the items schema.
+    if let (Some(array), Some(items_schema)) = (args.as_array(), schema.get("items")) {
+        for (idx, item) in array.iter().enumerate() {
+            validate_against_schema(item, items_schema)
+                .map_err(|e| format!("[{idx}]: {e}"))?;
         }
     }
 
@@ -242,7 +346,7 @@ async fn finalize_cancelled(
     final_answer: &str,
     total_tokens_in: u32,
     total_tokens_out: u32,
-    total_cost: i32,
+    total_cost: i64,
     executed_calls: &[Value],
 ) -> Result<(), ChatError> {
     let _ = chat_messages::set_tool_calls(db.conn(), assistant_message_id, json!(executed_calls)).await?;
@@ -263,8 +367,57 @@ async fn finalize_cancelled(
     Ok(())
 }
 
+/// Hard wall-clock budget for a single assistant turn. When exceeded,
+/// the cancel flag is flipped (so the inner `collect_response` loop
+/// drops the upstream stream), the partial message is persisted with
+/// `status='timeout'`, and a `chat.<thread>.error` event fires.
+///
+/// 180s is generous for chat with tools (one slow `web_fetch` can eat
+/// 30s on its own). Future work: per-agent override via a column on
+/// `agents`.
+const DEFAULT_TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
 /// Load thread history, call the LLM, stream tokens to the bus, persist.
+///
+/// Wraps the inner work in a wall-clock timeout. On timeout we flip the
+/// shared cancel flag so the streaming loop unwinds cleanly via the
+/// existing cancel path, then surface a `timeout` status to the user.
 pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
+    let cancel = params.cancel.clone();
+    let bus = params.bus.clone();
+    let db = params.db.clone();
+    let thread_id = params.thread_id.clone();
+    let assistant_message_id = params.assistant_message_id.clone();
+
+    match tokio::time::timeout(DEFAULT_TURN_TIMEOUT, run_turn_inner(params)).await {
+        Ok(result) => result,
+        Err(_elapsed) => {
+            tracing::warn!(
+                thread_id = %thread_id,
+                message_id = %assistant_message_id,
+                budget_secs = DEFAULT_TURN_TIMEOUT.as_secs(),
+                "chat turn exceeded wall-clock budget"
+            );
+            // Flip cancel so any still-running inner futures drop their
+            // streams promptly on the next 50ms poll tick.
+            *cancel.lock().await = true;
+            let _ = chat_messages::set_status(db.conn(), &assistant_message_id, "timeout").await;
+            bus.emit(
+                format!("chat.{thread_id}.error"),
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "messageId": assistant_message_id,
+                    "error": "turn exceeded wall-clock budget",
+                    "reason": "turn_timeout",
+                    "budgetSecs": DEFAULT_TURN_TIMEOUT.as_secs(),
+                }),
+            );
+            Ok(())
+        }
+    }
+}
+
+async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     let RunTurn {
         db,
         bus,
@@ -329,6 +482,41 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
         });
     }
 
+    // Pre-flight context budgeting. Reserve room for the response and the
+    // tool catalog (if tools are enabled), then trim oldest non-system
+    // messages until we fit. Emit `context_trim` so the UI can show
+    // "older messages omitted to fit context".
+    let context_window = context_window_for(provider_kind, &model);
+    // Reserve 4k tokens for the response, ~10% safety margin on the rest.
+    const RESERVED_OUTPUT: u64 = 4_096;
+    let safety_budget = context_window
+        .saturating_sub(RESERVED_OUTPUT)
+        .saturating_sub(context_window / 10);
+    let projected_tools: Vec<ToolDefinition> = tool_registry
+        .as_ref()
+        .map(tool_definitions)
+        .unwrap_or_default();
+    let trim_outcome = trim_to_fit(&mut messages, &projected_tools, safety_budget);
+    if trim_outcome.dropped > 0 {
+        tracing::info!(
+            thread_id = %thread_id,
+            dropped = trim_outcome.dropped,
+            estimated_tokens = trim_outcome.estimated_tokens_after,
+            context_window,
+            "trimmed oldest history to fit context budget"
+        );
+        bus.emit(
+            format!("chat.{thread_id}.context_trim"),
+            json!({
+                "threadId": thread_id,
+                "messageId": assistant_message_id,
+                "dropped": trim_outcome.dropped,
+                "estimatedTokens": trim_outcome.estimated_tokens_after,
+                "contextWindow": context_window,
+            }),
+        );
+    }
+
     let _ = chat_messages::set_status(db.conn(), &assistant_message_id, "streaming").await?;
     bus.emit(
         format!("chat.{thread_id}.streaming"),
@@ -338,12 +526,27 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     let mut final_answer = String::new();
     let mut total_tokens_in: u32 = 0;
     let mut total_tokens_out: u32 = 0;
-    let mut total_cost = 0;
+    let mut total_cost: i64 = 0;
     let mut finish_reason: Option<String> = None;
     let mut executed_calls = Vec::<Value>::new();
     let mut repeated_calls: HashMap<String, usize> = HashMap::new();
-    const MAX_TOOL_ROUNDS: usize = 8;
-    const MAX_REPEAT_CALLS_PER_SIGNATURE: usize = 2;
+    /// Hard ceiling on the LLM⇄tool round-trip count per assistant turn.
+    ///
+    /// Matches the original plan's "max 30 tool rounds" budget. Most real
+    /// tasks finish well under this; the cap is a safety net against
+    /// pathological loops that the per-fingerprint repeat guard didn't
+    /// catch (e.g. the model permuting args slightly each iteration).
+    const MAX_TOOL_ROUNDS: usize = 30;
+    /// Per-fingerprint repeat ceiling. A `(tool, args)` pair is allowed
+    /// to fire this many times before the loop guard halts the turn.
+    /// Kept tight (≤3) — legitimate retries with identical args after a
+    /// transient error remain rare; loops are common.
+    const MAX_REPEAT_CALLS_PER_SIGNATURE: usize = 3;
+    /// Hard ceiling on total tool-call dispatches per turn, summed across
+    /// all rounds and tools. Bounds runaway parallel-tool storms even when
+    /// each individual call is unique (no fingerprint collision).
+    const MAX_TOTAL_TOOL_CALLS: usize = 60;
+    let mut total_tool_calls: usize = 0;
 
     let can_use_tools = tool_registry.as_ref().is_some_and(|registry| !registry.names().is_empty())
         && tool_context.is_some();
@@ -367,8 +570,8 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
 
         if !can_use_tools {
             let request = ChatRequest::new(model.clone(), messages.clone());
-            let (response, tokens_in, tokens_out, finish) =
-                match collect_response(&provider, request).await {
+            let outcome =
+                match collect_response(&provider, request, &cancel).await {
                     Ok(collected) => collected,
                     Err(ChatError::Llm(err)) => {
                         let detail = err.to_string();
@@ -401,11 +604,30 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                     Err(other) => return Err(other),
                 };
 
-            total_tokens_in += tokens_in;
-            total_tokens_out += tokens_out;
-            total_cost += cost_cents(provider_kind, &model, tokens_in, tokens_out);
-            finish_reason = finish;
-            final_answer = response;
+            total_tokens_in += outcome.tokens_in;
+            total_tokens_out += outcome.tokens_out;
+            total_cost +=
+                cost_cents(provider_kind, &model, outcome.tokens_in, outcome.tokens_out);
+            finish_reason = outcome.finish_reason;
+            final_answer = outcome.accumulated;
+            // If cancellation flipped during streaming, stop here. The
+            // caller path below already emits cancelled / persists state
+            // when it sees the cancel flag set; we just take that path.
+            if outcome.cancelled {
+                finalize_cancelled(
+                    &db,
+                    &bus,
+                    &thread_id,
+                    &assistant_message_id,
+                    &final_answer,
+                    total_tokens_in,
+                    total_tokens_out,
+                    total_cost,
+                    &executed_calls,
+                )
+                .await?;
+                return Ok(());
+            }
             break;
         }
 
@@ -486,11 +708,26 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                 return Ok(());
             }
 
+            // Total-call cap: catches runaway parallel storms even when
+            // each call has a unique fingerprint.
+            total_tool_calls += 1;
+            if total_tool_calls > MAX_TOTAL_TOOL_CALLS {
+                final_answer = format!(
+                    "I stopped after exceeding the per-turn tool-call budget ({MAX_TOTAL_TOOL_CALLS}). Refine the request or adjust the allowed tools."
+                );
+                finish_reason = Some("tool_call_budget_exceeded".into());
+                halted_for_repeat = true;
+                break;
+            }
+
             let fingerprint = tool_fingerprint(&invocation);
             let seen = repeated_calls.entry(fingerprint).or_insert(0);
             *seen += 1;
             if *seen > MAX_REPEAT_CALLS_PER_SIGNATURE {
-                final_answer = "I stopped because the same tool call was being repeated without making progress. Please refine the request or adjust the allowed tools.".into();
+                final_answer = format!(
+                    "I stopped because the same `{}` tool call was repeated {} times without making progress. Refine the request or adjust the allowed tools.",
+                    invocation.tool, seen
+                );
                 finish_reason = Some("tool_loop_guard".into());
                 halted_for_repeat = true;
                 break;
@@ -506,14 +743,34 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                 }),
             );
 
+            // Per-tool wall-clock timeout. The default budget is generous
+            // enough for `web_fetch` of a slow site or a `shell_exec`
+            // build step; runaway tools surface as a structured error so
+            // the model can self-correct on the next round rather than
+            // hanging the whole turn.
+            const PER_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
             let result = match validate_tool_invocation(registry, &invocation) {
-                Ok(()) => match registry
-                    .invoke(&invocation.tool, invocation.arguments.clone(), ctx)
-                    .await
-                {
-                    Ok(value) => value,
-                    Err(err) => err.to_result_json(),
-                },
+                Ok(()) => {
+                    let invoke_fut = registry.invoke(&invocation.tool, invocation.arguments.clone(), ctx);
+                    match tokio::time::timeout(PER_TOOL_TIMEOUT, invoke_fut).await {
+                        Ok(Ok(value)) => value,
+                        Ok(Err(err)) => err.to_result_json(),
+                        Err(_elapsed) => {
+                            tracing::warn!(
+                                tool = %invocation.tool,
+                                budget_secs = PER_TOOL_TIMEOUT.as_secs(),
+                                "tool invocation exceeded per-tool budget"
+                            );
+                            json!({
+                                "ok": false,
+                                "tool": invocation.tool,
+                                "error": "timeout",
+                                "reason": "per_tool_timeout",
+                                "budgetSecs": PER_TOOL_TIMEOUT.as_secs(),
+                            })
+                        }
+                    }
+                }
                 Err(error) => tool_result_json(&invocation.tool, error),
             };
 
@@ -534,13 +791,24 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                 }),
             );
 
+            // Pass plain strings through unwrapped so the model sees
+            // `hello` not `"hello"`. Non-string values get JSON-encoded;
+            // `serde_json::Value` is by construction serialisable so the
+            // result is unwrap-safe (the previous `.unwrap_or_else` →
+            // `Display` fallback produced non-JSON for nested structures
+            // and corrupted the LLM's view of the tool result).
+            let result_text = match &result {
+                Value::String(s) => s.clone(),
+                other => serde_json::to_string(other)
+                    .expect("serde_json::Value always serialises to JSON"),
+            };
             messages.push(ChatMessage::tool_result(
                 invocation
                     .id
                     .clone()
-                    .unwrap_or_else(|| format!("tool_{}", invocation.tool)),
+                    .unwrap_or_else(|| format!("call_{}", ulid::Ulid::new())),
                 invocation.tool.clone(),
-                serde_json::to_string(&result).unwrap_or_else(|_| result.to_string()),
+                result_text,
             ));
         }
 
@@ -620,4 +888,197 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_type_check() {
+        let schema = json!({ "type": "object" });
+        assert!(validate_against_schema(&json!({}), &schema).is_ok());
+        assert!(validate_against_schema(&json!("foo"), &schema).is_err());
+    }
+
+    #[test]
+    fn schema_required_field() {
+        let schema = json!({ "type": "object", "required": ["query"] });
+        assert!(validate_against_schema(&json!({"query": "rust"}), &schema).is_ok());
+        let err = validate_against_schema(&json!({}), &schema).unwrap_err();
+        assert!(err.contains("query"));
+    }
+
+    #[test]
+    fn schema_nested_properties_with_path_prefix() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "required": ["kind"],
+                }
+            }
+        });
+        let err =
+            validate_against_schema(&json!({"filter": {}}), &schema).unwrap_err();
+        assert!(err.contains("filter"), "{err}");
+        assert!(err.contains("kind"), "{err}");
+    }
+
+    #[test]
+    fn schema_enum_constraint() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "mode": { "enum": ["fast", "deep"] }
+            }
+        });
+        assert!(
+            validate_against_schema(&json!({"mode": "fast"}), &schema).is_ok()
+        );
+        assert!(
+            validate_against_schema(&json!({"mode": "balanced"}), &schema).is_err()
+        );
+    }
+
+    #[test]
+    fn schema_array_items() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "tags": { "type": "array", "items": { "type": "string" } }
+            }
+        });
+        assert!(validate_against_schema(
+            &json!({"tags": ["a", "b"]}),
+            &schema,
+        )
+        .is_ok());
+        let err = validate_against_schema(&json!({"tags": [1]}), &schema).unwrap_err();
+        assert!(err.contains("string"));
+    }
+
+    #[test]
+    fn unknown_constraints_do_not_block() {
+        // We don't model `pattern`/`minLength` etc.; they pass through.
+        let schema = json!({
+            "type": "string",
+            "pattern": "^foo$",
+            "minLength": 100
+        });
+        assert!(validate_against_schema(&json!("anything"), &schema).is_ok());
+    }
+
+    // --- tool-invocation parsing & fingerprinting ----------------------
+
+    #[test]
+    fn parse_tool_invocations_handles_single_xml_block() {
+        let raw = "<tool_call>{\"tool\":\"web_search\",\"arguments\":{\"q\":\"rust\"}}</tool_call>";
+        let invocations = parse_tool_invocations(raw).expect("parsed");
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].tool, "web_search");
+        assert_eq!(invocations[0].arguments["q"], "rust");
+        // ULID fallback id always materialises.
+        assert!(invocations[0]
+            .id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("call_")));
+    }
+
+    #[test]
+    fn parse_tool_invocations_handles_array_of_calls() {
+        let raw = "<tool_calls>[\
+            {\"tool\":\"a\",\"arguments\":{}},\
+            {\"tool\":\"b\",\"arguments\":{\"x\":1}}\
+        ]</tool_calls>";
+        let invocations = parse_tool_invocations(raw).expect("parsed");
+        assert_eq!(invocations.len(), 2);
+        assert_eq!(invocations[0].tool, "a");
+        assert_eq!(invocations[1].tool, "b");
+        // Distinct IDs even for adjacent calls.
+        assert_ne!(invocations[0].id, invocations[1].id);
+    }
+
+    #[test]
+    fn parse_tool_invocations_returns_none_when_not_an_xml_block() {
+        assert!(parse_tool_invocations("nothing tool-shaped here").is_none());
+        assert!(parse_tool_invocations("<tool_call>{not json</tool_call>").is_none());
+        // A valid block but missing the `tool` key — partial parse fails.
+        assert!(parse_tool_invocations("<tool_call>{\"arguments\":{}}</tool_call>").is_none());
+    }
+
+    #[test]
+    fn tool_invocations_from_response_prefers_native_tool_calls() {
+        let calls = vec![hive_llm::ToolCall {
+            id: Some("native_id".into()),
+            name: "fs_read".into(),
+            arguments: json!({ "path": "x" }),
+        }];
+        let invocations =
+            tool_invocations_from_response("ignored body text", &calls).expect("parsed");
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].id.as_deref(), Some("native_id"));
+        assert_eq!(invocations[0].tool, "fs_read");
+    }
+
+    #[test]
+    fn tool_invocations_from_response_falls_back_to_xml_when_no_native_calls() {
+        let invocations = tool_invocations_from_response(
+            "<tool_call>{\"tool\":\"web_search\",\"arguments\":{}}</tool_call>",
+            &[],
+        );
+        assert_eq!(invocations.expect("parsed").len(), 1);
+    }
+
+    #[test]
+    fn tool_fingerprint_distinguishes_args_but_not_id() {
+        let a = ToolInvocation {
+            id: Some("aaa".into()),
+            tool: "web_search".into(),
+            arguments: json!({ "q": "rust" }),
+            raw: json!({}),
+        };
+        let b = ToolInvocation {
+            id: Some("bbb".into()),
+            tool: "web_search".into(),
+            arguments: json!({ "q": "rust" }),
+            raw: json!({}),
+        };
+        let c = ToolInvocation {
+            id: Some("ccc".into()),
+            tool: "web_search".into(),
+            arguments: json!({ "q": "go" }),
+            raw: json!({}),
+        };
+        // Same tool + same args → same fingerprint, regardless of id.
+        // The repeat guard relies on this so a model that retries with
+        // identical args is detected.
+        assert_eq!(tool_fingerprint(&a), tool_fingerprint(&b));
+        assert_ne!(tool_fingerprint(&a), tool_fingerprint(&c));
+    }
+
+    #[test]
+    fn matches_schema_type_covers_primitive_kinds() {
+        assert!(matches_schema_type(&json!("hi"), "string"));
+        assert!(!matches_schema_type(&json!(42), "string"));
+        assert!(matches_schema_type(&json!(42), "integer"));
+        assert!(matches_schema_type(&json!(42), "number"));
+        assert!(matches_schema_type(&json!(3.14), "number"));
+        assert!(!matches_schema_type(&json!(3.14), "integer"));
+        assert!(matches_schema_type(&json!(true), "boolean"));
+        assert!(matches_schema_type(&json!([]), "array"));
+        assert!(matches_schema_type(&json!({}), "object"));
+        assert!(matches_schema_type(&json!(null), "null"));
+        // Unknown types are permissive (never block).
+        assert!(matches_schema_type(&json!("hi"), "anything-goes"));
+    }
+
+    #[test]
+    fn tool_result_json_shape_is_stable() {
+        let payload = tool_result_json("web_search", "missing query");
+        assert_eq!(payload["ok"], json!(false));
+        assert_eq!(payload["tool"], json!("web_search"));
+        assert_eq!(payload["error"], json!("missing query"));
+    }
 }

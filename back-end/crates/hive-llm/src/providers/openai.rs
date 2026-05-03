@@ -1,9 +1,12 @@
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::chat::{ChatRequest, ChatResponse, StreamChunk, StreamEvent, ToolCall};
+use crate::model_metadata::{context_window_for, supports_tools};
 use crate::sse::sse_stream;
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
@@ -39,14 +42,15 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
             id.starts_with("gpt-")
                 || id.starts_with("o1")
                 || id.starts_with("o3")
+                || id.starts_with("o4")
                 || id.starts_with("chatgpt")
         })
-        .map(|e| ModelInfo {
-            label: e.id.clone(),
-            id: e.id,
-            context_window: None,
-            supports_tools: true,
-            supports_streaming: true,
+        .filter_map(|e| {
+            let id = e.id;
+            let label = id.clone();
+            let context = Some(context_window_for(ProviderKind::Openai, &id));
+            let tools = supports_tools(ProviderKind::Openai, &id);
+            ModelInfo::build(id, label, context, tools, true)
         })
         .collect())
 }
@@ -142,11 +146,33 @@ fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
             .get("arguments")
             .and_then(Value::as_str)
             .unwrap_or("{}");
+        // Malformed JSON in `arguments` is a model error, not a transport
+        // error — fail soft so the downstream schema validator can return a
+        // structured tool-error to the LLM and let it self-correct on the
+        // next turn. Logging a warn keeps it visible to operators.
+        let parsed_args: Value = match serde_json::from_str(arguments) {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::warn!(
+                    tool = name,
+                    raw = arguments,
+                    error = %err,
+                    "openai: malformed tool arguments — passing empty object so the tool layer can return a structured error"
+                );
+                Value::Object(serde_json::Map::new())
+            }
+        };
         tool_calls.push(ToolCall {
-            id: item.get("id").and_then(Value::as_str).map(ToOwned::to_owned),
+            // Native id when OpenAI supplies one; ULID fallback so parallel
+            // tool calls remain distinguishable in our persisted records.
+            id: Some(
+                item.get("id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("call_{}", ulid::Ulid::new())),
+            ),
             name: name.to_owned(),
-            arguments: serde_json::from_str(arguments)
-                .map_err(|e| LlmError::Parse(format!("openai tool args: {e}")))?,
+            arguments: parsed_args,
         });
     }
 
@@ -203,10 +229,20 @@ impl LlmProvider for OpenAiProvider {
 
         let byte_stream = response.bytes_stream();
         let sse = sse_stream(byte_stream);
-        let mapped = sse.filter_map(|item| async move {
-            match item {
-                Err(e) => Some(Err(LlmError::Http(e))),
-                Ok(msg) => parse_event(&msg).map(Ok),
+        // OpenAI's stream emits `finish_reason` on one chunk and `usage` on
+        // a separate chunk (when `stream_options.include_usage: true` is
+        // set, which we always do). Without state, the runtime would see
+        // two Complete events and only the last one's tokens would survive.
+        // Track the pending finish_reason so we emit a single, merged
+        // Complete on whichever event fires last.
+        let state = Arc::new(Mutex::new(StreamState::default()));
+        let mapped = sse.filter_map(move |item| {
+            let state = state.clone();
+            async move {
+                match item {
+                    Err(e) => Some(Err(LlmError::Http(e))),
+                    Ok(msg) => parse_event(&msg, &state).map(Ok),
+                }
             }
         });
         Ok(Box::pin(mapped))
@@ -269,12 +305,27 @@ impl LlmProvider for OpenAiProvider {
     }
 }
 
-fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
+/// Per-stream parser state. Caches the `finish_reason` so we can include
+/// it in the (later) usage-chunk Complete event without losing it.
+#[derive(Default)]
+struct StreamState {
+    finish_reason: Option<String>,
+}
+
+fn parse_event(msg: &crate::sse::SseMessage, state: &Mutex<StreamState>) -> Option<StreamEvent> {
     if msg.data.is_empty() || msg.data == "[DONE]" {
         return None;
     }
-    let value: Value = serde_json::from_str(&msg.data).ok()?;
+    let value: Value = match serde_json::from_str(&msg.data) {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::trace!(error = %err, raw = %msg.data, "openai: malformed sse frame");
+            return None;
+        }
+    };
 
+    // Usage chunk arrives last (when `stream_options.include_usage` is on).
+    // Emit Complete with both the real tokens AND the cached finish_reason.
     if let Some(usage) = value.get("usage") {
         if usage.is_object() {
             let tokens_in = usage
@@ -285,10 +336,15 @@ fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
                 .get("completion_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as u32;
+            let finish = state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .finish_reason
+                .clone();
             return Some(StreamEvent::Complete {
                 tokens_in,
                 tokens_out,
-                finish_reason: None,
+                finish_reason: finish,
             });
         }
     }
@@ -309,11 +365,18 @@ fn parse_event(msg: &crate::sse::SseMessage) -> Option<StreamEvent> {
             delta: delta.to_owned(),
         }));
     }
-    if finish.is_some() {
+
+    if let Some(reason) = finish {
+        // Cache and pre-emit a Complete with tokens=0; if usage arrives
+        // after this (the common path), it overrides with real tokens
+        // and copies the cached finish_reason. If usage never arrives
+        // (older API or `include_usage:false`), the runtime keeps this
+        // event's finish_reason and only loses the token counts.
+        state.lock().unwrap_or_else(|e| e.into_inner()).finish_reason = Some(reason.clone());
         return Some(StreamEvent::Complete {
             tokens_in: 0,
             tokens_out: 0,
-            finish_reason: finish,
+            finish_reason: Some(reason),
         });
     }
     None
@@ -382,5 +445,109 @@ mod tests {
         assert_eq!(calls[0].id.as_deref(), Some("call_1"));
         assert_eq!(calls[0].name, "web_search");
         assert_eq!(calls[0].arguments["query"], "rust");
+    }
+
+    #[test]
+    fn malformed_tool_arguments_become_empty_object_not_parse_error() {
+        // The model returned non-JSON in the arguments string. The provider
+        // layer must not blow up the whole turn — the schema validator
+        // downstream returns a structured error instead.
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call_x",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": "{not json"
+                        }
+                    }]
+                }
+            }]
+        });
+        let calls = parse_tool_calls(&value).expect("provider must not fail the turn");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].arguments, json!({}));
+    }
+
+    fn frame(data: &str) -> crate::sse::SseMessage {
+        crate::sse::SseMessage {
+            event: None,
+            data: data.to_owned(),
+        }
+    }
+
+    #[test]
+    fn finish_reason_chunk_caches_reason_for_usage_complete() {
+        let state = Mutex::new(StreamState::default());
+
+        // First, a finish_reason chunk arrives with no tokens.
+        let finish = frame(
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+        );
+        match parse_event(&finish, &state).expect("Complete pre-emit") {
+            StreamEvent::Complete {
+                tokens_in,
+                tokens_out,
+                finish_reason,
+            } => {
+                assert_eq!(tokens_in, 0);
+                assert_eq!(tokens_out, 0);
+                assert_eq!(finish_reason.as_deref(), Some("stop"));
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+
+        // Then the usage chunk arrives — should re-emit Complete with the
+        // cached finish_reason and the real token counts. The runtime then
+        // takes the merged max-tokens with stable finish_reason.
+        let usage = frame(
+            r#"{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":34,"total_tokens":46}}"#,
+        );
+        match parse_event(&usage, &state).expect("Complete from usage") {
+            StreamEvent::Complete {
+                tokens_in,
+                tokens_out,
+                finish_reason,
+            } => {
+                assert_eq!(tokens_in, 12);
+                assert_eq!(tokens_out, 34);
+                assert_eq!(finish_reason.as_deref(), Some("stop"));
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn done_marker_is_skipped() {
+        let state = Mutex::new(StreamState::default());
+        assert!(parse_event(&frame("[DONE]"), &state).is_none());
+    }
+
+    #[test]
+    fn malformed_frames_do_not_panic() {
+        let state = Mutex::new(StreamState::default());
+        assert!(parse_event(&frame("{not"), &state).is_none());
+    }
+
+    #[test]
+    fn missing_id_gets_ulid_fallback() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "web_search",
+                            "arguments": "{}"
+                        }
+                    }]
+                }
+            }]
+        });
+        let calls = parse_tool_calls(&value).unwrap();
+        assert!(calls[0]
+            .id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("call_")));
     }
 }

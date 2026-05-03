@@ -985,6 +985,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "ulid",
 ]
 
 [[package]]
@@ -1052,6 +1053,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "ulid",
 ]
 
 [[package]]
@@ -1072,6 +1074,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "ulid",
 ]
 
 [[package]]

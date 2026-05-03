@@ -29,16 +29,30 @@ impl LocalFsSandbox {
         Ok(Self { root })
     }
 
-    /// Join a user-provided path to the root and verify it stays inside.
-    /// Supports non-existent paths (for `write`) by checking ancestors.
-    fn resolve(&self, rel: &str) -> Result<PathBuf, SandboxError> {
-        // Reject absolute paths and any component that walks up past root.
+    /// Join a user-provided path to the root and verify it stays inside,
+    /// even after symlinks are followed.
+    ///
+    /// Two layers of defence:
+    ///
+    /// 1. String-level: reject absolute paths and any `..` chain that
+    ///    walks up past root.
+    /// 2. FS-level: canonicalise the final path (or its existing
+    ///    parent for not-yet-created files) and re-check that the
+    ///    real path still starts with the canonical root. Catches
+    ///    symlinks placed inside the workspace that point outside —
+    ///    string-level normalisation alone wouldn't notice.
+    ///
+    /// `target_must_exist=false` is for the `write` path, where the
+    /// leaf doesn't exist yet but the parent must still resolve into
+    /// the workspace.
+    fn resolve(&self, rel: &str, target_must_exist: bool) -> Result<PathBuf, SandboxError> {
         let p = Path::new(rel);
         if p.is_absolute() {
             return Err(SandboxError::PathEscape(p.to_path_buf()));
         }
         let joined = self.root.join(p);
-        // Resolve to a fully-qualified path without requiring existence.
+
+        // Layer 1: string-level normalisation.
         let mut stack: Vec<std::path::Component<'_>> = Vec::new();
         for component in joined.components() {
             match component {
@@ -55,7 +69,38 @@ impl LocalFsSandbox {
         if !resolved.starts_with(&self.root) {
             return Err(SandboxError::PathEscape(resolved));
         }
+
+        // Layer 2: FS canonicalisation. Only meaningful when the leaf
+        // exists — `canonicalize` follows every symlink in the path and
+        // resolves to the real underlying location, so we can check that
+        // the real path still starts with the canonical root. For
+        // not-yet-existing paths (the `write` case) the string-level
+        // check above is the safety net; the additional `refuse_symlink`
+        // call from `write()` blocks the planted-symlink attack.
+        if resolved.exists() {
+            let real = std::fs::canonicalize(&resolved)?;
+            if !real.starts_with(&self.root) {
+                return Err(SandboxError::PathEscape(real));
+            }
+            return Ok(real);
+        }
+        if target_must_exist {
+            return Err(SandboxError::NotFound(resolved));
+        }
         Ok(resolved)
+    }
+
+    /// Refuse if `path` is itself a symlink. Used by `write` so an
+    /// attacker can't plant a symlink and have a later operation
+    /// follow it. (Reads of existing symlinks resolve via `resolve`'s
+    /// canonicalisation, which already rejects out-of-root targets.)
+    fn refuse_symlink(&self, path: &Path) -> Result<(), SandboxError> {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                Err(SandboxError::PathEscape(path.to_path_buf()))
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -70,7 +115,7 @@ impl Sandbox for LocalFsSandbox {
     }
 
     async fn read(&self, path: &str) -> Result<Vec<u8>, SandboxError> {
-        let resolved = self.resolve(path)?;
+        let resolved = self.resolve(path, false)?;
         match tokio::fs::read(&resolved).await {
             Ok(bytes) => Ok(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -81,7 +126,10 @@ impl Sandbox for LocalFsSandbox {
     }
 
     async fn write(&self, path: &str, contents: &[u8]) -> Result<(), SandboxError> {
-        let resolved = self.resolve(path)?;
+        let resolved = self.resolve(path, false)?;
+        // Refuse if the target itself is a symlink — an attacker who
+        // could plant one could then redirect a later read/write.
+        self.refuse_symlink(&resolved)?;
         if let Some(parent) = resolved.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -90,7 +138,7 @@ impl Sandbox for LocalFsSandbox {
     }
 
     async fn list(&self, path: &str) -> Result<Vec<Entry>, SandboxError> {
-        let resolved = self.resolve(path)?;
+        let resolved = self.resolve(path, false)?;
         let mut entries = match tokio::fs::read_dir(&resolved).await {
             Ok(rd) => rd,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -133,6 +181,29 @@ impl Sandbox for LocalFsSandbox {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
+        // Scrub the environment. The agent process inherits the operator's
+        // env which holds API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+        // GitHub PATs, AWS creds…) — none of which a shell tool should
+        // see. Clear everything, then re-add a minimal allowlist so
+        // common tooling still works.
+        command.env_clear();
+        for var in [
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "TZ",
+            "TERM",
+            "USER",
+            "LOGNAME",
+        ] {
+            if let Ok(value) = std::env::var(var) {
+                command.env(var, value);
+            }
+        }
+        // HOME points at the workspace root — keeps tools that care
+        // (npm, cargo, git config) from writing into the operator's home.
+        command.env("HOME", &self.root);
+
         let child = command
             .spawn()
             .map_err(|e| SandboxError::Exec(format!("spawn {cmd}: {e}")))?;
@@ -148,6 +219,15 @@ impl Sandbox for LocalFsSandbox {
             Ok(Err(e)) => Err(SandboxError::Exec(e.to_string())),
             Err(_) => Err(SandboxError::Timeout(timeout)),
         }
+    }
+}
+
+#[cfg(test)]
+impl LocalFsSandbox {
+    /// Test-only thin wrapper so tests can call `resolve` without
+    /// passing the (irrelevant for path-escape checks) existence flag.
+    fn resolve_test_only(&self, rel: &str) -> Result<PathBuf, SandboxError> {
+        self.resolve(rel, false)
     }
 }
 
@@ -181,7 +261,7 @@ mod tests {
     fn resolve_rejects_absolute_paths() {
         let sb = LocalFsSandbox::new(tmp()).unwrap();
         assert!(matches!(
-            sb.resolve("/etc/passwd"),
+            sb.resolve_test_only("/etc/passwd"),
             Err(SandboxError::PathEscape(_))
         ));
     }
@@ -190,7 +270,7 @@ mod tests {
     fn resolve_rejects_parent_traversal() {
         let sb = LocalFsSandbox::new(tmp()).unwrap();
         assert!(matches!(
-            sb.resolve("../../../etc/passwd"),
+            sb.resolve_test_only("../../../etc/passwd"),
             Err(SandboxError::PathEscape(_))
         ));
     }
@@ -198,7 +278,7 @@ mod tests {
     #[test]
     fn resolve_accepts_normal_paths() {
         let sb = LocalFsSandbox::new(tmp()).unwrap();
-        let r = sb.resolve("src/main.rs").unwrap();
+        let r = sb.resolve_test_only("src/main.rs").unwrap();
         assert!(r.starts_with(sb.root()));
         assert!(r.ends_with("src/main.rs"));
     }
@@ -206,7 +286,7 @@ mod tests {
     #[test]
     fn resolve_normalises_dot_segments() {
         let sb = LocalFsSandbox::new(tmp()).unwrap();
-        let r = sb.resolve("./a/./b/../c").unwrap();
+        let r = sb.resolve_test_only("./a/./b/../c").unwrap();
         assert!(r.ends_with("a/c"));
     }
 
@@ -256,5 +336,78 @@ mod tests {
         };
         let out = sb.exec(&command, &args, Duration::from_millis(200)).await;
         assert!(matches!(out, Err(SandboxError::Timeout(_))));
+    }
+
+    // --- symlink-escape battery (Unix only; Windows has its own
+    // alternate-stream / NTFS-junction story that needs separate tests).
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_through_symlink_pointing_outside_root_rejected() {
+        use std::os::unix::fs::symlink;
+        let outside = std::env::temp_dir().join(format!("hive-outside-{}", rand_suffix()));
+        std::fs::write(&outside, b"secret").unwrap();
+        let root = tmp();
+        let sb = LocalFsSandbox::new(&root).unwrap();
+        // Plant a symlink inside the workspace pointing to `outside`.
+        symlink(&outside, root.join("escape")).unwrap();
+        let result = sb.read("escape").await;
+        let _ = std::fs::remove_file(&outside);
+        assert!(
+            matches!(result, Err(SandboxError::PathEscape(_))),
+            "expected PathEscape, got {result:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_target_that_is_a_symlink_rejected() {
+        use std::os::unix::fs::symlink;
+        let outside = std::env::temp_dir().join(format!("hive-target-{}", rand_suffix()));
+        std::fs::write(&outside, b"original").unwrap();
+        let root = tmp();
+        let sb = LocalFsSandbox::new(&root).unwrap();
+        symlink(&outside, root.join("victim")).unwrap();
+        let result = sb.write("victim", b"clobbered").await;
+        let after = std::fs::read(&outside).unwrap_or_default();
+        let _ = std::fs::remove_file(&outside);
+        assert!(
+            matches!(result, Err(SandboxError::PathEscape(_))),
+            "expected PathEscape, got {result:?}"
+        );
+        assert_eq!(after, b"original", "symlink target was clobbered");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_does_not_leak_secret_env_vars() {
+        // The parent process holds an "API key"; the sandbox must
+        // strip it before invoking the child shell.
+        std::env::set_var("HIVE_TEST_FAKE_KEY", "supersecret");
+        let sb = LocalFsSandbox::new(tmp()).unwrap();
+        let (cmd, args) = shell_command("echo $HIVE_TEST_FAKE_KEY");
+        let out = sb
+            .exec(&cmd, &args, Duration::from_secs(5))
+            .await
+            .unwrap();
+        std::env::remove_var("HIVE_TEST_FAKE_KEY");
+        assert!(
+            !out.stdout.contains("supersecret"),
+            "secret leaked into child stdout: {out:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_through_symlink_to_workspace_sibling_allowed() {
+        // A symlink whose target stays inside the workspace is fine —
+        // canonicalisation resolves it but it doesn't leave the root.
+        use std::os::unix::fs::symlink;
+        let root = tmp();
+        let sb = LocalFsSandbox::new(&root).unwrap();
+        sb.write("real.txt", b"ok").await.unwrap();
+        symlink(root.join("real.txt"), root.join("alias")).unwrap();
+        let bytes = sb.read("alias").await.unwrap();
+        assert_eq!(bytes, b"ok");
     }
 }

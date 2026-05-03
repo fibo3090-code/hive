@@ -12,7 +12,8 @@
     "moduleDetection": "force",
     "moduleResolution": "bundler",
     "noEmit": true,
-    "noFallthroughCasesInSwitch": false,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
     "paths": {
       "@/*": [
         "./src/*"
