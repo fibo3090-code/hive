@@ -629,7 +629,20 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             post(cancel_chat_message),
         )
         .route("/v1/projects/:project_id/modules/synthesize", post(start_module_synthesis))
+        .route(
+            "/v1/projects/:project_id/synthesis-jobs",
+            get(list_synthesis_jobs_for_project),
+        )
         .route("/v1/synthesis-jobs/:job_id", get(get_synthesis_job))
+        .route(
+            "/v1/synthesis-jobs/:job_id/publish",
+            post(publish_synthesis_job),
+        )
+        .route(
+            "/v1/synthesis-jobs/:job_id/unpublish",
+            post(unpublish_synthesis_job),
+        )
+        .route("/v1/modules/published", get(list_published_modules))
         .with_state(state)
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http());
@@ -2573,6 +2586,9 @@ fn synthesis_job_json(job: &hive_db::entities::synthesis_job::Model) -> Value {
         "createdAt": job.created_at,
         "updatedAt": job.updated_at,
         "completedAt": job.completed_at,
+        "publishedAt": job.published_at,
+        "publishedVisibility": job.published_visibility,
+        "publishedSummary": job.published_summary,
     })
 }
 
@@ -2886,6 +2902,104 @@ async fn get_synthesis_job(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("synthesis job {job_id} not found")))?;
     Ok(Json(synthesis_job_json(&job)))
+}
+
+async fn list_synthesis_jobs_for_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    let rows = synthesis_jobs::list_for_project(database.conn(), &project_id).await?;
+    let items: Vec<Value> = rows.iter().map(synthesis_job_json).collect();
+    Ok(Json(json!(items)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishModuleBody {
+    /// `'project'` (visible only to projects in the same tier) or
+    /// `'public'` (visible to every project).
+    visibility: String,
+    /// Optional publisher-supplied summary; defaults to the synthesis
+    /// description.
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+async fn publish_synthesis_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+    Json(body): Json<PublishModuleBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.visibility != "project" && body.visibility != "public" {
+        return Err(AppError::BadRequest(
+            "visibility must be 'project' or 'public'".into(),
+        ));
+    }
+    let database = db(&state).await;
+    let job = synthesis_jobs::get(database.conn(), &job_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("synthesis job {job_id} not found")))?;
+    if job.status != "complete" && job.status != "completed" && job.status != "succeeded" {
+        return Err(AppError::BadRequest(
+            "only completed synthesis jobs can be published".into(),
+        ));
+    }
+    let summary = body
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    let updated = synthesis_jobs::publish(database.conn(), &job_id, &body.visibility, summary)
+        .await?;
+    emit(
+        &state,
+        "module.published",
+        json!({
+            "jobId": updated.id,
+            "projectId": updated.project_id,
+            "visibility": updated.published_visibility,
+        }),
+    )
+    .await;
+    Ok(Json(synthesis_job_json(&updated)))
+}
+
+async fn unpublish_synthesis_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let updated = synthesis_jobs::unpublish(database.conn(), &job_id).await?;
+    emit(
+        &state,
+        "module.unpublished",
+        json!({ "jobId": updated.id, "projectId": updated.project_id }),
+    )
+    .await;
+    Ok(Json(synthesis_job_json(&updated)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishedFilter {
+    #[serde(default)]
+    visibility: Option<String>,
+}
+
+async fn list_published_modules(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<PublishedFilter>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let visibility = query.visibility.as_deref();
+    let rows = synthesis_jobs::list_published(database.conn(), visibility).await?;
+    let items: Vec<Value> = rows.iter().map(synthesis_job_json).collect();
+    Ok(Json(json!(items)))
 }
 
 async fn run_synthesis_job(

@@ -71,6 +71,26 @@ const HANDLERS: Record<string, Invalidator> = {
   },
 
   'module.installed': () => [['modules'], ['module']],
+  'module.published': (p) => {
+    const jobId = getString(p, 'jobId');
+    return [
+      ['modules'],
+      ['modules', 'published', 'all'],
+      ['modules', 'published', 'project'],
+      ['modules', 'published', 'public'],
+      jobId ? ['synthesis-job', jobId] : ['synthesis-job'],
+    ];
+  },
+  'module.unpublished': (p) => {
+    const jobId = getString(p, 'jobId');
+    return [
+      ['modules'],
+      ['modules', 'published', 'all'],
+      ['modules', 'published', 'project'],
+      ['modules', 'published', 'public'],
+      jobId ? ['synthesis-job', jobId] : ['synthesis-job'],
+    ];
+  },
 
   'llm_provider.updated': (p) => {
     const id = getString(p, 'id');
