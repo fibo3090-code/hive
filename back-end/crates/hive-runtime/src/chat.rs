@@ -969,4 +969,116 @@ mod tests {
         });
         assert!(validate_against_schema(&json!("anything"), &schema).is_ok());
     }
+
+    // --- tool-invocation parsing & fingerprinting ----------------------
+
+    #[test]
+    fn parse_tool_invocations_handles_single_xml_block() {
+        let raw = "<tool_call>{\"tool\":\"web_search\",\"arguments\":{\"q\":\"rust\"}}</tool_call>";
+        let invocations = parse_tool_invocations(raw).expect("parsed");
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].tool, "web_search");
+        assert_eq!(invocations[0].arguments["q"], "rust");
+        // ULID fallback id always materialises.
+        assert!(invocations[0]
+            .id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("call_")));
+    }
+
+    #[test]
+    fn parse_tool_invocations_handles_array_of_calls() {
+        let raw = "<tool_calls>[\
+            {\"tool\":\"a\",\"arguments\":{}},\
+            {\"tool\":\"b\",\"arguments\":{\"x\":1}}\
+        ]</tool_calls>";
+        let invocations = parse_tool_invocations(raw).expect("parsed");
+        assert_eq!(invocations.len(), 2);
+        assert_eq!(invocations[0].tool, "a");
+        assert_eq!(invocations[1].tool, "b");
+        // Distinct IDs even for adjacent calls.
+        assert_ne!(invocations[0].id, invocations[1].id);
+    }
+
+    #[test]
+    fn parse_tool_invocations_returns_none_when_not_an_xml_block() {
+        assert!(parse_tool_invocations("nothing tool-shaped here").is_none());
+        assert!(parse_tool_invocations("<tool_call>{not json</tool_call>").is_none());
+        // A valid block but missing the `tool` key — partial parse fails.
+        assert!(parse_tool_invocations("<tool_call>{\"arguments\":{}}</tool_call>").is_none());
+    }
+
+    #[test]
+    fn tool_invocations_from_response_prefers_native_tool_calls() {
+        let calls = vec![hive_llm::ToolCall {
+            id: Some("native_id".into()),
+            name: "fs_read".into(),
+            arguments: json!({ "path": "x" }),
+        }];
+        let invocations =
+            tool_invocations_from_response("ignored body text", &calls).expect("parsed");
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].id.as_deref(), Some("native_id"));
+        assert_eq!(invocations[0].tool, "fs_read");
+    }
+
+    #[test]
+    fn tool_invocations_from_response_falls_back_to_xml_when_no_native_calls() {
+        let invocations = tool_invocations_from_response(
+            "<tool_call>{\"tool\":\"web_search\",\"arguments\":{}}</tool_call>",
+            &[],
+        );
+        assert_eq!(invocations.expect("parsed").len(), 1);
+    }
+
+    #[test]
+    fn tool_fingerprint_distinguishes_args_but_not_id() {
+        let a = ToolInvocation {
+            id: Some("aaa".into()),
+            tool: "web_search".into(),
+            arguments: json!({ "q": "rust" }),
+            raw: json!({}),
+        };
+        let b = ToolInvocation {
+            id: Some("bbb".into()),
+            tool: "web_search".into(),
+            arguments: json!({ "q": "rust" }),
+            raw: json!({}),
+        };
+        let c = ToolInvocation {
+            id: Some("ccc".into()),
+            tool: "web_search".into(),
+            arguments: json!({ "q": "go" }),
+            raw: json!({}),
+        };
+        // Same tool + same args → same fingerprint, regardless of id.
+        // The repeat guard relies on this so a model that retries with
+        // identical args is detected.
+        assert_eq!(tool_fingerprint(&a), tool_fingerprint(&b));
+        assert_ne!(tool_fingerprint(&a), tool_fingerprint(&c));
+    }
+
+    #[test]
+    fn matches_schema_type_covers_primitive_kinds() {
+        assert!(matches_schema_type(&json!("hi"), "string"));
+        assert!(!matches_schema_type(&json!(42), "string"));
+        assert!(matches_schema_type(&json!(42), "integer"));
+        assert!(matches_schema_type(&json!(42), "number"));
+        assert!(matches_schema_type(&json!(3.14), "number"));
+        assert!(!matches_schema_type(&json!(3.14), "integer"));
+        assert!(matches_schema_type(&json!(true), "boolean"));
+        assert!(matches_schema_type(&json!([]), "array"));
+        assert!(matches_schema_type(&json!({}), "object"));
+        assert!(matches_schema_type(&json!(null), "null"));
+        // Unknown types are permissive (never block).
+        assert!(matches_schema_type(&json!("hi"), "anything-goes"));
+    }
+
+    #[test]
+    fn tool_result_json_shape_is_stable() {
+        let payload = tool_result_json("web_search", "missing query");
+        assert_eq!(payload["ok"], json!(false));
+        assert_eq!(payload["tool"], json!("web_search"));
+        assert_eq!(payload["error"], json!("missing query"));
+    }
 }
