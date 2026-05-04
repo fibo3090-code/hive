@@ -22,9 +22,9 @@ use clap::{Parser, Subcommand};
 use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
-        agent_messages, agents, alerts, audit, chat_messages, chat_threads, cost_events,
-        llm_providers, notes, notifications, project_workspaces, projects, sessions, settings,
-        sprints, synthesis_jobs, tasks, tech_debt,
+        agent_messages, agents, alerts, audit, chat_attachments, chat_messages, chat_threads,
+        cost_events, llm_providers, notes, notifications, project_workspaces, projects, sessions,
+        settings, sprints, synthesis_jobs, tasks, tech_debt,
     },
     seed::seed_demo,
     Db,
@@ -629,6 +629,18 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route(
             "/v1/chat-messages/:message_id/cancel",
             post(cancel_chat_message),
+        )
+        .route(
+            "/v1/chat-messages/:message_id/process",
+            post(process_chat_message),
+        )
+        .route(
+            "/v1/chat-messages/:message_id/attachments",
+            get(list_chat_attachments).post(upload_chat_attachment),
+        )
+        .route(
+            "/v1/chat-messages/:message_id/attachments/:attachment_id",
+            get(download_chat_attachment).delete(delete_chat_attachment),
         )
         .route("/v1/projects/:project_id/modules/synthesize", post(start_module_synthesis))
         .route(
@@ -3750,6 +3762,13 @@ struct SendChatMessageBody {
     content: String,
     model: Option<ModelRef>,
     system_prompt: Option<String>,
+    /// When true, the user/assistant rows are created and IDs returned,
+    /// but the LLM turn is NOT spawned. Caller must POST to
+    /// `/v1/chat-messages/:assistant_id/process` once attachments have
+    /// been uploaded. Defaults to false (the simple no-attachments
+    /// flow stays one round-trip).
+    #[serde(default)]
+    defer: bool,
 }
 
 fn chat_thread_json(t: &hive_db::entities::chat_thread::Model) -> Value {
@@ -3916,6 +3935,21 @@ async fn send_chat_message(
     )
     .await;
 
+    // When `defer: true`, the caller wants to upload attachments before
+    // the runtime reads history. Skip spawning the task; the caller
+    // POSTs `/v1/chat-messages/:assistant_id/process` once uploads
+    // land. This stays exact-once because `process` only fires the
+    // runtime if the row is still `pending`.
+    if body.defer {
+        return Ok(Json(json!({
+            "userMessage": chat_message_json(&user_msg),
+            "assistantMessage": chat_message_json(&assistant_row),
+            "providerId": provider_id,
+            "model": model_id,
+            "deferred": true,
+        })));
+    }
+
     // Kick off the streaming task.
     let cancel_flag = Arc::new(Mutex::new(false));
     let bus = EventBus::new(state.events.clone());
@@ -3929,6 +3963,7 @@ async fn send_chat_message(
         .register(&assistant_id, cancel_flag.clone())
         .await;
 
+    let data_dir_clone = state.inner.read().await.data_dir.clone();
     let params = hive_runtime::chat::RunTurn {
         db: db_clone,
         bus,
@@ -3945,6 +3980,7 @@ async fn send_chat_message(
         tool_registry: None,
         tool_context: None,
         cancel: cancel_flag,
+        data_dir: data_dir_clone,
     };
     let mut params = params;
     if let Some((registry, context)) = build_tooling(
@@ -3996,6 +4032,317 @@ async fn cancel_chat_message(
 ) -> Result<Json<Value>, AppError> {
     let cancelled = state.chat_jobs.cancel(&message_id).await;
     Ok(Json(json!({ "ok": cancelled })))
+}
+
+/// POST /v1/chat-messages/:assistant_id/process
+///
+/// Companion to `send_chat_message` when `defer: true`. The caller has
+/// uploaded any attachments to the user message and is now ready for
+/// the LLM turn to start. Idempotent — the row must still be `pending`,
+/// otherwise this is a no-op so a network retry doesn't spawn duplicate
+/// turns.
+async fn process_chat_message(
+    State(state): State<AppState>,
+    Path(assistant_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let assistant = chat_messages::get(database.conn(), &assistant_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("chat message {assistant_id} not found")))?;
+    if assistant.role != "assistant" {
+        return Err(AppError::BadRequest(
+            "process target must be an assistant message".into(),
+        ));
+    }
+    if assistant.status != "pending" {
+        return Ok(Json(json!({ "ok": false, "reason": "already_processed", "status": assistant.status })));
+    }
+    let thread = chat_threads::get(database.conn(), &assistant.thread_id)
+        .await?
+        .ok_or_else(|| AppError::Internal("orphan chat message".into()))?;
+
+    let provider_id = assistant
+        .provider_id
+        .clone()
+        .ok_or_else(|| AppError::Internal("assistant message missing providerId".into()))?;
+    let model_id = assistant
+        .model
+        .clone()
+        .ok_or_else(|| AppError::Internal("assistant message missing model".into()))?;
+    let provider_row = llm_providers::get(database.conn(), &provider_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("llm provider {provider_id} not found")))?;
+    let config = build_provider_config(&state, &provider_row).await?;
+    let kind = config.kind;
+    let provider = Arc::from(client_for(config));
+
+    let cancel_flag = Arc::new(Mutex::new(false));
+    let bus = EventBus::new(state.events.clone());
+    state
+        .chat_jobs
+        .register(&assistant_id, cancel_flag.clone())
+        .await;
+
+    let data_dir_clone = state.inner.read().await.data_dir.clone();
+    let mut params = hive_runtime::chat::RunTurn {
+        db: database.clone(),
+        bus,
+        provider,
+        provider_kind: kind,
+        provider_id: provider_id.clone(),
+        model: model_id.clone(),
+        project_id: thread.project_id.clone(),
+        thread_id: thread.id.clone(),
+        assistant_message_id: assistant_id.clone(),
+        system_prompt: None,
+        history_limit: 40,
+        agent_id: thread.agent_id.clone(),
+        tool_registry: None,
+        tool_context: None,
+        cancel: cancel_flag,
+        data_dir: data_dir_clone,
+    };
+    if let Some((registry, context)) = build_tooling(
+        &state,
+        &thread.project_id,
+        thread.agent_id.clone(),
+        &assistant_id,
+        &thread.id,
+    )
+    .await?
+    {
+        params.tool_registry = Some(registry);
+        params.tool_context = Some(context);
+    }
+
+    let handle = tokio::spawn(async move {
+        if let Err(err) = hive_runtime::chat::run_turn(params).await {
+            tracing::warn!(error = %err, "chat turn failed");
+        }
+    });
+    state
+        .chat_jobs
+        .attach_abort(&assistant_id, handle.abort_handle())
+        .await;
+    {
+        let registry = state.chat_jobs.clone();
+        let cleanup_id = assistant_id.clone();
+        tokio::spawn(async move {
+            let _ = handle.await;
+            registry.remove(&cleanup_id).await;
+        });
+    }
+
+    Ok(Json(json!({ "ok": true, "assistantMessageId": assistant_id })))
+}
+
+// ── Chat attachments ────────────────────────────────────────────────────
+
+const ATTACHMENT_MAX_BYTES: usize = 10 * 1024 * 1024; // 10 MB per file
+const ATTACHMENT_MAX_PER_MESSAGE: u64 = 5;
+
+fn attachments_root(data_dir: &StdPath, project_id: &str) -> PathBuf {
+    data_dir.join("attachments").join(project_id)
+}
+
+fn attachment_to_json(row: &hive_db::entities::chat_attachment::Model) -> Value {
+    json!({
+        "id": row.id,
+        "messageId": row.message_id,
+        "kind": row.kind,
+        "name": row.name,
+        "mimeType": row.mime_type,
+        "bytesSize": row.bytes_size,
+        "createdAt": row.created_at,
+    })
+}
+
+/// Look up a chat message and return both the message and the project
+/// it belongs to. Used by every attachment handler.
+async fn message_with_project(
+    state: &AppState,
+    message_id: &str,
+) -> Result<(hive_db::entities::chat_message::Model, String), AppError> {
+    let database = db(state).await;
+    let message = chat_messages::get(database.conn(), message_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("chat message {message_id} not found")))?;
+    let thread = chat_threads::get(database.conn(), &message.thread_id)
+        .await?
+        .ok_or_else(|| AppError::Internal("orphan chat message: thread missing".into()))?;
+    Ok((message, thread.project_id))
+}
+
+async fn list_chat_attachments(
+    State(state): State<AppState>,
+    Path(message_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let _ = message_with_project(&state, &message_id).await?;
+    let database = db(&state).await;
+    let rows = chat_attachments::list_for_message(database.conn(), &message_id).await?;
+    let items: Vec<Value> = rows.iter().map(attachment_to_json).collect();
+    Ok(Json(json!(items)))
+}
+
+/// POST /v1/chat-messages/:id/attachments — multipart/form-data upload.
+/// One or more `file` fields per request, max 5 attachments per message,
+/// max 10 MB per file. Bytes land at
+/// `~/.hive/attachments/{project_id}/{ulid}-{name}`.
+async fn upload_chat_attachment(
+    State(state): State<AppState>,
+    Path(message_id): Path<String>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<Json<Value>, AppError> {
+    let (_message, project_id) = message_with_project(&state, &message_id).await?;
+    let database = db(&state).await;
+
+    let existing_count =
+        chat_attachments::count_for_message(database.conn(), &message_id).await?;
+    if existing_count >= ATTACHMENT_MAX_PER_MESSAGE {
+        return Err(AppError::BadRequest(format!(
+            "max {ATTACHMENT_MAX_PER_MESSAGE} attachments per message"
+        )));
+    }
+
+    let data_dir = state.inner.read().await.data_dir.clone();
+    let root = attachments_root(&data_dir, &project_id);
+    tokio::fs::create_dir_all(&root)
+        .await
+        .map_err(|e| AppError::Internal(format!("create attachments dir: {e}")))?;
+
+    let mut inserted = Vec::new();
+    let mut remaining_slots = ATTACHMENT_MAX_PER_MESSAGE - existing_count;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("multipart: {e}")))?
+    {
+        if remaining_slots == 0 {
+            return Err(AppError::BadRequest(format!(
+                "max {ATTACHMENT_MAX_PER_MESSAGE} attachments per message"
+            )));
+        }
+        let original_name = field
+            .file_name()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "attachment".into());
+        let mime_type = field
+            .content_type()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "application/octet-stream".into());
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::BadRequest(format!("read upload: {e}")))?;
+        if bytes.len() > ATTACHMENT_MAX_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "{} too large ({} bytes; max {ATTACHMENT_MAX_BYTES})",
+                original_name,
+                bytes.len()
+            )));
+        }
+        let id = ulid::Ulid::new().to_string().to_lowercase();
+        // Sanitise the original name for filesystem safety: drop path
+        // separators and characters that confuse common shells. The
+        // ULID prefix guarantees uniqueness even if two uploads share
+        // the same sanitised name.
+        let safe_name: String = original_name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+            .collect();
+        let stored_filename = format!("{id}-{safe_name}");
+        let absolute_path = root.join(&stored_filename);
+        let relative_path = format!("{project_id}/{stored_filename}");
+
+        tokio::fs::write(&absolute_path, &bytes)
+            .await
+            .map_err(|e| AppError::Internal(format!("write attachment: {e}")))?;
+
+        let kind = chat_attachments::AttachmentKind::from_mime(&mime_type);
+        let bytes_size = bytes.len() as i64;
+        let row = chat_attachments::insert(
+            database.conn(),
+            chat_attachments::NewAttachment {
+                message_id: message_id.clone(),
+                kind,
+                name: original_name,
+                mime_type,
+                bytes_size,
+                storage_path: relative_path,
+            },
+        )
+        .await?;
+        inserted.push(attachment_to_json(&row));
+        remaining_slots -= 1;
+    }
+
+    if inserted.is_empty() {
+        return Err(AppError::BadRequest(
+            "no `file` fields found in upload".into(),
+        ));
+    }
+    Ok(Json(json!(inserted)))
+}
+
+async fn download_chat_attachment(
+    State(state): State<AppState>,
+    Path((message_id, attachment_id)): Path<(String, String)>,
+) -> Result<Response, AppError> {
+    let (_message, _project_id) = message_with_project(&state, &message_id).await?;
+    let database = db(&state).await;
+    let row = chat_attachments::get(database.conn(), &attachment_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("attachment {attachment_id} not found"))
+        })?;
+    if row.message_id != message_id {
+        return Err(AppError::NotFound(format!(
+            "attachment {attachment_id} does not belong to message {message_id}"
+        )));
+    }
+    let data_dir = state.inner.read().await.data_dir.clone();
+    let absolute_path = data_dir.join("attachments").join(&row.storage_path);
+    let bytes = tokio::fs::read(&absolute_path)
+        .await
+        .map_err(|e| AppError::Internal(format!("read attachment: {e}")))?;
+    let response = (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                row.mime_type.clone(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("inline; filename=\"{}\"", row.name.replace('"', "")),
+            ),
+        ],
+        bytes,
+    )
+        .into_response();
+    Ok(response)
+}
+
+async fn delete_chat_attachment(
+    State(state): State<AppState>,
+    Path((message_id, attachment_id)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    let (_message, _project_id) = message_with_project(&state, &message_id).await?;
+    let database = db(&state).await;
+    let row = chat_attachments::get(database.conn(), &attachment_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("attachment {attachment_id} not found"))
+        })?;
+    if row.message_id != message_id {
+        return Err(AppError::NotFound(format!(
+            "attachment {attachment_id} does not belong to message {message_id}"
+        )));
+    }
+    let data_dir = state.inner.read().await.data_dir.clone();
+    let absolute_path = data_dir.join("attachments").join(&row.storage_path);
+    let _ = tokio::fs::remove_file(&absolute_path).await;
+    chat_attachments::delete(database.conn(), &attachment_id).await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn resolve_chat_target(
@@ -4166,6 +4513,7 @@ impl ApiTurnDriver {
 
         // Build per-turn tooling (intersected with global + agent allow-list).
         let cancel_flag = Arc::new(Mutex::new(false));
+        let data_dir_clone = self.state.inner.read().await.data_dir.clone();
         let mut params = hive_runtime::chat::RunTurn {
             db: database.clone(),
             bus: EventBus::new(self.state.events.clone()),
@@ -4182,6 +4530,7 @@ impl ApiTurnDriver {
             tool_registry: None,
             tool_context: None,
             cancel: cancel_flag,
+            data_dir: data_dir_clone,
         };
         if let Some((registry, context)) = build_tooling(
             &self.state,

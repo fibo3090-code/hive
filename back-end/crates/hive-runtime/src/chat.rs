@@ -52,6 +52,11 @@ pub struct RunTurn {
     /// Mutable cancel flag — when set to true, the runner stops streaming and
     /// marks the message `cancelled`.
     pub cancel: Arc<Mutex<bool>>,
+    /// Where chat attachments live on disk:
+    /// `{data_dir}/attachments/{project_id}/{filename}`. The runtime reads
+    /// text attachments to inline them into the user message; image and
+    /// binary attachments are referenced by name.
+    pub data_dir: std::path::PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -434,6 +439,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         tool_registry,
         tool_context,
         cancel,
+        data_dir,
     } = params;
 
     let _thread = chat_threads::get(db.conn(), &thread_id)
@@ -473,9 +479,50 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
             "tool" => ChatRole::Tool,
             _ => continue,
         };
+        // Inline any attachments the user posted with this message so
+        // the LLM actually sees them. Text/JSON files get their content
+        // appended (capped at 16 KB each so a giant log doesn't blow
+        // the context budget). Images get a `[image: name (mime)]`
+        // marker — provider-specific vision content blocks ship in a
+        // follow-up; today the model at least knows the image was sent.
+        let mut content = row.content;
+        if matches!(role, ChatRole::User) {
+            let attachments =
+                hive_db::repos::chat_attachments::list_for_message(db.conn(), &row.id)
+                    .await
+                    .unwrap_or_default();
+            for att in attachments {
+                content.push_str(&format!(
+                    "\n\n--- attachment: {} ({}, {} bytes) ---\n",
+                    att.name, att.mime_type, att.bytes_size
+                ));
+                if att.kind == "text" {
+                    let absolute_path = data_dir.join("attachments").join(&att.storage_path);
+                    if let Ok(bytes) = tokio::fs::read(&absolute_path).await {
+                        let limit = 16 * 1024;
+                        let take = bytes.len().min(limit);
+                        let text = String::from_utf8_lossy(&bytes[..take]);
+                        content.push_str(&text);
+                        if bytes.len() > limit {
+                            content.push_str(&format!(
+                                "\n[truncated {} bytes]\n",
+                                bytes.len() - limit
+                            ));
+                        }
+                    }
+                } else if att.kind == "image" {
+                    content.push_str("[binary image content omitted from text payload]");
+                } else {
+                    content.push_str(&format!(
+                        "[binary file {} omitted from text payload]",
+                        att.name
+                    ));
+                }
+            }
+        }
         messages.push(ChatMessage {
             role,
-            content: row.content,
+            content,
             tool_call_id: None,
             tool_name: None,
             tool_calls: Vec::new(),

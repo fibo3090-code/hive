@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Send, Paperclip, AtSign, Hexagon, Copy, Eye, Code, AlertTriangle, ArrowDown, Check, Square, Plus, Settings2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { Send, Paperclip, AtSign, Hexagon, Copy, Eye, Code, AlertTriangle, ArrowDown, Check, Square, Plus, Settings2, X, FileText, Image as ImageIcon, FileBox } from 'lucide-react';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
@@ -10,6 +11,11 @@ import {
   useCreateChatThread,
   useSendChatMessage,
   useCancelChatMessage,
+  useChatAttachments,
+  useUploadChatAttachments,
+  useProcessChatMessage,
+  attachmentDownloadUrl,
+  type ChatAttachment,
   type ChatMessage,
   type ChatThread,
   type ToolCallTrace,
@@ -138,6 +144,66 @@ function ToolCallList({ toolCalls }: { readonly toolCalls: ToolCallTrace[] }) {
   );
 }
 
+function MessageAttachments({ messageId }: { readonly messageId: string }) {
+  const query = useChatAttachments(messageId);
+  const attachments = query.data ?? [];
+  if (attachments.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {attachments.map((att) => (
+        <AttachmentChip key={att.id} attachment={att} messageId={messageId} />
+      ))}
+    </div>
+  );
+}
+
+function AttachmentChip({
+  attachment,
+  messageId,
+}: {
+  readonly attachment: ChatAttachment;
+  readonly messageId: string;
+}) {
+  const url = attachmentDownloadUrl(messageId, attachment.id);
+  if (attachment.kind === 'image') {
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-block rounded-md overflow-hidden border border-border max-w-[200px]"
+      >
+        <img
+          src={url}
+          alt={attachment.name}
+          className="block max-h-40 w-auto object-cover"
+          loading="lazy"
+        />
+      </a>
+    );
+  }
+  const Icon =
+    attachment.kind === 'text'
+      ? FileText
+      : attachment.mimeType.startsWith('image/')
+        ? ImageIcon
+        : FileBox;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-1 text-xs hover:bg-surface-3"
+    >
+      <Icon className="h-3 w-3 text-muted-foreground" aria-hidden />
+      <span className="font-mono">{attachment.name}</span>
+      <span className="text-muted-foreground">
+        {Math.round(attachment.bytesSize / 1024)} KB
+      </span>
+    </a>
+  );
+}
+
 export default function ChatCentral() {
   const { state } = useHiveData();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -194,6 +260,10 @@ export default function ChatCentral() {
   const messagesQuery = useChatMessages(activeThreadId);
   const streaming = useChatStream(activeThreadId);
   const sendMutation = useSendChatMessage(activeThreadId);
+  const uploadAttachments = useUploadChatAttachments();
+  const processMessage = useProcessChatMessage();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
 
   const messages = useMemo(() => messagesQuery.data ?? [], [messagesQuery.data]);
 
@@ -266,18 +336,51 @@ export default function ChatCentral() {
       setActiveThreadId(targetThreadId);
     }
 
-    sendMutation.mutate(
-      {
+    const filesToUpload = pendingFiles;
+    const useDeferred = filesToUpload.length > 0;
+    try {
+      const sent = await sendMutation.mutateAsync({
         threadId: targetThreadId,
         content,
         model: modelOverride ?? defaultModel ?? null,
-      },
-      {
-        onSuccess: () => {
-          setInput('');
-        },
-      },
-    );
+        defer: useDeferred,
+      });
+      setInput('');
+      setPendingFiles([]);
+      if (useDeferred) {
+        // Upload to the user message, then kick off the runtime.
+        try {
+          await uploadAttachments.mutateAsync({
+            messageId: sent.userMessage.id,
+            files: filesToUpload,
+          });
+        } catch (error) {
+          toast.error(
+            error instanceof Error ? error.message : 'Attachment upload failed',
+          );
+          // Best effort: still process the message so the user gets a
+          // reply, just without the attachments.
+        }
+        await processMessage.mutateAsync(sent.assistantMessage.id);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Send failed');
+    }
+  };
+
+  const handlePickFiles = () => fileInputRef.current?.click();
+  const handleFilesSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    if (files.length === 0) return;
+    const next = [...pendingFiles, ...files].slice(0, 5);
+    if (files.length > 5 - pendingFiles.length) {
+      toast.warning('At most 5 attachments per message');
+    }
+    setPendingFiles(next);
+    event.target.value = '';
+  };
+  const removePendingFile = (index: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
   const handleCancel = () => {
@@ -398,6 +501,7 @@ export default function ChatCentral() {
                 </div>
                 <ToolCallList toolCalls={message.toolCalls ?? []} />
                 {code && <CodeBlock language={code.language} code={code.code} />}
+                {isUser && <MessageAttachments messageId={message.id} />}
                 <div className="flex items-center gap-2 mt-1.5">
                   <span className="text-micro text-muted-foreground font-mono">{formatTimestamp(message.createdAt)}</span>
                   {(message.tokensIn > 0 || message.tokensOut > 0) && (
@@ -473,11 +577,62 @@ export default function ChatCentral() {
           </div>
         )}
 
+        {pendingFiles.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 rounded-lg border border-border bg-card p-2 mb-2">
+            {pendingFiles.map((file, idx) => (
+              <span
+                key={`${file.name}-${idx}`}
+                className="inline-flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-1 text-xs"
+              >
+                {file.type.startsWith('image/') ? (
+                  <ImageIcon className="h-3 w-3 text-info" aria-hidden />
+                ) : file.type.startsWith('text/') || file.type === 'application/json' ? (
+                  <FileText className="h-3 w-3 text-success" aria-hidden />
+                ) : (
+                  <FileBox className="h-3 w-3 text-muted-foreground" aria-hidden />
+                )}
+                <span className="font-mono">{file.name}</span>
+                <span className="text-muted-foreground">
+                  ({Math.round(file.size / 1024)} KB)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removePendingFile(idx)}
+                  aria-label={`Remove ${file.name}`}
+                  className="text-muted-foreground hover:text-destructive ml-1"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+            <span className="text-micro text-muted-foreground self-center">
+              {pendingFiles.length}/5 — uploaded with the next message
+            </span>
+          </div>
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleFilesSelected}
+        />
         <div className="flex items-end gap-2 rounded-lg border border-border bg-card p-2">
           <button className="p-1.5 text-muted-foreground hover:text-foreground transition-colors" aria-label="Mention agent">
             <AtSign className="h-4 w-4" />
           </button>
-          <button className="p-1.5 text-muted-foreground hover:text-foreground transition-colors" aria-label="Attach file">
+          <button
+            type="button"
+            onClick={handlePickFiles}
+            className={cn(
+              'p-1.5 transition-colors',
+              pendingFiles.length > 0
+                ? 'text-primary'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+            aria-label="Attach file"
+            title={pendingFiles.length > 0 ? `${pendingFiles.length} file(s) staged` : 'Attach file'}
+          >
             <Paperclip className="h-4 w-4" />
           </button>
           <button
