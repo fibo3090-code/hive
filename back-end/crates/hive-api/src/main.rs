@@ -477,6 +477,14 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         )
         .route("/v1/projects/:project_id/activate", post(activate_project))
         .route(
+            "/v1/projects/:project_id/export",
+            get(export_project_archive),
+        )
+        .route(
+            "/v1/projects/:project_id/chat-history",
+            axum::routing::delete(clear_chat_history),
+        )
+        .route(
             "/v1/projects/:project_id/agents",
             get(list_agents).post(create_agent),
         )
@@ -658,6 +666,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         )
         .route("/v1/modules/published", get(list_published_modules))
         .with_state(state)
+        .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http());
 
@@ -692,6 +701,32 @@ fn init_tracing() {
 /// Restrict cross-origin access to the dev origins served by Vite. The API is
 /// bound to 127.0.0.1 so this is defence in depth — it stops a malicious page
 /// open in the same browser from exfiltrating provider keys via the API.
+/// Middleware that mints a per-request `request_id` ULID, attaches it
+/// to a `tracing::info_span!` so every log line in the handler carries
+/// the field, and sets `x-request-id` on the response. Lets ops grep
+/// logs by id and the frontend cite it in user-facing error toasts.
+async fn request_id_middleware(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::header::HeaderValue;
+    use tracing::Instrument;
+    let request_id = ulid::Ulid::new().to_string();
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let span = tracing::info_span!(
+        "http",
+        request_id = %request_id,
+        method = %method,
+        path = %uri.path(),
+    );
+    let mut response = next.run(request).instrument(span).await;
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    response
+}
+
 fn cors_layer() -> CorsLayer {
     use axum::http::HeaderValue;
     let dev_origins = [
@@ -1485,6 +1520,105 @@ async fn delete_project(
 
     emit(&state, "project.deleted", json!({ "id": project_id })).await;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// GET /v1/projects/:id/export — full project snapshot as a JSON
+/// document (for the Settings → Data & Privacy "Export project"
+/// button). Includes the project row, agents, sprints, tasks, every
+/// chat thread + its messages, and the recent audit log.
+///
+/// Returns `Content-Disposition: attachment` so a `<a download>` in
+/// the frontend triggers a save dialog instead of rendering inline.
+async fn export_project_archive(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Response, AppError> {
+    let database = db(&state).await;
+    let project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    let agent_rows = agents::list_by_project(database.conn(), &project_id).await?;
+    let sprint_rows = sprints::list_by_project(database.conn(), &project_id).await?;
+    let task_rows = tasks::list_by_project(database.conn(), &project_id).await?;
+
+    // Threads + their messages. Chat history is the bulk of the
+    // export; assemble a `{thread, messages: [...]}` shape so the
+    // export is self-contained without requiring multiple files.
+    let thread_rows = chat_threads::list_by_project(database.conn(), &project_id).await?;
+    let mut threads_with_messages = Vec::with_capacity(thread_rows.len());
+    for thread in &thread_rows {
+        let msgs = chat_messages::list_by_thread(database.conn(), &thread.id).await?;
+        threads_with_messages.push(json!({
+            "thread": thread,
+            "messages": msgs,
+        }));
+    }
+
+    // Recent audit entries scoped to this project (last 1000).
+    let audit_rows = audit::list_for_entity(database.conn(), "project", &project_id).await?;
+
+    let archive = json!({
+        "schemaVersion": 1,
+        "exportedAt": chrono::Utc::now().to_rfc3339(),
+        "project": project,
+        "agents": agent_rows,
+        "sprints": sprint_rows,
+        "tasks": task_rows,
+        "chatThreads": threads_with_messages,
+        "auditLog": audit_rows,
+    });
+
+    let body = serde_json::to_vec_pretty(&archive)
+        .map_err(|e| AppError::Internal(format!("serialise export: {e}")))?;
+    let safe_name: String = project
+        .name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '-' })
+        .collect();
+    let filename = format!("hive-export-{safe_name}-{}.json", chrono::Utc::now().format("%Y%m%d"));
+
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "application/json".to_owned()),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// DELETE /v1/projects/:id/chat-history — clears every chat thread
+/// and its messages for the project. Used by Settings → Data & Privacy
+/// "Clear chat history" with a confirmation dialog. Audited.
+async fn clear_chat_history(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    let thread_count = chat_threads::clear_for_project(database.conn(), &project_id).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "project.chat_history.cleared",
+        "project",
+        &project_id,
+        None,
+        Some(json!({ "threadsDeleted": thread_count })),
+    )
+    .await?;
+    emit(
+        &state,
+        "chat.thread.cleared",
+        json!({ "projectId": project_id, "threadsDeleted": thread_count }),
+    )
+    .await;
+    Ok(Json(json!({ "ok": true, "threadsDeleted": thread_count })))
 }
 
 async fn activate_project(

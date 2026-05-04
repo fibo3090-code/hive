@@ -86,3 +86,22 @@ pub async fn rename(db: &DatabaseConnection, id: &str, title: &str) -> Result<Mo
     model.updated_at = Set(now_rfc3339());
     model.update(db).await
 }
+
+/// Delete every thread in a project. Cascading-deletes the
+/// `chat_messages` rows too via the message repo helper. Returns
+/// the count of threads removed (the caller surfaces this to the
+/// UI / audit log).
+pub async fn clear_for_project(
+    db: &DatabaseConnection,
+    project_id: &str,
+) -> Result<u64, DbErr> {
+    let threads = list_by_project(db, project_id).await?;
+    for t in &threads {
+        crate::repos::chat_messages::delete_for_thread(db, &t.id).await?;
+    }
+    let result = Entity::delete_many()
+        .filter(Column::ProjectId.eq(project_id))
+        .exec(db)
+        .await?;
+    Ok(result.rows_affected)
+}

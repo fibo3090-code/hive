@@ -105,6 +105,19 @@ pub async fn set_tool_calls(
     model.update(db).await
 }
 
+/// Delete every message in a thread. Used by the "Clear chat history"
+/// flow so threads can be removed without orphaning their messages.
+pub async fn delete_for_thread(
+    db: &DatabaseConnection,
+    thread_id: &str,
+) -> Result<u64, DbErr> {
+    let result = Entity::delete_many()
+        .filter(Column::ThreadId.eq(thread_id))
+        .exec(db)
+        .await?;
+    Ok(result.rows_affected)
+}
+
 pub async fn set_status(db: &DatabaseConnection, id: &str, status: &str) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .one(db)
