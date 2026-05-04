@@ -13,6 +13,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { AgentSpawnModal } from '@/components/modals/AgentSpawnModal';
+import { AgentConfigDialog } from '@/components/modals/AgentConfigDialog';
 import { toast } from 'sonner';
 
 const lockedAgents = new Set<string>();
@@ -110,12 +111,14 @@ function AgentDetailDrawer({
   onMessage,
   onTogglePause,
   onTerminate,
+  onConfig,
 }: {
   readonly agent: Agent;
   readonly onClose: () => void;
   readonly onMessage: () => void;
   readonly onTogglePause: (agent: Agent) => void;
   readonly onTerminate: (agentId: string) => void;
+  readonly onConfig: (agent: Agent) => void;
 }) {
   const qualityScore = agent.qualityScore ?? 0;
   const messagesQuery = useAgentMessages(agent.id);
@@ -229,7 +232,14 @@ function AgentDetailDrawer({
       <div className="flex items-center gap-2 border-t border-border px-4 py-3">
         <button onClick={onMessage} className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-1.5 text-xs text-primary hover:bg-primary/20"><MessageSquare className="h-3.5 w-3.5" /> Message</button>
         <button onClick={() => onTogglePause(agent)} className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground">{agent.status === 'paused' ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}{agent.status === 'paused' ? 'Resume' : 'Pause'}</button>
-        <button className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"><Settings className="h-3.5 w-3.5" /> Config</button>
+        <button
+          type="button"
+          onClick={() => onConfig(agent)}
+          aria-label={`Configure ${agent.name}`}
+          className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <Settings className="h-3.5 w-3.5" /> Config
+        </button>
         <button onClick={() => onTerminate(agent.id)} className="flex items-center gap-1 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 ml-auto"><Trash2 className="h-3.5 w-3.5" /> Terminate</button>
       </div>
     </motion.div>
@@ -287,6 +297,7 @@ export default function HiveGraph() {
   const [search, setSearch] = useState('');
   const [showLocks, setShowLocks] = useState(false);
   const [spawnModalOpen, setSpawnModalOpen] = useState(false);
+  const [configAgent, setConfigAgent] = useState<Agent | null>(null);
   const graph = useMemo(() => buildGraph(state.agents), [state.agents]);
 
   useEffect(() => {
@@ -347,6 +358,13 @@ export default function HiveGraph() {
   return (
     <div className="flex flex-col h-full">
       <AgentSpawnModal open={spawnModalOpen} onOpenChange={setSpawnModalOpen} />
+      <AgentConfigDialog
+        agent={configAgent}
+        open={configAgent !== null}
+        onOpenChange={(o) => {
+          if (!o) setConfigAgent(null);
+        }}
+      />
 
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <div className="flex items-center gap-2">
@@ -413,6 +431,7 @@ export default function HiveGraph() {
               onMessage={() => { setChatTargetAgentId(selectedAgent.id); navigate('/chat'); }}
               onTogglePause={(agent) => { void togglePause(agent); }}
               onTerminate={(agentId) => { void terminateAgent(agentId); }}
+              onConfig={(agent) => setConfigAgent(agent)}
             />
           )}
         </AnimatePresence>

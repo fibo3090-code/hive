@@ -481,6 +481,8 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             get(list_agents).post(create_agent),
         )
         .route("/v1/agents/:agent_id/set-status", post(set_agent_status))
+        .route("/v1/agents/:agent_id", patch(update_agent))
+        .route("/v1/tools", get(list_tools))
         .route("/v1/agents/:agent_id/messages", get(get_agent_messages))
         .route("/v1/tools", get(list_tool_manifests))
         .route("/v1/agents/:agent_id/lineage", get(get_agent_lineage))
@@ -1768,6 +1770,160 @@ async fn set_agent_status(
         &state,
         "agent.status",
         json!({ "id": updated.id, "status": updated.status }),
+    )
+    .await;
+    Ok(Json(json!(updated)))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct UpdateAgentBody {
+    name: Option<String>,
+    role: Option<String>,
+    /// Friendly model id (e.g. `claude-sonnet-4-6`). Stored on the
+    /// `agents.model` column so the agent card renders consistently.
+    model: Option<String>,
+    /// Provider+model selection used by the runtime. Either both set or
+    /// both null (clear) — anything else is ambiguous and rejected.
+    model_provider_id: Option<Option<String>>,
+    model_id: Option<Option<String>>,
+    /// Free-text instructions prepended to every turn's system block.
+    /// `Some(None)` clears, `Some(Some(s))` sets, `None` leaves alone.
+    system_prompt: Option<Option<String>>,
+    /// List of registered tool names. Validated against the registry.
+    enabled_tools: Option<Vec<String>>,
+}
+
+/// GET /v1/tools — describes every tool the runtime can register.
+/// The Agent Config dialog uses this to render the tool multi-select.
+/// Description text mirrors what each tool's `manifest()` returns so the
+/// catalog stays consistent without instantiating sandboxes.
+async fn list_tools(State(_state): State<AppState>) -> Json<Value> {
+    Json(json!([
+        {
+            "name": "web_search",
+            "description": "Search the web via Tavily or SearxNG and return ranked results.",
+            "sideEffects": false,
+            "category": "research"
+        },
+        {
+            "name": "web_fetch",
+            "description": "Fetch a URL and extract its main text content.",
+            "sideEffects": false,
+            "category": "research"
+        },
+        {
+            "name": "fs_read",
+            "description": "Read a text file from the project workspace (capped at 256 KiB).",
+            "sideEffects": false,
+            "category": "filesystem"
+        },
+        {
+            "name": "fs_write",
+            "description": "Write text to a file in the project workspace.",
+            "sideEffects": true,
+            "category": "filesystem"
+        },
+        {
+            "name": "fs_list",
+            "description": "List directory contents (capped at 1000 entries).",
+            "sideEffects": false,
+            "category": "filesystem"
+        },
+        {
+            "name": "shell_exec",
+            "description": "Run a shell command in the workspace sandbox (60s budget).",
+            "sideEffects": true,
+            "category": "execution"
+        },
+        {
+            "name": "spawn_agent",
+            "description": "Create a sub-agent under this one and dispatch an initial task.",
+            "sideEffects": true,
+            "category": "coordination"
+        },
+        {
+            "name": "message_agent",
+            "description": "Send a message to another agent's inbox.",
+            "sideEffects": true,
+            "category": "coordination"
+        }
+    ]))
+}
+
+/// PATCH /v1/agents/:id — let users tune name, role, model, system
+/// prompt, and the per-agent tool allowlist from the HiveGraph Config
+/// dialog. The runtime picks up the changes on the next turn.
+async fn update_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<UpdateAgentBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let before = agents::get(database.conn(), &agent_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
+
+    // Validate enabled_tools against the registered surface so a typo
+    // doesn't silently disable everything on the next turn. The full
+    // registered set is `default_tool_names()` (fs/shell/web_fetch),
+    // plus `web_search` (added when configured), plus the runtime-only
+    // pair `spawn_agent` / `message_agent` from `hive-runtime`.
+    if let Some(tools) = body.enabled_tools.as_ref() {
+        let mut known: std::collections::HashSet<String> =
+            default_tool_names().into_iter().collect();
+        known.insert("web_search".into());
+        known.insert("spawn_agent".into());
+        known.insert("message_agent".into());
+        let unknown: Vec<&str> = tools
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !known.contains(*name))
+            .collect();
+        if !unknown.is_empty() {
+            return Err(AppError::BadRequest(format!(
+                "unknown tool(s): {}",
+                unknown.join(", ")
+            )));
+        }
+    }
+
+    let patch = agents::UpdateAgent {
+        slug: None,
+        name: body.name,
+        role: body.role,
+        model: body.model,
+        status: None,
+        current_task: None,
+        quality_score: None,
+        tokens_used: None,
+        eval_scores: None,
+        enabled_tools: body.enabled_tools,
+        system_prompt: body.system_prompt,
+        model_provider_id: body.model_provider_id,
+        model_id: body.model_id,
+    };
+    let updated = agents::update(database.conn(), &agent_id, patch).await?;
+
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.update",
+        "agent",
+        &agent_id,
+        Some(serde_json::to_value(&before).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
+    emit(
+        &state,
+        "agent.status",
+        json!({
+            "id": updated.id,
+            "agentId": updated.id,
+            "projectId": updated.project_id,
+            "status": updated.status,
+        }),
     )
     .await;
     Ok(Json(json!(updated)))

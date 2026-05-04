@@ -14,6 +14,15 @@ export interface Agent {
   qualityScore?: number | null;
   tokensUsed: number;
   evalScores: { correctness?: number; style?: number; efficiency?: number; testQuality?: number; docQuality?: number };
+  /** Provider/model selection used by the runtime (PATCH /v1/agents/:id). */
+  modelProviderId?: string | null;
+  modelId?: string | null;
+  /** Project-relative parent agent (set when spawned via spawn_agent). */
+  parentAgentId?: string | null;
+  /** Free-text override applied at the start of every turn. */
+  systemPrompt?: string | null;
+  /** Names of tools this agent may invoke (empty array = inherit defaults). */
+  enabledTools?: string[];
 }
 
 export interface Project {
