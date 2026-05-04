@@ -570,6 +570,11 @@ function LlmProvidersSection() {
                 className="w-full font-mono"
               />
             </div>
+            {!isSaveAllowed(p, d) && d.apiKey && (
+              <p className="text-xs text-warning -mb-1">
+                Test the key first to enable Save.
+              </p>
+            )}
             <div className="flex items-center gap-2">
               <button
                 onClick={() => void onSave(p)}

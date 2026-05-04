@@ -316,7 +316,16 @@ export default function CodeVersioning() {
                   <div className="rounded-md border border-border bg-surface-2 p-2 space-y-2">
                     <input value={githubOwner} onChange={(event) => setGithubOwner(event.target.value)} placeholder="owner" className="h-8 w-full rounded-md border border-border bg-card px-3 text-xs" />
                     <input value={githubRepo} onChange={(event) => setGithubRepo(event.target.value)} placeholder="repo" className="h-8 w-full rounded-md border border-border bg-card px-3 text-xs" />
-                    <input value={githubToken} onChange={(event) => setGithubToken(event.target.value)} placeholder="github_pat_..." className="h-8 w-full rounded-md border border-border bg-card px-3 text-xs" />
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={githubToken}
+                      onChange={(event) => setGithubToken(event.target.value)}
+                      placeholder="github_pat_..."
+                      aria-label="GitHub personal access token"
+                      className="h-8 w-full rounded-md border border-border bg-card px-3 text-xs font-mono"
+                    />
                     <button onClick={() => void connectRepo()} className="w-full rounded-md bg-primary/10 px-3 py-2 text-xs text-primary hover:bg-primary/20">
                       Connect GitHub
                     </button>

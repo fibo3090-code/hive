@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { CodeViewerDialog } from '@/components/modals/CodeViewerDialog';
 import { Send, Paperclip, AtSign, Hexagon, Copy, Eye, Code, AlertTriangle, ArrowDown, Check, Square, Plus, Settings2, X, FileText, Image as ImageIcon, FileBox } from 'lucide-react';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { StatusDot } from '@/components/shared/StatusDot';
@@ -26,6 +27,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 function CodeBlock({ language, code }: { readonly language: string; readonly code: string }) {
   const [copied, setCopied] = useState(false);
+  const [viewer, setViewer] = useState<'preview' | 'inspect' | null>(null);
   // Track the pending "reset copied" timer in a ref so we can cancel it
   // when the component unmounts mid-flight. Without this, an unmount
   // between Copy and the 1.5s reset triggers `setState on unmounted`.
@@ -38,37 +40,58 @@ function CodeBlock({ language, code }: { readonly language: string; readonly cod
     };
   }, []);
   return (
-    <div className="rounded-md border border-border bg-surface-2 mt-2 overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-surface-3 border-b border-border">
-        <span className="text-micro font-mono text-muted-foreground">{language}</span>
-        <div className="flex gap-1">
-          <button
-            onClick={() => {
-              navigator.clipboard.writeText(code);
-              setCopied(true);
-              if (resetTimerRef.current !== null) {
-                clearTimeout(resetTimerRef.current);
-              }
-              resetTimerRef.current = globalThis.setTimeout(() => {
-                setCopied(false);
-                resetTimerRef.current = null;
-              }, 1500) as unknown as number;
-            }}
-            className="text-muted-foreground hover:text-foreground p-0.5"
-            aria-label="Copy code"
-          >
-            {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
-          </button>
-          <button className="text-muted-foreground hover:text-foreground p-0.5" aria-label="Preview">
-            <Eye className="h-3 w-3" />
-          </button>
-          <button className="text-muted-foreground hover:text-foreground p-0.5" aria-label="Inspect">
-            <Code className="h-3 w-3" />
-          </button>
+    <>
+      <div className="rounded-md border border-border bg-surface-2 mt-2 overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-1.5 bg-surface-3 border-b border-border">
+          <span className="text-micro font-mono text-muted-foreground">{language}</span>
+          <div className="flex gap-1">
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(code);
+                setCopied(true);
+                if (resetTimerRef.current !== null) {
+                  clearTimeout(resetTimerRef.current);
+                }
+                resetTimerRef.current = globalThis.setTimeout(() => {
+                  setCopied(false);
+                  resetTimerRef.current = null;
+                }, 1500) as unknown as number;
+              }}
+              className="text-muted-foreground hover:text-foreground p-0.5"
+              aria-label="Copy code"
+            >
+              {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
+            </button>
+            <button
+              onClick={() => setViewer('preview')}
+              className="text-muted-foreground hover:text-foreground p-0.5"
+              aria-label="Preview rendered output"
+              title="Preview"
+            >
+              <Eye className="h-3 w-3" />
+            </button>
+            <button
+              onClick={() => setViewer('inspect')}
+              className="text-muted-foreground hover:text-foreground p-0.5"
+              aria-label="Inspect raw code"
+              title="Inspect with line numbers"
+            >
+              <Code className="h-3 w-3" />
+            </button>
+          </div>
         </div>
+        <pre className="p-3 text-xs font-mono leading-relaxed overflow-x-auto scrollbar-thin"><code>{code}</code></pre>
       </div>
-      <pre className="p-3 text-xs font-mono leading-relaxed overflow-x-auto scrollbar-thin"><code>{code}</code></pre>
-    </div>
+      <CodeViewerDialog
+        open={viewer !== null}
+        onOpenChange={(o) => {
+          if (!o) setViewer(null);
+        }}
+        language={language}
+        code={code}
+        mode={viewer ?? 'preview'}
+      />
+    </>
   );
 }
 

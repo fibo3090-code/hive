@@ -389,7 +389,26 @@ function StepPlanReview({
             Generating plan from your description…
           </div>
         )}
-        {!previewQuery.isLoading && generatedPlan.length === 0 && (
+        {previewQuery.isError && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-xs">
+            <div className="font-medium text-destructive mb-1">
+              Couldn't generate the plan.
+            </div>
+            <div className="text-muted-foreground mb-2">
+              {previewQuery.error instanceof Error
+                ? previewQuery.error.message
+                : 'Unknown error'}
+            </div>
+            <button
+              type="button"
+              onClick={() => void previewQuery.refetch()}
+              className="rounded-md border border-border px-3 py-1.5 text-xs text-foreground hover:bg-surface-2"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {!previewQuery.isLoading && !previewQuery.isError && generatedPlan.length === 0 && (
           <div className="rounded-lg border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
             Add a description to see a generated plan.
           </div>
