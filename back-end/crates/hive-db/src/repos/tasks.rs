@@ -17,6 +17,14 @@ pub struct CreateTask {
     pub estimated_tokens: i32,
     pub agent_id: Option<String>,
     pub sprint_id: Option<String>,
+    /// Phase 0b: anchor link from this task back to the spec section that
+    /// originated it. Set by the doc→sprint decomposition pipeline; manual
+    /// task creators leave it `None`.
+    #[serde(default)]
+    pub spec_section_id: Option<String>,
+    /// Phase 0b: SLA deadline (RFC3339).
+    #[serde(default)]
+    pub due_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -54,7 +62,7 @@ pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbE
 }
 
 /// Create a new task.
-pub async fn create(db: &DatabaseConnection, input: CreateTask) -> Result<Model, DbErr> {
+pub async fn create<C: ConnectionTrait>(db: &C, input: CreateTask) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     let model = ActiveModel {
         id: Set(new_id()),
@@ -70,8 +78,8 @@ pub async fn create(db: &DatabaseConnection, input: CreateTask) -> Result<Model,
         updated_at: Set(now),
         completed_at: Set(None),
         deleted_at: Set(None),
-        spec_section_id: Set(None),
-        due_at: Set(None),
+        spec_section_id: Set(input.spec_section_id),
+        due_at: Set(input.due_at),
         last_progress_at: Set(None),
     };
     model.insert(db).await
