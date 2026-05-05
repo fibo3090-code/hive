@@ -293,11 +293,7 @@ export default function Modules() {
               {filtered.map((module: ModuleCatalogItem) => (
                 <div
                   key={module.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => navigate(`/modules/${module.id}`)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/modules/${module.id}`); }}
-                  className="rounded-lg border border-border bg-card hover:border-primary/30 cursor-pointer transition-colors overflow-hidden"
+                  className="rounded-lg border border-border bg-card hover:border-primary/30 transition-colors overflow-hidden"
                 >
                   <div className="p-4">
                     <div className="flex items-start justify-between mb-2">
@@ -336,6 +332,14 @@ export default function Modules() {
                       <span>by {module.author}</span>
                       <span>Updated {module.updated}</span>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/modules/${module.id}`)}
+                      aria-label={`Open ${module.name}`}
+                      className="mt-2 text-micro text-primary hover:underline"
+                    >
+                      View details →
+                    </button>
                   </div>
 
                   <button

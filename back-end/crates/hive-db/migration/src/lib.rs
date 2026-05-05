@@ -13,6 +13,7 @@ mod m20260518_000001_search_config;
 mod m20260601_000001_budget_cents_i64;
 mod m20260602_000001_module_publish;
 mod m20260603_000001_chat_attachments;
+mod m20260605_000001_notification_payload;
 
 pub struct Migrator;
 
@@ -33,6 +34,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260601_000001_budget_cents_i64::Migration),
             Box::new(m20260602_000001_module_publish::Migration),
             Box::new(m20260603_000001_chat_attachments::Migration),
+            Box::new(m20260605_000001_notification_payload::Migration),
         ]
     }
 }

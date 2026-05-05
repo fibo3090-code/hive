@@ -127,8 +127,12 @@ impl Tool for SpawnAgent {
         .await
         .map_err(|e| ToolError::Other(format!("create agent: {e}")))?;
 
-        // Bring the executor up and enqueue the first task.
-        let _exec = self.executors.ensure(&created.id, &ctx.project_id).await;
+        // Bring the executor up under the parent's cancel scope so cancelling
+        // the spawning agent cascades through every descendant.
+        let _exec = self
+            .executors
+            .ensure_with_parent(&created.id, &ctx.project_id, ctx.agent_id.as_deref())
+            .await;
         let msg = agent_messages::enqueue(
             self.db.conn(),
             agent_messages::EnqueueAgentMessage {

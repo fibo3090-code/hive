@@ -24,6 +24,7 @@ license = "MIT"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = { version = "0.7" }
 async-stream = "0.3"
 
 # Web framework

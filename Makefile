@@ -29,6 +29,10 @@ dev-front:
 	cd front-end && npm run dev
 
 up: setup
+	@command -v tmux >/dev/null || { \
+		echo "✗ 'make up' needs tmux. Install it (apt: tmux, brew: tmux) or run 'make dev-back' and 'make dev-front' in two terminals."; \
+		exit 1; \
+	}
 	tmux new-session -d -s hive 'cd back-end && cargo run -p hive-api -- serve' \; \
 	    split-window -h 'cd front-end && npm run dev' \; \
 	    attach

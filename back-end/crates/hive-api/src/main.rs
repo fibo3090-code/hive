@@ -442,6 +442,13 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     ));
     let _ = executors.rehydrate_from_db().await;
 
+    // Background loop-detection daemon. Producer for the
+    // `loop_detected` notifications the LoopDetectionModal renders.
+    hive_runtime::loop_detector::spawn(
+        runtime.db.clone(),
+        EventBus::new(events.clone()),
+    );
+
     let state = AppState {
         inner: Arc::new(RwLock::new(runtime)),
         events,
@@ -498,6 +505,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route("/v1/agents/:agent_id/pause", post(pause_agent))
         .route("/v1/agents/:agent_id/resume", post(resume_agent))
         .route("/v1/agents/:agent_id/terminate", post(terminate_agent))
+        .route(
+            "/v1/agents/:agent_id/cancel-subtree",
+            post(cancel_agent_subtree),
+        )
         .route(
             "/v1/projects/:project_id/coordinator/ensure",
             post(ensure_coordinator),
@@ -1802,6 +1813,9 @@ async fn terminate_agent(
     Path(agent_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    // Cascade cancel to every descendant first so child agents stop
+    // mid-turn rather than completing work that's about to be discarded.
+    state.executors.cancel_subtree(&agent_id).await;
     let _ = state
         .executors
         .terminate(&agent_id)
@@ -1815,6 +1829,20 @@ async fn terminate_agent(
     )
     .await;
     Ok(Json(json!({ "id": agent_id, "status": "deprecated" })))
+}
+
+/// Cancel an agent's in-flight work (and every descendant spawned
+/// via `spawn_agent`) without terminating the executor itself. Useful
+/// when the user wants to abort a runaway turn but keep the agent
+/// reachable for new dispatches.
+async fn cancel_agent_subtree(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    state.executors.cancel_subtree(&agent_id).await;
+    Ok(Json(
+        json!({ "id": agent_id, "status": "cancelled", "subtree": true }),
+    ))
 }
 
 async fn ensure_coordinator(
@@ -2191,6 +2219,7 @@ async fn list_notifications(State(state): State<AppState>) -> Result<Json<Value>
                 "message": notification.message,
                 "actionable": notification.actionable,
                 "actionLabel": notification.action_label,
+                "payload": notification.payload,
                 "read": notification.read_at.is_some(),
                 "readAt": notification.read_at,
                 "dismissedAt": notification.dismissed_at,

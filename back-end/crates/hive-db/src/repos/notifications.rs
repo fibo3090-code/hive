@@ -15,6 +15,8 @@ pub struct CreateNotification {
     pub message: String,
     pub actionable: bool,
     pub action_label: Option<String>,
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
 }
 
 // ── Queries ──────────────────────────────────────────────────────────────────
@@ -39,6 +41,7 @@ pub async fn create(db: &DatabaseConnection, input: CreateNotification) -> Resul
         message: Set(input.message),
         actionable: Set(input.actionable),
         action_label: Set(input.action_label),
+        payload: Set(input.payload),
         read_at: Set(None),
         dismissed_at: Set(None),
         created_at: Set(now),

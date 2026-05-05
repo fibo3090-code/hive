@@ -940,6 +940,7 @@ pub async fn seed_demo(db: &DatabaseConnection) -> Result<(), DbErr> {
                     message: message.into(),
                     actionable,
                     action_label: action_label.map(str::to_owned),
+                    payload: None,
                 },
             )
             .await?;

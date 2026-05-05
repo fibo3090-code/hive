@@ -145,7 +145,7 @@ function AgentDetailDrawer({
     <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'spring', damping: 30, stiffness: 260 }} className="absolute right-0 top-0 h-full w-[420px] border-l border-border bg-card z-50 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h3 className="text-sm font-semibold">{agent.name}</h3>
-        <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
+        <button onClick={onClose} aria-label="Close agent details" className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
       </div>
       <div className="flex-1 overflow-auto scrollbar-thin p-4 space-y-5">
         <section className="space-y-2">
@@ -255,13 +255,27 @@ function OrgChartView({ agents, onSelect }: { readonly agents: Agent[]; readonly
   const children = agents.slice(1);
   return (
     <div className="flex flex-col items-center pt-12 gap-8 animate-fade-in">
-      {root && <button onClick={() => onSelect(root.id)}><Card agent={root} isRoot /></button>}
+      {root && (
+        <button
+          type="button"
+          onClick={() => onSelect(root.id)}
+          aria-label={`Open ${root.name} details`}
+        >
+          <Card agent={root} isRoot />
+        </button>
+      )}
       <div className="h-8 w-px bg-border" />
       <div className="flex gap-6 flex-wrap justify-center">
         {children.map((agent) => (
           <div key={agent.id} className="flex flex-col items-center gap-2">
             <div className="h-6 w-px bg-border" />
-            <button onClick={() => onSelect(agent.id)}><Card agent={agent} /></button>
+            <button
+              type="button"
+              onClick={() => onSelect(agent.id)}
+              aria-label={`Open ${agent.name} details`}
+            >
+              <Card agent={agent} />
+            </button>
           </div>
         ))}
       </div>
@@ -390,7 +404,12 @@ export default function HiveGraph() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setShowLocks((value) => !value)} className={cn('rounded-md border p-1 text-muted-foreground hover:text-foreground', showLocks && 'border-primary bg-primary/10 text-primary')}>
+          <button
+            onClick={() => setShowLocks((value) => !value)}
+            aria-label={showLocks ? 'Hide locked agent overlay' : 'Show locked agent overlay'}
+            aria-pressed={showLocks}
+            className={cn('rounded-md border p-1 text-muted-foreground hover:text-foreground', showLocks && 'border-primary bg-primary/10 text-primary')}
+          >
             <Lock className="h-3.5 w-3.5" />
           </button>
           <button onClick={() => setSpawnModalOpen(true)} className="flex items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-xs text-primary hover:bg-primary/20"><Plus className="h-3.5 w-3.5" /> Spawn</button>

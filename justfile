@@ -25,8 +25,13 @@ dev-front:
     cd front-end && npm run dev
 
 # Launch back + front in a tmux session called `hive`. Detach with
-# Ctrl-b d; re-attach with `tmux attach -t hive`.
+# Ctrl-b d; re-attach with `tmux attach -t hive`. Falls back to a
+# helpful error if `tmux` isn't installed.
 up: setup
+    @command -v tmux >/dev/null || { \
+        echo "✗ 'just up' needs tmux. Install it (apt: tmux, brew: tmux) or run 'just dev-back' and 'just dev-front' in two terminals."; \
+        exit 1; \
+    }
     tmux new-session -d -s hive 'cd back-end && cargo run -p hive-api -- serve' \; \
         split-window -h 'cd front-end && npm run dev' \; \
         attach

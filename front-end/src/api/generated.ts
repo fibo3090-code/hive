@@ -77,13 +77,18 @@ export interface TaskItem {
 
 export interface Notification {
   id: string;
-  type: 'critical' | 'high' | 'medium' | 'info';
+  type: 'critical' | 'high' | 'medium' | 'info' | 'loop_detected' | string;
   title: string;
   message: string;
   time: string;
   read: boolean;
   actionable?: boolean;
   actionLabel?: string | null;
+  /**
+   * Structured payload for typed notifications (e.g. `loop_detected`).
+   * Shape depends on `type`; consumers should narrow before accessing.
+   */
+  payload?: Record<string, unknown> | null;
 }
 
 export interface NoteItem {

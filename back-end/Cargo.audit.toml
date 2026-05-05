@@ -1,0 +1,16 @@
+# `cargo audit` configuration. CI runs `cargo audit --deny warnings`
+# from this directory; advisories that we have explicitly reviewed and
+# accepted (because no fix exists yet, the path is not exercised, or
+# the upgrade is tracked elsewhere) go in the `[advisories.ignore]`
+# list with a one-line rationale.
+#
+# Convention: every ignored advisory must include a comment with
+#   - the advisory ID
+#   - why the codebase isn't actually affected
+#   - the issue/PR tracking the eventual upgrade.
+
+[advisories]
+ignore = []
+
+[output]
+deny = ["warnings", "unmaintained", "unsound"]
