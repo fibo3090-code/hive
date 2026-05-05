@@ -70,6 +70,9 @@ pub async fn create(db: &DatabaseConnection, input: CreateTask) -> Result<Model,
         updated_at: Set(now),
         completed_at: Set(None),
         deleted_at: Set(None),
+        spec_section_id: Set(None),
+        due_at: Set(None),
+        last_progress_at: Set(None),
     };
     model.insert(db).await
 }
