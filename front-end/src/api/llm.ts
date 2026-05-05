@@ -21,6 +21,14 @@ export interface LlmModel {
   contextWindow: number | null;
   supportsTools: boolean;
   supportsStreaming: boolean;
+  /**
+   * Whether the model can deliver tool calls inside a streaming response.
+   * Distinct from `supportsTools`: a model can support tools (via
+   * non-streaming round-trip) yet fail to surface them through the
+   * streaming path. Defaults to `false` from the backend when the field
+   * is missing on legacy responses.
+   */
+  supportsStreamingTools?: boolean;
 }
 
 export interface LlmTestOutcome {

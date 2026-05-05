@@ -818,7 +818,24 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                         }
                     }
                 }
-                Err(error) => tool_result_json(&invocation.tool, error),
+                Err(error) => {
+                    // Schema validation failed — emit a dedicated SSE event so
+                    // the UI can surface *why* the tool was skipped (small
+                    // models on Ollama in particular emit malformed args
+                    // that would otherwise vanish into the regular
+                    // tool_result stream as "ok:false").
+                    bus.emit(
+                        format!("chat.{thread_id}.tool_validation_error"),
+                        json!({
+                            "threadId": thread_id,
+                            "messageId": assistant_message_id,
+                            "tool": invocation.tool,
+                            "arguments": invocation.arguments,
+                            "error": error,
+                        }),
+                    );
+                    tool_result_json(&invocation.tool, error)
+                }
             };
 
             executed_calls.push(json!({
