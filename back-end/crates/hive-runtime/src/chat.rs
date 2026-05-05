@@ -454,22 +454,32 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     }
 
     let mut messages: Vec<ChatMessage> = Vec::new();
-    let mut system_parts = Vec::new();
-    if let Some(s) = system_prompt {
-        if !s.trim().is_empty() {
-            system_parts.push(s);
+
+    // Phase 0c: replace the ad-hoc agent + 2-line blurb + tool dump with a
+    // deterministic four-layer composition (see `crate::prompt`). The first
+    // two layers are byte-identical across turns when the agent and tool
+    // catalog don't change, which lets provider prompt caching hit. Project
+    // memory walks `HIVE.md` from the project's data directory; reminders
+    // (live state) go last so the cache prefix survives.
+    let project_root = data_dir.join("projects").join(&project_id);
+    let tool_catalog_block = tool_registry.as_ref().and_then(|r| {
+        if r.names().is_empty() {
+            None
+        } else {
+            Some(format!(
+                "Use tools when they materially improve accuracy or execution. \
+                 Call tools using the provider's native tool interface.\n\n{}",
+                tool_protocol_prompt(r)
+            ))
         }
-    }
-    if let Some(registry) = &tool_registry {
-        if !registry.names().is_empty() {
-            system_parts.push(
-                "Use tools when they materially improve accuracy or execution. Call tools using the provider's native tool interface.".into(),
-            );
-            system_parts.push(tool_protocol_prompt(registry));
-        }
-    }
-    if !system_parts.is_empty() {
-        messages.push(ChatMessage::system(system_parts.join("\n\n")));
+    });
+    let composed = crate::prompt::PromptComposer::new()
+        .with_agent_prompt(system_prompt)
+        .with_tool_catalog(tool_catalog_block)
+        .with_hive_memory(Some(&project_root))
+        .build();
+    if let Some(s) = composed {
+        messages.push(ChatMessage::system(s));
     }
     for row in history {
         let role = match row.role.as_str() {
