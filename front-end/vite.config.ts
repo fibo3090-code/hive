@@ -5,6 +5,9 @@ import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  // Only inject env vars prefixed `VITE_` into the browser bundle so a
+  // stray `OPENAI_API_KEY` in the shell never ends up shipped to clients.
+  envPrefix: ["VITE_"],
   server: {
     host: "::",
     port: 8080,

@@ -14,6 +14,7 @@ use hive_db::{repos::agent_messages, Db};
 use serde_json::json;
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::events::EventBus;
 use crate::turn_driver::{TurnDriver, TurnRequest};
@@ -45,6 +46,10 @@ pub struct AgentExecutor {
     /// `.await` the task's exit. Once taken, the handle is gone — a
     /// second `terminate()` is a no-op.
     handle: Mutex<Option<JoinHandle<()>>>,
+    /// Cancellation scope for this executor. Children spawned via the
+    /// `spawn_agent` tool derive their token from this one, so cancelling
+    /// here cascades automatically through the descendant subtree.
+    cancel: CancellationToken,
 }
 
 /// Hard ceiling on how long `terminate()` waits for the inner task to
@@ -99,6 +104,13 @@ impl AgentExecutor {
     pub async fn state(&self) -> ExecutorState {
         *self.state.read().await
     }
+
+    /// Borrow the cancel token. The chat-turn driver uses this so its
+    /// inner `RunTurn` shares the same cancel scope as the rest of the
+    /// agent's work.
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
 }
 
 impl Drop for AgentExecutor {
@@ -133,6 +145,7 @@ pub fn spawn_executor(
     db: Db,
     bus: EventBus,
     driver: DriverSlot,
+    cancel: CancellationToken,
 ) -> AgentExecutor {
     // Inbox capacity: 256 is generous for normal agent traffic but
     // bounded so a runaway dispatcher applies backpressure rather than
@@ -197,6 +210,7 @@ pub fn spawn_executor(
         state,
         resume,
         handle: Mutex::new(Some(handle)),
+        cancel,
     }
 }
 

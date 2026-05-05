@@ -14,6 +14,8 @@ pub struct Model {
     pub message: String,
     pub actionable: bool,
     pub action_label: Option<String>,
+    #[sea_orm(column_type = "Json", nullable)]
+    pub payload: Option<serde_json::Value>,
     pub read_at: Option<String>,
     pub dismissed_at: Option<String>,
     pub created_at: String,

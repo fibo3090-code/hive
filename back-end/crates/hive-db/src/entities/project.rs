@@ -14,7 +14,12 @@ pub struct Model {
     pub test_coverage: i32,
     pub sovereignty_tier: String,
     pub status: String,
-    pub budget_total_cents: i32,
+    /// `i64` to match `cost_events.cost_cents` / `chat_messages.cost_cents`.
+    /// Keeps "spend so far" and "budget" comparable without lossy casts at
+    /// the boundary. Postgres column widening lives in
+    /// `m20260601_budget_cents_i64`; SQLite stores integers variable-width
+    /// so the schema change is a no-op there.
+    pub budget_total_cents: i64,
     pub last_activity_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,

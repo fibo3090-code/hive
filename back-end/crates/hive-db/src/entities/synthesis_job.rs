@@ -22,6 +22,13 @@ pub struct Model {
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    /// RFC3339 timestamp; NULL until the user publishes the module.
+    pub published_at: Option<String>,
+    /// `'project'` or `'public'`. Project-visibility limits the catalog to
+    /// the same sovereignty tier; public-visibility shares across tiers.
+    pub published_visibility: Option<String>,
+    /// Short publisher-supplied summary. Falls back to `description`.
+    pub published_summary: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -22,9 +22,9 @@ use clap::{Parser, Subcommand};
 use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
-        agent_messages, agents, alerts, audit, chat_messages, chat_threads, cost_events,
-        llm_providers, notes, notifications, projects, sessions, settings, sprints,
-        synthesis_jobs, tasks, tech_debt,
+        agent_messages, agents, alerts, audit, chat_attachments, chat_messages, chat_threads,
+        cost_events, llm_providers, notes, notifications, project_workspaces, projects, sessions,
+        settings, sprints, synthesis_jobs, tasks, tech_debt,
     },
     seed::seed_demo,
     Db,
@@ -223,7 +223,7 @@ struct CreateProjectBody {
     name: String,
     description: Option<String>,
     sovereignty_tier: String,
-    budget_total_cents: i32,
+    budget_total_cents: i64,
     status: Option<String>,
 }
 
@@ -233,7 +233,7 @@ struct UpdateProjectBody {
     name: Option<String>,
     description: Option<Option<String>>,
     sovereignty_tier: Option<String>,
-    budget_total_cents: Option<i32>,
+    budget_total_cents: Option<i64>,
     status: Option<String>,
     health_score: Option<i32>,
     spec_completion: Option<i32>,
@@ -294,7 +294,7 @@ struct ReorderSprintsBody {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExtendBudgetBody {
-    new_total_cents: i32,
+    new_total_cents: i64,
 }
 
 #[derive(Deserialize)]
@@ -442,6 +442,13 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     ));
     let _ = executors.rehydrate_from_db().await;
 
+    // Background loop-detection daemon. Producer for the
+    // `loop_detected` notifications the LoopDetectionModal renders.
+    hive_runtime::loop_detector::spawn(
+        runtime.db.clone(),
+        EventBus::new(events.clone()),
+    );
+
     let state = AppState {
         inner: Arc::new(RwLock::new(runtime)),
         events,
@@ -477,10 +484,20 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         )
         .route("/v1/projects/:project_id/activate", post(activate_project))
         .route(
+            "/v1/projects/:project_id/export",
+            get(export_project_archive),
+        )
+        .route(
+            "/v1/projects/:project_id/chat-history",
+            axum::routing::delete(clear_chat_history),
+        )
+        .route(
             "/v1/projects/:project_id/agents",
             get(list_agents).post(create_agent),
         )
         .route("/v1/agents/:agent_id/set-status", post(set_agent_status))
+        .route("/v1/agents/:agent_id", patch(update_agent))
+        .route("/v1/tools", get(list_tools))
         .route("/v1/agents/:agent_id/messages", get(get_agent_messages))
         .route("/v1/tools", get(list_tool_manifests))
         .route("/v1/agents/:agent_id/lineage", get(get_agent_lineage))
@@ -488,6 +505,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route("/v1/agents/:agent_id/pause", post(pause_agent))
         .route("/v1/agents/:agent_id/resume", post(resume_agent))
         .route("/v1/agents/:agent_id/terminate", post(terminate_agent))
+        .route(
+            "/v1/agents/:agent_id/cancel-subtree",
+            post(cancel_agent_subtree),
+        )
         .route(
             "/v1/projects/:project_id/coordinator/ensure",
             post(ensure_coordinator),
@@ -628,9 +649,35 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/chat-messages/:message_id/cancel",
             post(cancel_chat_message),
         )
+        .route(
+            "/v1/chat-messages/:message_id/process",
+            post(process_chat_message),
+        )
+        .route(
+            "/v1/chat-messages/:message_id/attachments",
+            get(list_chat_attachments).post(upload_chat_attachment),
+        )
+        .route(
+            "/v1/chat-messages/:message_id/attachments/:attachment_id",
+            get(download_chat_attachment).delete(delete_chat_attachment),
+        )
         .route("/v1/projects/:project_id/modules/synthesize", post(start_module_synthesis))
+        .route(
+            "/v1/projects/:project_id/synthesis-jobs",
+            get(list_synthesis_jobs_for_project),
+        )
         .route("/v1/synthesis-jobs/:job_id", get(get_synthesis_job))
+        .route(
+            "/v1/synthesis-jobs/:job_id/publish",
+            post(publish_synthesis_job),
+        )
+        .route(
+            "/v1/synthesis-jobs/:job_id/unpublish",
+            post(unpublish_synthesis_job),
+        )
+        .route("/v1/modules/published", get(list_published_modules))
         .with_state(state)
+        .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http());
 
@@ -665,6 +712,32 @@ fn init_tracing() {
 /// Restrict cross-origin access to the dev origins served by Vite. The API is
 /// bound to 127.0.0.1 so this is defence in depth — it stops a malicious page
 /// open in the same browser from exfiltrating provider keys via the API.
+/// Middleware that mints a per-request `request_id` ULID, attaches it
+/// to a `tracing::info_span!` so every log line in the handler carries
+/// the field, and sets `x-request-id` on the response. Lets ops grep
+/// logs by id and the frontend cite it in user-facing error toasts.
+async fn request_id_middleware(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::header::HeaderValue;
+    use tracing::Instrument;
+    let request_id = ulid::Ulid::new().to_string();
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let span = tracing::info_span!(
+        "http",
+        request_id = %request_id,
+        method = %method,
+        path = %uri.path(),
+    );
+    let mut response = next.run(request).instrument(span).await;
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    response
+}
+
 fn cors_layer() -> CorsLayer {
     use axum::http::HeaderValue;
     let dev_origins = [
@@ -807,20 +880,38 @@ async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppEr
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    let mut search_provider = stored_tools
-        .get("searchProvider")
-        .and_then(Value::as_str)
-        .unwrap_or("searxng")
-        .to_owned();
+    // Prefer the dedicated `search.*` settings rows (seeded by
+    // m20260518_search_config) over the JSON blob. The blob path stays
+    // as a legacy fallback so a user who flipped the toggle before this
+    // commit doesn't get reset.
+    let database = db(state).await;
+    let provider_row = settings::get_value(database.conn(), "search", "provider")
+        .await?
+        .and_then(|v| v.as_str().map(str::to_owned));
+    let searxng_row = settings::get_value(database.conn(), "search", "searxng_url")
+        .await?
+        .and_then(|v| v.as_str().map(str::to_owned));
+
+    let mut search_provider = provider_row
+        .or_else(|| {
+            stored_tools
+                .get("searchProvider")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "searxng".into());
     if search_provider != "tavily" && search_provider != "searxng" {
         search_provider = "searxng".into();
     }
 
-    let searxng_url = stored_tools
-        .get("searxngUrl")
-        .and_then(Value::as_str)
-        .unwrap_or("http://localhost:8888")
-        .to_owned();
+    let searxng_url = searxng_row
+        .or_else(|| {
+            stored_tools
+                .get("searxngUrl")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "http://localhost:8888".into());
     let enabled_tools = stored_tools
         .get("enabledTools")
         .and_then(|value| value.as_array())
@@ -997,6 +1088,7 @@ async fn build_tooling(
         &mut registry,
         db(state).await.clone(),
         state.executors.clone(),
+        EventBus::new(state.events.clone()),
     );
     let registry = registry.filtered(&enabled_tools);
 
@@ -1441,6 +1533,105 @@ async fn delete_project(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// GET /v1/projects/:id/export — full project snapshot as a JSON
+/// document (for the Settings → Data & Privacy "Export project"
+/// button). Includes the project row, agents, sprints, tasks, every
+/// chat thread + its messages, and the recent audit log.
+///
+/// Returns `Content-Disposition: attachment` so a `<a download>` in
+/// the frontend triggers a save dialog instead of rendering inline.
+async fn export_project_archive(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Response, AppError> {
+    let database = db(&state).await;
+    let project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    let agent_rows = agents::list_by_project(database.conn(), &project_id).await?;
+    let sprint_rows = sprints::list_by_project(database.conn(), &project_id).await?;
+    let task_rows = tasks::list_by_project(database.conn(), &project_id).await?;
+
+    // Threads + their messages. Chat history is the bulk of the
+    // export; assemble a `{thread, messages: [...]}` shape so the
+    // export is self-contained without requiring multiple files.
+    let thread_rows = chat_threads::list_by_project(database.conn(), &project_id).await?;
+    let mut threads_with_messages = Vec::with_capacity(thread_rows.len());
+    for thread in &thread_rows {
+        let msgs = chat_messages::list_by_thread(database.conn(), &thread.id).await?;
+        threads_with_messages.push(json!({
+            "thread": thread,
+            "messages": msgs,
+        }));
+    }
+
+    // Recent audit entries scoped to this project (last 1000).
+    let audit_rows = audit::list_for_entity(database.conn(), "project", &project_id).await?;
+
+    let archive = json!({
+        "schemaVersion": 1,
+        "exportedAt": chrono::Utc::now().to_rfc3339(),
+        "project": project,
+        "agents": agent_rows,
+        "sprints": sprint_rows,
+        "tasks": task_rows,
+        "chatThreads": threads_with_messages,
+        "auditLog": audit_rows,
+    });
+
+    let body = serde_json::to_vec_pretty(&archive)
+        .map_err(|e| AppError::Internal(format!("serialise export: {e}")))?;
+    let safe_name: String = project
+        .name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '-' })
+        .collect();
+    let filename = format!("hive-export-{safe_name}-{}.json", chrono::Utc::now().format("%Y%m%d"));
+
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "application/json".to_owned()),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// DELETE /v1/projects/:id/chat-history — clears every chat thread
+/// and its messages for the project. Used by Settings → Data & Privacy
+/// "Clear chat history" with a confirmation dialog. Audited.
+async fn clear_chat_history(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    let thread_count = chat_threads::clear_for_project(database.conn(), &project_id).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "project.chat_history.cleared",
+        "project",
+        &project_id,
+        None,
+        Some(json!({ "threadsDeleted": thread_count })),
+    )
+    .await?;
+    emit(
+        &state,
+        "chat.thread.cleared",
+        json!({ "projectId": project_id, "threadsDeleted": thread_count }),
+    )
+    .await;
+    Ok(Json(json!({ "ok": true, "threadsDeleted": thread_count })))
+}
+
 async fn activate_project(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
@@ -1622,6 +1813,9 @@ async fn terminate_agent(
     Path(agent_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    // Cascade cancel to every descendant first so child agents stop
+    // mid-turn rather than completing work that's about to be discarded.
+    state.executors.cancel_subtree(&agent_id).await;
     let _ = state
         .executors
         .terminate(&agent_id)
@@ -1635,6 +1829,20 @@ async fn terminate_agent(
     )
     .await;
     Ok(Json(json!({ "id": agent_id, "status": "deprecated" })))
+}
+
+/// Cancel an agent's in-flight work (and every descendant spawned
+/// via `spawn_agent`) without terminating the executor itself. Useful
+/// when the user wants to abort a runaway turn but keep the agent
+/// reachable for new dispatches.
+async fn cancel_agent_subtree(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    state.executors.cancel_subtree(&agent_id).await;
+    Ok(Json(
+        json!({ "id": agent_id, "status": "cancelled", "subtree": true }),
+    ))
 }
 
 async fn ensure_coordinator(
@@ -1736,6 +1944,160 @@ async fn set_agent_status(
         &state,
         "agent.status",
         json!({ "id": updated.id, "status": updated.status }),
+    )
+    .await;
+    Ok(Json(json!(updated)))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct UpdateAgentBody {
+    name: Option<String>,
+    role: Option<String>,
+    /// Friendly model id (e.g. `claude-sonnet-4-6`). Stored on the
+    /// `agents.model` column so the agent card renders consistently.
+    model: Option<String>,
+    /// Provider+model selection used by the runtime. Either both set or
+    /// both null (clear) — anything else is ambiguous and rejected.
+    model_provider_id: Option<Option<String>>,
+    model_id: Option<Option<String>>,
+    /// Free-text instructions prepended to every turn's system block.
+    /// `Some(None)` clears, `Some(Some(s))` sets, `None` leaves alone.
+    system_prompt: Option<Option<String>>,
+    /// List of registered tool names. Validated against the registry.
+    enabled_tools: Option<Vec<String>>,
+}
+
+/// GET /v1/tools — describes every tool the runtime can register.
+/// The Agent Config dialog uses this to render the tool multi-select.
+/// Description text mirrors what each tool's `manifest()` returns so the
+/// catalog stays consistent without instantiating sandboxes.
+async fn list_tools(State(_state): State<AppState>) -> Json<Value> {
+    Json(json!([
+        {
+            "name": "web_search",
+            "description": "Search the web via Tavily or SearxNG and return ranked results.",
+            "sideEffects": false,
+            "category": "research"
+        },
+        {
+            "name": "web_fetch",
+            "description": "Fetch a URL and extract its main text content.",
+            "sideEffects": false,
+            "category": "research"
+        },
+        {
+            "name": "fs_read",
+            "description": "Read a text file from the project workspace (capped at 256 KiB).",
+            "sideEffects": false,
+            "category": "filesystem"
+        },
+        {
+            "name": "fs_write",
+            "description": "Write text to a file in the project workspace.",
+            "sideEffects": true,
+            "category": "filesystem"
+        },
+        {
+            "name": "fs_list",
+            "description": "List directory contents (capped at 1000 entries).",
+            "sideEffects": false,
+            "category": "filesystem"
+        },
+        {
+            "name": "shell_exec",
+            "description": "Run a shell command in the workspace sandbox (60s budget).",
+            "sideEffects": true,
+            "category": "execution"
+        },
+        {
+            "name": "spawn_agent",
+            "description": "Create a sub-agent under this one and dispatch an initial task.",
+            "sideEffects": true,
+            "category": "coordination"
+        },
+        {
+            "name": "message_agent",
+            "description": "Send a message to another agent's inbox.",
+            "sideEffects": true,
+            "category": "coordination"
+        }
+    ]))
+}
+
+/// PATCH /v1/agents/:id — let users tune name, role, model, system
+/// prompt, and the per-agent tool allowlist from the HiveGraph Config
+/// dialog. The runtime picks up the changes on the next turn.
+async fn update_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<UpdateAgentBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let before = agents::get(database.conn(), &agent_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
+
+    // Validate enabled_tools against the registered surface so a typo
+    // doesn't silently disable everything on the next turn. The full
+    // registered set is `default_tool_names()` (fs/shell/web_fetch),
+    // plus `web_search` (added when configured), plus the runtime-only
+    // pair `spawn_agent` / `message_agent` from `hive-runtime`.
+    if let Some(tools) = body.enabled_tools.as_ref() {
+        let mut known: std::collections::HashSet<String> =
+            default_tool_names().into_iter().collect();
+        known.insert("web_search".into());
+        known.insert("spawn_agent".into());
+        known.insert("message_agent".into());
+        let unknown: Vec<&str> = tools
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !known.contains(*name))
+            .collect();
+        if !unknown.is_empty() {
+            return Err(AppError::BadRequest(format!(
+                "unknown tool(s): {}",
+                unknown.join(", ")
+            )));
+        }
+    }
+
+    let patch = agents::UpdateAgent {
+        slug: None,
+        name: body.name,
+        role: body.role,
+        model: body.model,
+        status: None,
+        current_task: None,
+        quality_score: None,
+        tokens_used: None,
+        eval_scores: None,
+        enabled_tools: body.enabled_tools,
+        system_prompt: body.system_prompt,
+        model_provider_id: body.model_provider_id,
+        model_id: body.model_id,
+    };
+    let updated = agents::update(database.conn(), &agent_id, patch).await?;
+
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.update",
+        "agent",
+        &agent_id,
+        Some(serde_json::to_value(&before).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
+    emit(
+        &state,
+        "agent.status",
+        json!({
+            "id": updated.id,
+            "agentId": updated.id,
+            "projectId": updated.project_id,
+            "status": updated.status,
+        }),
     )
     .await;
     Ok(Json(json!(updated)))
@@ -1857,6 +2219,7 @@ async fn list_notifications(State(state): State<AppState>) -> Result<Json<Value>
                 "message": notification.message,
                 "actionable": notification.actionable,
                 "actionLabel": notification.action_label,
+                "payload": notification.payload,
                 "read": notification.read_at.is_some(),
                 "readAt": notification.read_at,
                 "dismissedAt": notification.dismissed_at,
@@ -2458,12 +2821,28 @@ async fn get_workspace_info(
     let _project = projects::get(database.conn(), &project_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+
+    // Prefer the persisted row from `project_workspaces` (Phase 3.1
+    // schema). Fall back to filesystem inspection only when no row
+    // exists yet (the project was created before workspace init).
+    if let Some(row) = project_workspaces::get_by_project(database.conn(), &project_id).await? {
+        return Ok(Json(json!(WorkspaceInfo {
+            project_id,
+            sandbox_kind: row.sandbox_kind,
+            status: row.status,
+            root_path: row.root_path,
+        })));
+    }
+
     let data_dir = state.inner.read().await.data_dir.clone();
     let root = workspace_dir(&data_dir, &project_id);
-    let status = if root.exists() { "ready" } else { "missing" };
+    // No DB row yet — surface `uninitialised` honestly so the UI shows
+    // the Init button. Don't claim `ready` just because the directory
+    // happens to exist on disk; the row is the source of truth.
+    let status = if root.exists() { "uninitialised" } else { "missing" };
     Ok(Json(json!(WorkspaceInfo {
         project_id,
-        sandbox_kind: "local-fs".into(),
+        sandbox_kind: "local".into(),
         status: status.into(),
         root_path: root.to_string_lossy().into_owned(),
     })))
@@ -2485,17 +2864,32 @@ async fn init_workspace(
     GitRepo::new(root.clone())
         .init()
         .map_err(|e| AppError::Internal(format!("init git repo: {e}")))?;
+
+    // Persist the workspace row so the choice (sandbox kind, root path)
+    // survives across restarts and so subsequent /workspace/info calls
+    // return the same answer.
+    let upsert = project_workspaces::UpsertWorkspace {
+        project_id: project_id.clone(),
+        sandbox_kind: project_workspaces::SandboxKind::Local,
+        root_path: root.to_string_lossy().into_owned(),
+        container_id: None,
+        status: project_workspaces::WorkspaceStatus::Ready,
+        last_error: None,
+    };
+    let row = project_workspaces::upsert(database.conn(), upsert).await?;
+    let _ = project_workspaces::mark_started(database.conn(), &project_id).await;
+
     emit(
         &state,
         "workspace.updated",
-        json!({ "projectId": project_id, "status": "ready" }),
+        json!({ "projectId": project_id, "status": row.status }),
     )
     .await;
     Ok(Json(json!(WorkspaceInfo {
         project_id,
-        sandbox_kind: "local-fs".into(),
-        status: "ready".into(),
-        root_path: root.to_string_lossy().into_owned(),
+        sandbox_kind: row.sandbox_kind,
+        status: row.status,
+        root_path: row.root_path,
     })))
 }
 
@@ -2523,6 +2917,9 @@ fn synthesis_job_json(job: &hive_db::entities::synthesis_job::Model) -> Value {
         "createdAt": job.created_at,
         "updatedAt": job.updated_at,
         "completedAt": job.completed_at,
+        "publishedAt": job.published_at,
+        "publishedVisibility": job.published_visibility,
+        "publishedSummary": job.published_summary,
     })
 }
 
@@ -2838,6 +3235,104 @@ async fn get_synthesis_job(
     Ok(Json(synthesis_job_json(&job)))
 }
 
+async fn list_synthesis_jobs_for_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let _project = projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    let rows = synthesis_jobs::list_for_project(database.conn(), &project_id).await?;
+    let items: Vec<Value> = rows.iter().map(synthesis_job_json).collect();
+    Ok(Json(json!(items)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishModuleBody {
+    /// `'project'` (visible only to projects in the same tier) or
+    /// `'public'` (visible to every project).
+    visibility: String,
+    /// Optional publisher-supplied summary; defaults to the synthesis
+    /// description.
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+async fn publish_synthesis_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+    Json(body): Json<PublishModuleBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.visibility != "project" && body.visibility != "public" {
+        return Err(AppError::BadRequest(
+            "visibility must be 'project' or 'public'".into(),
+        ));
+    }
+    let database = db(&state).await;
+    let job = synthesis_jobs::get(database.conn(), &job_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("synthesis job {job_id} not found")))?;
+    if job.status != "complete" && job.status != "completed" && job.status != "succeeded" {
+        return Err(AppError::BadRequest(
+            "only completed synthesis jobs can be published".into(),
+        ));
+    }
+    let summary = body
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    let updated = synthesis_jobs::publish(database.conn(), &job_id, &body.visibility, summary)
+        .await?;
+    emit(
+        &state,
+        "module.published",
+        json!({
+            "jobId": updated.id,
+            "projectId": updated.project_id,
+            "visibility": updated.published_visibility,
+        }),
+    )
+    .await;
+    Ok(Json(synthesis_job_json(&updated)))
+}
+
+async fn unpublish_synthesis_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let updated = synthesis_jobs::unpublish(database.conn(), &job_id).await?;
+    emit(
+        &state,
+        "module.unpublished",
+        json!({ "jobId": updated.id, "projectId": updated.project_id }),
+    )
+    .await;
+    Ok(Json(synthesis_job_json(&updated)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishedFilter {
+    #[serde(default)]
+    visibility: Option<String>,
+}
+
+async fn list_published_modules(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<PublishedFilter>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let visibility = query.visibility.as_deref();
+    let rows = synthesis_jobs::list_published(database.conn(), visibility).await?;
+    let items: Vec<Value> = rows.iter().map(synthesis_job_json).collect();
+    Ok(Json(json!(items)))
+}
+
 async fn run_synthesis_job(
     state: AppState,
     project_id: String,
@@ -3074,6 +3569,35 @@ async fn update_settings(
     }
 
     settings::put_value(database.conn(), "global", "defaultModel", default_model).await?;
+
+    // Persist the search provider + URL into the dedicated `search.*`
+    // settings rows so the read path (`current_tools_sandbox_settings`)
+    // stays consistent across restarts and the JSON-blob fallback isn't
+    // needed.
+    if let Some(tools) = next_settings.get("toolsSandbox") {
+        if let Some(provider) = tools.get("searchProvider").and_then(Value::as_str) {
+            if provider == "tavily" || provider == "searxng" {
+                settings::put_value(
+                    database.conn(),
+                    "search",
+                    "provider",
+                    Value::String(provider.to_owned()),
+                )
+                .await?;
+            }
+        }
+        if let Some(url) = tools.get("searxngUrl").and_then(Value::as_str) {
+            if !url.trim().is_empty() {
+                settings::put_value(
+                    database.conn(),
+                    "search",
+                    "searxng_url",
+                    Value::String(url.to_owned()),
+                )
+                .await?;
+            }
+        }
+    }
 
     if let Some(api_key) = pending_tavily_key {
         let sealed = state
@@ -3401,6 +3925,13 @@ struct SendChatMessageBody {
     content: String,
     model: Option<ModelRef>,
     system_prompt: Option<String>,
+    /// When true, the user/assistant rows are created and IDs returned,
+    /// but the LLM turn is NOT spawned. Caller must POST to
+    /// `/v1/chat-messages/:assistant_id/process` once attachments have
+    /// been uploaded. Defaults to false (the simple no-attachments
+    /// flow stays one round-trip).
+    #[serde(default)]
+    defer: bool,
 }
 
 fn chat_thread_json(t: &hive_db::entities::chat_thread::Model) -> Value {
@@ -3567,6 +4098,21 @@ async fn send_chat_message(
     )
     .await;
 
+    // When `defer: true`, the caller wants to upload attachments before
+    // the runtime reads history. Skip spawning the task; the caller
+    // POSTs `/v1/chat-messages/:assistant_id/process` once uploads
+    // land. This stays exact-once because `process` only fires the
+    // runtime if the row is still `pending`.
+    if body.defer {
+        return Ok(Json(json!({
+            "userMessage": chat_message_json(&user_msg),
+            "assistantMessage": chat_message_json(&assistant_row),
+            "providerId": provider_id,
+            "model": model_id,
+            "deferred": true,
+        })));
+    }
+
     // Kick off the streaming task.
     let cancel_flag = Arc::new(Mutex::new(false));
     let bus = EventBus::new(state.events.clone());
@@ -3580,6 +4126,7 @@ async fn send_chat_message(
         .register(&assistant_id, cancel_flag.clone())
         .await;
 
+    let data_dir_clone = state.inner.read().await.data_dir.clone();
     let params = hive_runtime::chat::RunTurn {
         db: db_clone,
         bus,
@@ -3596,6 +4143,7 @@ async fn send_chat_message(
         tool_registry: None,
         tool_context: None,
         cancel: cancel_flag,
+        data_dir: data_dir_clone,
     };
     let mut params = params;
     if let Some((registry, context)) = build_tooling(
@@ -3647,6 +4195,317 @@ async fn cancel_chat_message(
 ) -> Result<Json<Value>, AppError> {
     let cancelled = state.chat_jobs.cancel(&message_id).await;
     Ok(Json(json!({ "ok": cancelled })))
+}
+
+/// POST /v1/chat-messages/:assistant_id/process
+///
+/// Companion to `send_chat_message` when `defer: true`. The caller has
+/// uploaded any attachments to the user message and is now ready for
+/// the LLM turn to start. Idempotent — the row must still be `pending`,
+/// otherwise this is a no-op so a network retry doesn't spawn duplicate
+/// turns.
+async fn process_chat_message(
+    State(state): State<AppState>,
+    Path(assistant_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let assistant = chat_messages::get(database.conn(), &assistant_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("chat message {assistant_id} not found")))?;
+    if assistant.role != "assistant" {
+        return Err(AppError::BadRequest(
+            "process target must be an assistant message".into(),
+        ));
+    }
+    if assistant.status != "pending" {
+        return Ok(Json(json!({ "ok": false, "reason": "already_processed", "status": assistant.status })));
+    }
+    let thread = chat_threads::get(database.conn(), &assistant.thread_id)
+        .await?
+        .ok_or_else(|| AppError::Internal("orphan chat message".into()))?;
+
+    let provider_id = assistant
+        .provider_id
+        .clone()
+        .ok_or_else(|| AppError::Internal("assistant message missing providerId".into()))?;
+    let model_id = assistant
+        .model
+        .clone()
+        .ok_or_else(|| AppError::Internal("assistant message missing model".into()))?;
+    let provider_row = llm_providers::get(database.conn(), &provider_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("llm provider {provider_id} not found")))?;
+    let config = build_provider_config(&state, &provider_row).await?;
+    let kind = config.kind;
+    let provider = Arc::from(client_for(config));
+
+    let cancel_flag = Arc::new(Mutex::new(false));
+    let bus = EventBus::new(state.events.clone());
+    state
+        .chat_jobs
+        .register(&assistant_id, cancel_flag.clone())
+        .await;
+
+    let data_dir_clone = state.inner.read().await.data_dir.clone();
+    let mut params = hive_runtime::chat::RunTurn {
+        db: database.clone(),
+        bus,
+        provider,
+        provider_kind: kind,
+        provider_id: provider_id.clone(),
+        model: model_id.clone(),
+        project_id: thread.project_id.clone(),
+        thread_id: thread.id.clone(),
+        assistant_message_id: assistant_id.clone(),
+        system_prompt: None,
+        history_limit: 40,
+        agent_id: thread.agent_id.clone(),
+        tool_registry: None,
+        tool_context: None,
+        cancel: cancel_flag,
+        data_dir: data_dir_clone,
+    };
+    if let Some((registry, context)) = build_tooling(
+        &state,
+        &thread.project_id,
+        thread.agent_id.clone(),
+        &assistant_id,
+        &thread.id,
+    )
+    .await?
+    {
+        params.tool_registry = Some(registry);
+        params.tool_context = Some(context);
+    }
+
+    let handle = tokio::spawn(async move {
+        if let Err(err) = hive_runtime::chat::run_turn(params).await {
+            tracing::warn!(error = %err, "chat turn failed");
+        }
+    });
+    state
+        .chat_jobs
+        .attach_abort(&assistant_id, handle.abort_handle())
+        .await;
+    {
+        let registry = state.chat_jobs.clone();
+        let cleanup_id = assistant_id.clone();
+        tokio::spawn(async move {
+            let _ = handle.await;
+            registry.remove(&cleanup_id).await;
+        });
+    }
+
+    Ok(Json(json!({ "ok": true, "assistantMessageId": assistant_id })))
+}
+
+// ── Chat attachments ────────────────────────────────────────────────────
+
+const ATTACHMENT_MAX_BYTES: usize = 10 * 1024 * 1024; // 10 MB per file
+const ATTACHMENT_MAX_PER_MESSAGE: u64 = 5;
+
+fn attachments_root(data_dir: &StdPath, project_id: &str) -> PathBuf {
+    data_dir.join("attachments").join(project_id)
+}
+
+fn attachment_to_json(row: &hive_db::entities::chat_attachment::Model) -> Value {
+    json!({
+        "id": row.id,
+        "messageId": row.message_id,
+        "kind": row.kind,
+        "name": row.name,
+        "mimeType": row.mime_type,
+        "bytesSize": row.bytes_size,
+        "createdAt": row.created_at,
+    })
+}
+
+/// Look up a chat message and return both the message and the project
+/// it belongs to. Used by every attachment handler.
+async fn message_with_project(
+    state: &AppState,
+    message_id: &str,
+) -> Result<(hive_db::entities::chat_message::Model, String), AppError> {
+    let database = db(state).await;
+    let message = chat_messages::get(database.conn(), message_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("chat message {message_id} not found")))?;
+    let thread = chat_threads::get(database.conn(), &message.thread_id)
+        .await?
+        .ok_or_else(|| AppError::Internal("orphan chat message: thread missing".into()))?;
+    Ok((message, thread.project_id))
+}
+
+async fn list_chat_attachments(
+    State(state): State<AppState>,
+    Path(message_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let _ = message_with_project(&state, &message_id).await?;
+    let database = db(&state).await;
+    let rows = chat_attachments::list_for_message(database.conn(), &message_id).await?;
+    let items: Vec<Value> = rows.iter().map(attachment_to_json).collect();
+    Ok(Json(json!(items)))
+}
+
+/// POST /v1/chat-messages/:id/attachments — multipart/form-data upload.
+/// One or more `file` fields per request, max 5 attachments per message,
+/// max 10 MB per file. Bytes land at
+/// `~/.hive/attachments/{project_id}/{ulid}-{name}`.
+async fn upload_chat_attachment(
+    State(state): State<AppState>,
+    Path(message_id): Path<String>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<Json<Value>, AppError> {
+    let (_message, project_id) = message_with_project(&state, &message_id).await?;
+    let database = db(&state).await;
+
+    let existing_count =
+        chat_attachments::count_for_message(database.conn(), &message_id).await?;
+    if existing_count >= ATTACHMENT_MAX_PER_MESSAGE {
+        return Err(AppError::BadRequest(format!(
+            "max {ATTACHMENT_MAX_PER_MESSAGE} attachments per message"
+        )));
+    }
+
+    let data_dir = state.inner.read().await.data_dir.clone();
+    let root = attachments_root(&data_dir, &project_id);
+    tokio::fs::create_dir_all(&root)
+        .await
+        .map_err(|e| AppError::Internal(format!("create attachments dir: {e}")))?;
+
+    let mut inserted = Vec::new();
+    let mut remaining_slots = ATTACHMENT_MAX_PER_MESSAGE - existing_count;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("multipart: {e}")))?
+    {
+        if remaining_slots == 0 {
+            return Err(AppError::BadRequest(format!(
+                "max {ATTACHMENT_MAX_PER_MESSAGE} attachments per message"
+            )));
+        }
+        let original_name = field
+            .file_name()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "attachment".into());
+        let mime_type = field
+            .content_type()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "application/octet-stream".into());
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::BadRequest(format!("read upload: {e}")))?;
+        if bytes.len() > ATTACHMENT_MAX_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "{} too large ({} bytes; max {ATTACHMENT_MAX_BYTES})",
+                original_name,
+                bytes.len()
+            )));
+        }
+        let id = ulid::Ulid::new().to_string().to_lowercase();
+        // Sanitise the original name for filesystem safety: drop path
+        // separators and characters that confuse common shells. The
+        // ULID prefix guarantees uniqueness even if two uploads share
+        // the same sanitised name.
+        let safe_name: String = original_name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+            .collect();
+        let stored_filename = format!("{id}-{safe_name}");
+        let absolute_path = root.join(&stored_filename);
+        let relative_path = format!("{project_id}/{stored_filename}");
+
+        tokio::fs::write(&absolute_path, &bytes)
+            .await
+            .map_err(|e| AppError::Internal(format!("write attachment: {e}")))?;
+
+        let kind = chat_attachments::AttachmentKind::from_mime(&mime_type);
+        let bytes_size = bytes.len() as i64;
+        let row = chat_attachments::insert(
+            database.conn(),
+            chat_attachments::NewAttachment {
+                message_id: message_id.clone(),
+                kind,
+                name: original_name,
+                mime_type,
+                bytes_size,
+                storage_path: relative_path,
+            },
+        )
+        .await?;
+        inserted.push(attachment_to_json(&row));
+        remaining_slots -= 1;
+    }
+
+    if inserted.is_empty() {
+        return Err(AppError::BadRequest(
+            "no `file` fields found in upload".into(),
+        ));
+    }
+    Ok(Json(json!(inserted)))
+}
+
+async fn download_chat_attachment(
+    State(state): State<AppState>,
+    Path((message_id, attachment_id)): Path<(String, String)>,
+) -> Result<Response, AppError> {
+    let (_message, _project_id) = message_with_project(&state, &message_id).await?;
+    let database = db(&state).await;
+    let row = chat_attachments::get(database.conn(), &attachment_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("attachment {attachment_id} not found"))
+        })?;
+    if row.message_id != message_id {
+        return Err(AppError::NotFound(format!(
+            "attachment {attachment_id} does not belong to message {message_id}"
+        )));
+    }
+    let data_dir = state.inner.read().await.data_dir.clone();
+    let absolute_path = data_dir.join("attachments").join(&row.storage_path);
+    let bytes = tokio::fs::read(&absolute_path)
+        .await
+        .map_err(|e| AppError::Internal(format!("read attachment: {e}")))?;
+    let response = (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                row.mime_type.clone(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("inline; filename=\"{}\"", row.name.replace('"', "")),
+            ),
+        ],
+        bytes,
+    )
+        .into_response();
+    Ok(response)
+}
+
+async fn delete_chat_attachment(
+    State(state): State<AppState>,
+    Path((message_id, attachment_id)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    let (_message, _project_id) = message_with_project(&state, &message_id).await?;
+    let database = db(&state).await;
+    let row = chat_attachments::get(database.conn(), &attachment_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("attachment {attachment_id} not found"))
+        })?;
+    if row.message_id != message_id {
+        return Err(AppError::NotFound(format!(
+            "attachment {attachment_id} does not belong to message {message_id}"
+        )));
+    }
+    let data_dir = state.inner.read().await.data_dir.clone();
+    let absolute_path = data_dir.join("attachments").join(&row.storage_path);
+    let _ = tokio::fs::remove_file(&absolute_path).await;
+    chat_attachments::delete(database.conn(), &attachment_id).await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn resolve_chat_target(
@@ -3817,6 +4676,7 @@ impl ApiTurnDriver {
 
         // Build per-turn tooling (intersected with global + agent allow-list).
         let cancel_flag = Arc::new(Mutex::new(false));
+        let data_dir_clone = self.state.inner.read().await.data_dir.clone();
         let mut params = hive_runtime::chat::RunTurn {
             db: database.clone(),
             bus: EventBus::new(self.state.events.clone()),
@@ -3833,6 +4693,7 @@ impl ApiTurnDriver {
             tool_registry: None,
             tool_context: None,
             cancel: cancel_flag,
+            data_dir: data_dir_clone,
         };
         if let Some((registry, context)) = build_tooling(
             &self.state,

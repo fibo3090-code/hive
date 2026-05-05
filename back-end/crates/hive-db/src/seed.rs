@@ -19,7 +19,7 @@ struct ProjectSpec<'a> {
     name: &'a str,
     description: &'a str,
     sovereignty_tier: &'a str,
-    budget_total_cents: i32,
+    budget_total_cents: i64,
     health_score: i32,
     spec_completion: i32,
     test_coverage: i32,
@@ -940,6 +940,7 @@ pub async fn seed_demo(db: &DatabaseConnection) -> Result<(), DbErr> {
                     message: message.into(),
                     actionable,
                     action_label: action_label.map(str::to_owned),
+                    payload: None,
                 },
             )
             .await?;

@@ -14,6 +14,15 @@ export interface Agent {
   qualityScore?: number | null;
   tokensUsed: number;
   evalScores: { correctness?: number; style?: number; efficiency?: number; testQuality?: number; docQuality?: number };
+  /** Provider/model selection used by the runtime (PATCH /v1/agents/:id). */
+  modelProviderId?: string | null;
+  modelId?: string | null;
+  /** Project-relative parent agent (set when spawned via spawn_agent). */
+  parentAgentId?: string | null;
+  /** Free-text override applied at the start of every turn. */
+  systemPrompt?: string | null;
+  /** Names of tools this agent may invoke (empty array = inherit defaults). */
+  enabledTools?: string[];
 }
 
 export interface Project {
@@ -68,13 +77,18 @@ export interface TaskItem {
 
 export interface Notification {
   id: string;
-  type: 'critical' | 'high' | 'medium' | 'info';
+  type: 'critical' | 'high' | 'medium' | 'info' | 'loop_detected' | string;
   title: string;
   message: string;
   time: string;
   read: boolean;
   actionable?: boolean;
   actionLabel?: string | null;
+  /**
+   * Structured payload for typed notifications (e.g. `loop_detected`).
+   * Shape depends on `type`; consumers should narrow before accessing.
+   */
+  payload?: Record<string, unknown> | null;
 }
 
 export interface NoteItem {

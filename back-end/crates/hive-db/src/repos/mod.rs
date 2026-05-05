@@ -2,6 +2,7 @@ pub mod agent_messages;
 pub mod agents;
 pub mod alerts;
 pub mod audit;
+pub mod chat_attachments;
 pub mod chat_messages;
 pub mod chat_threads;
 pub mod cost_events;

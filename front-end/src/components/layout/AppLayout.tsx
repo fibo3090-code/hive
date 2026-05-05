@@ -8,10 +8,19 @@ export function AppLayout() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">
+      {/* Skip-to-content link for keyboard users; visually hidden until
+          focused, then anchors `#main` so Tab can bypass the sidebar
+          and jump straight to the page body. */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[100] focus:rounded-md focus:bg-primary focus:text-primary-foreground focus:px-3 focus:py-1.5 focus:text-xs"
+      >
+        Skip to main content
+      </a>
       <HiveSidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
         <TopBar />
-        <main className="flex-1 overflow-auto scrollbar-thin">
+        <main id="main" className="flex-1 overflow-auto scrollbar-thin">
           <AnimatePresence mode="wait">
             <motion.div
               key={location.pathname}

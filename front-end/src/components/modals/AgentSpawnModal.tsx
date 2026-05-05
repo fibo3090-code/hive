@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
 import { useWorkspace } from '@/context/WorkspaceContext';
+import { estimateAgentCost, type SovereigntyTier } from '@/lib/cost-estimate';
 
 interface AgentSpawnModalProps {
   readonly open: boolean;
@@ -73,11 +74,26 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
             </div>
           </div>
 
-          {/* Cost estimate */}
-          <div className="rounded-md border border-border bg-surface-2 p-3 text-xs">
-            <div className="flex justify-between text-muted-foreground mb-1"><span>Estimated cost/hr</span><span className="font-mono">~$8.50</span></div>
-            <div className="flex justify-between text-muted-foreground"><span>Estimated tokens/hr</span><span className="font-mono">~25K</span></div>
-          </div>
+          {/* Cost estimate — recomputed when the user changes the tier
+              so the numbers actually reflect their choice. */}
+          {(() => {
+            const { usdPerHour, tokensPerHour } = estimateAgentCost(
+              1,
+              tier as SovereigntyTier,
+            );
+            return (
+              <div className="rounded-md border border-border bg-surface-2 p-3 text-xs">
+                <div className="flex justify-between text-muted-foreground mb-1">
+                  <span>Estimated cost/hr</span>
+                  <span className="font-mono">~${usdPerHour.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-muted-foreground">
+                  <span>Estimated tokens/hr</span>
+                  <span className="font-mono">~{Math.round(tokensPerHour / 1000)}K</span>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <DialogFooter>

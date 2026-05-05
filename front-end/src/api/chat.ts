@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, API_BASE_URL, eventStreamUrl } from '@/api/client';
+import { api, ApiError, API_BASE_URL, eventStreamUrl } from '@/api/client';
 
 export interface ChatThread {
   id: string;
@@ -43,6 +43,10 @@ export interface SendMessageResponse {
   assistantMessage: ChatMessage;
   providerId: string;
   model: string;
+  /** True when the request used `defer` and the caller must POST to
+   *  `/v1/chat-messages/:assistantId/process` to start the runtime
+   *  (typically because attachments are uploading). */
+  deferred?: boolean;
 }
 
 export function useChatThreads(projectId: string | null | undefined) {
@@ -88,6 +92,10 @@ export function useSendChatMessage(threadId: string | null | undefined) {
       content: string;
       model?: { providerId: string; modelId: string } | null;
       systemPrompt?: string;
+      /** When true, server skips spawning the runtime; caller must
+       *  follow up with `useProcessChatMessage` once attachments
+       *  are uploaded. */
+      defer?: boolean;
     }) =>
       api<SendMessageResponse>(`/v1/chat-threads/${input.threadId ?? threadId}/messages`, {
         method: 'POST',
@@ -95,11 +103,25 @@ export function useSendChatMessage(threadId: string | null | undefined) {
           content: input.content,
           model: input.model ?? null,
           systemPrompt: input.systemPrompt ?? null,
+          defer: input.defer ?? false,
         }),
       }),
     onSuccess: (_data, input) => {
       qc.invalidateQueries({ queryKey: ['chat-messages', input.threadId ?? threadId] });
     },
+  });
+}
+
+/** Companion to `useSendChatMessage` when `defer: true` was used.
+ *  Idempotent — the server only spawns the runtime if the assistant
+ *  row is still `pending`. */
+export function useProcessChatMessage() {
+  return useMutation({
+    mutationFn: (assistantMessageId: string) =>
+      api<{ ok: boolean; assistantMessageId?: string; reason?: string }>(
+        `/v1/chat-messages/${assistantMessageId}/process`,
+        { method: 'POST' },
+      ),
   });
 }
 
@@ -388,6 +410,88 @@ export function useChatStream(threadId: string | null | undefined) {
   }, [threadId, qc, update]);
 
   return streaming;
+}
+
+// ── Attachments ───────────────────────────────────────────────────────
+
+export interface ChatAttachment {
+  id: string;
+  messageId: string;
+  /** `'image' | 'text' | 'binary'` — drives how the message renderer
+   * displays the attachment (image inline vs download chip). */
+  kind: string;
+  name: string;
+  mimeType: string;
+  bytesSize: number;
+  createdAt: string;
+}
+
+export function useChatAttachments(messageId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['chat-attachments', messageId],
+    queryFn: () =>
+      api<ChatAttachment[]>(`/v1/chat-messages/${messageId}/attachments`),
+    enabled: Boolean(messageId),
+    staleTime: 60_000,
+  });
+}
+
+/** Upload one or more files to a chat message. The server enforces
+ *  ≤ 10 MB per file and ≤ 5 attachments per message. */
+export function useUploadChatAttachments() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { messageId: string; files: File[] }) => {
+      const form = new FormData();
+      for (const file of input.files) {
+        form.append('file', file, file.name);
+      }
+      const response = await fetch(
+        `${API_BASE_URL}/v1/chat-messages/${input.messageId}/attachments`,
+        {
+          method: 'POST',
+          body: form,
+        },
+      );
+      if (!response.ok) {
+        const text = await response.text();
+        let message = `Upload failed (${response.status})`;
+        try {
+          const parsed = JSON.parse(text) as { error?: string };
+          if (parsed.error) message = parsed.error;
+        } catch {
+          if (text) message = text;
+        }
+        throw new ApiError(message, 'upload_failed');
+      }
+      return (await response.json()) as ChatAttachment[];
+    },
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({
+        queryKey: ['chat-attachments', vars.messageId],
+      });
+    },
+  });
+}
+
+export function useDeleteChatAttachment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { messageId: string; attachmentId: string }) =>
+      api<{ ok: boolean }>(
+        `/v1/chat-messages/${input.messageId}/attachments/${input.attachmentId}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({
+        queryKey: ['chat-attachments', vars.messageId],
+      });
+    },
+  });
+}
+
+export function attachmentDownloadUrl(messageId: string, attachmentId: string): string {
+  return `${API_BASE_URL}/v1/chat-messages/${messageId}/attachments/${attachmentId}`;
 }
 
 // Re-exported for ad-hoc callers that want to build their own fetch.

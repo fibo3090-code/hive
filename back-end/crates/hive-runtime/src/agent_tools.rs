@@ -13,17 +13,19 @@ use hive_db::{
 use hive_tools::{Tool, ToolContext, ToolError, ToolManifest, ToolRegistry, ToolResult};
 use serde_json::{json, Value};
 
+use crate::events::EventBus;
 use crate::executor::InboxItem;
 use crate::registry::ExecutorRegistry;
 
 pub struct SpawnAgent {
     db: Db,
     executors: Arc<ExecutorRegistry>,
+    bus: EventBus,
 }
 
 impl SpawnAgent {
-    pub fn new(db: Db, executors: Arc<ExecutorRegistry>) -> Self {
-        Self { db, executors }
+    pub fn new(db: Db, executors: Arc<ExecutorRegistry>, bus: EventBus) -> Self {
+        Self { db, executors, bus }
     }
 }
 
@@ -125,8 +127,12 @@ impl Tool for SpawnAgent {
         .await
         .map_err(|e| ToolError::Other(format!("create agent: {e}")))?;
 
-        // Bring the executor up and enqueue the first task.
-        let _exec = self.executors.ensure(&created.id, &ctx.project_id).await;
+        // Bring the executor up under the parent's cancel scope so cancelling
+        // the spawning agent cascades through every descendant.
+        let _exec = self
+            .executors
+            .ensure_with_parent(&created.id, &ctx.project_id, ctx.agent_id.as_deref())
+            .await;
         let msg = agent_messages::enqueue(
             self.db.conn(),
             agent_messages::EnqueueAgentMessage {
@@ -153,6 +159,23 @@ impl Tool for SpawnAgent {
             )
             .await
             .map_err(|e| ToolError::Other(format!("dispatch: {e}")))?;
+
+        // Emit `agent.spawned` so the frontend (HiveGraph, agents list,
+        // lineage views) refreshes within ~1s of the parent's spawn
+        // tool call. The `useSse` map already routes this to
+        // ['agents', projectId] + ['agent-lineage', parentId].
+        self.bus.emit(
+            "agent.spawned",
+            json!({
+                "agentId": created.id,
+                "projectId": ctx.project_id,
+                "parentAgentId": ctx.agent_id,
+                "role": created.role,
+                "name": created.name,
+                "model": created.model,
+                "spawnedByMessageId": ctx.message_id,
+            }),
+        );
 
         Ok(json!({
             "agentId": created.id,
@@ -245,7 +268,12 @@ pub fn register_agent_tools(
     registry: &mut ToolRegistry,
     db: Db,
     executors: Arc<ExecutorRegistry>,
+    bus: EventBus,
 ) {
-    registry.insert(Arc::new(SpawnAgent::new(db.clone(), executors.clone())));
+    registry.insert(Arc::new(SpawnAgent::new(
+        db.clone(),
+        executors.clone(),
+        bus,
+    )));
     registry.insert(Arc::new(MessageAgent::new(db, executors)));
 }

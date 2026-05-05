@@ -20,6 +20,7 @@ import { useHiveData } from '@/api/queries/useHiveData';
 import { useInstallModule, useModulesData } from '@/api/queries/useServerData';
 import { useStartSynthesis, useSynthesisJob } from '@/api/synthesis';
 import { eventStreamUrl } from '@/api/client';
+import { PublishModuleDialog } from '@/components/modals/PublishModuleDialog';
 import type { ModuleCatalogItem } from '@/types/domain';
 import { toast } from 'sonner';
 import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
@@ -48,6 +49,8 @@ export default function Modules() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressEvent[]>([]);
   const [selectedModel, setSelectedModel] = useState<ModelSelection | null>(defaultModel);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [publishJobId, setPublishJobId] = useState<string | null>(null);
   const jobQuery = useSynthesisJob(jobId);
 
   const modules = useMemo<ModuleCatalogItem[]>(() => modulesQuery.data ?? [], [modulesQuery.data]);
@@ -145,6 +148,15 @@ export default function Modules() {
 
   return (
     <div className="flex h-full">
+      <PublishModuleDialog
+        open={publishOpen}
+        onOpenChange={(o) => {
+          setPublishOpen(o);
+          if (!o) setPublishJobId(null);
+        }}
+        projectId={activeProject?.id}
+        jobId={publishJobId}
+      />
       <div className="w-48 border-r border-border py-2">
         {categories.map((item) => (
           <button
@@ -228,6 +240,28 @@ export default function Modules() {
                     ))}
                   </div>
                 )}
+                {/* Publish action surfaces the moment the job completes — */}
+                {/* preview the generated files first, then publish in one click. */}
+                {jobQuery.data && (jobQuery.data.status === 'completed' || jobQuery.data.status === 'complete' || jobQuery.data.status === 'succeeded') && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPublishJobId(jobQuery.data!.id);
+                        setPublishOpen(true);
+                      }}
+                      className="rounded-md bg-primary px-3 py-2 text-xs text-primary-foreground hover:bg-primary/90 inline-flex items-center gap-1"
+                    >
+                      <Plus className="h-3 w-3" />
+                      {jobQuery.data.publishedAt ? 'Update publication' : 'Publish to catalog'}
+                    </button>
+                    {jobQuery.data.publishedAt && (
+                      <span className="text-xs text-success">
+                        Published · {jobQuery.data.publishedVisibility}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -243,7 +277,14 @@ export default function Modules() {
                   placeholder="Search modules..."
                 />
               </div>
-              <button className="flex items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary hover:bg-primary/20">
+              <button
+                type="button"
+                onClick={() => {
+                  setPublishJobId(null);
+                  setPublishOpen(true);
+                }}
+                className="flex items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary hover:bg-primary/20"
+              >
                 <Plus className="h-3.5 w-3.5" /> Publish Module
               </button>
             </div>
@@ -252,11 +293,7 @@ export default function Modules() {
               {filtered.map((module: ModuleCatalogItem) => (
                 <div
                   key={module.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => navigate(`/modules/${module.id}`)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/modules/${module.id}`); }}
-                  className="rounded-lg border border-border bg-card hover:border-primary/30 cursor-pointer transition-colors overflow-hidden"
+                  className="rounded-lg border border-border bg-card hover:border-primary/30 transition-colors overflow-hidden"
                 >
                   <div className="p-4">
                     <div className="flex items-start justify-between mb-2">
@@ -295,6 +332,14 @@ export default function Modules() {
                       <span>by {module.author}</span>
                       <span>Updated {module.updated}</span>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/modules/${module.id}`)}
+                      aria-label={`Open ${module.name}`}
+                      className="mt-2 text-micro text-primary hover:underline"
+                    >
+                      View details →
+                    </button>
                   </div>
 
                   <button

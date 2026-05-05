@@ -39,6 +39,33 @@ function ChartTooltip({
   );
 }
 
+function SessionHistorySkeleton() {
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-4 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div
+            key={i}
+            className="rounded-lg border border-border bg-card p-4 animate-pulse"
+          >
+            <div className="h-3 w-20 rounded bg-surface-3 mb-3" />
+            <div className="h-6 w-16 rounded bg-surface-3" />
+          </div>
+        ))}
+      </div>
+      {Array.from({ length: 3 }).map((_, i) => (
+        <div
+          key={i}
+          className="rounded-lg border border-border bg-card p-4 animate-pulse"
+        >
+          <div className="h-4 w-1/3 rounded bg-surface-3 mb-2" />
+          <div className="h-3 w-2/3 rounded bg-surface-3" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function EmptyState() {
   return (
     <div className="rounded-lg border border-dashed border-border bg-card/60 p-8 text-center">
@@ -71,7 +98,9 @@ export default function SessionHistory() {
         </div>
       </div>
 
-      {sessions.length === 0 ? (
+      {historyQuery.isLoading ? (
+        <SessionHistorySkeleton />
+      ) : sessions.length === 0 ? (
         <EmptyState />
       ) : (
         <>

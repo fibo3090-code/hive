@@ -79,3 +79,41 @@ export function useDispatchAgentTask(agentId: string | null | undefined) {
     },
   });
 }
+
+export interface AgentUpdateInput {
+  name?: string;
+  role?: string;
+  model?: string;
+  /** `null` clears the override; omit the field to leave alone. */
+  systemPrompt?: string | null;
+  modelProviderId?: string | null;
+  modelId?: string | null;
+  enabledTools?: string[];
+}
+
+export function useUpdateAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ agentId, patch }: { agentId: string; patch: AgentUpdateInput }) =>
+      api<{ id: string; status: string }>(`/v1/agents/${agentId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: (_result, vars) => invalidateAgentQueries(qc, vars.agentId),
+  });
+}
+
+export interface ToolDescriptor {
+  name: string;
+  description: string;
+  sideEffects: boolean;
+  category: string;
+}
+
+export function useToolCatalog() {
+  return useQuery({
+    queryKey: ['tools'],
+    queryFn: () => api<ToolDescriptor[]>('/v1/tools'),
+    staleTime: 5 * 60 * 1000,
+  });
+}

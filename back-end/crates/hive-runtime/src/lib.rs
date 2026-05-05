@@ -11,6 +11,7 @@ pub mod agent_tools;
 pub mod chat;
 pub mod events;
 pub mod executor;
+pub mod loop_detector;
 pub mod registry;
 pub mod turn_driver;
 

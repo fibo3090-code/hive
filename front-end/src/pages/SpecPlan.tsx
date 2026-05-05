@@ -132,12 +132,14 @@ function PRDTab() {
             >
               <button
                 onClick={() => setExpanded(expanded === req.id ? null : req.id)}
+                aria-expanded={expanded === req.id}
+                aria-controls={`req-body-${req.id}`}
                 className="flex items-center gap-3 w-full p-4 text-left hover:bg-surface-2/50 transition-colors"
               >
                 {expanded === req.id ? (
-                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden />
                 ) : (
-                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden />
                 )}
                 <span className="text-micro font-mono text-muted-foreground">{req.code ?? req.id}</span>
                 <span className="text-sm font-medium flex-1">{req.title}</span>
@@ -147,7 +149,7 @@ function PRDTab() {
               </button>
               <AnimatePresence>
                 {expanded === req.id && (
-                  <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="overflow-hidden">
+                  <motion.div id={`req-body-${req.id}`} initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="overflow-hidden">
                     <div className="px-4 pb-4 border-t border-border">
                       <p className="text-sm text-muted-foreground mt-3">{req.description}</p>
                     </div>

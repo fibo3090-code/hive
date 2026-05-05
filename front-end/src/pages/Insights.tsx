@@ -348,17 +348,17 @@ function LeaderboardTab() {
   return (
     <div className="space-y-6">
       <h2 className="text-lg font-semibold">Eval Leaderboard</h2>
-      <div className="rounded-lg border border-border bg-card">
-        <table className="w-full text-xs">
+      <div className="rounded-lg border border-border bg-card overflow-x-auto">
+        <table className="w-full text-xs min-w-[640px]">
           <thead>
             <tr className="border-b border-border text-muted-foreground">
-              <th className="text-left px-4 py-2">#</th>
-              <th className="text-left px-4 py-2">Agent</th>
-              <th className="text-left px-4 py-2">Role</th>
-              <th className="text-left px-4 py-2">Quality</th>
-              <th className="text-left px-4 py-2">Correctness</th>
-              <th className="text-left px-4 py-2">Style</th>
-              <th className="text-left px-4 py-2">Efficiency</th>
+              <th scope="col" className="text-left px-4 py-2">#</th>
+              <th scope="col" className="text-left px-4 py-2">Agent</th>
+              <th scope="col" className="text-left px-4 py-2">Role</th>
+              <th scope="col" className="text-left px-4 py-2">Quality</th>
+              <th scope="col" className="text-left px-4 py-2">Correctness</th>
+              <th scope="col" className="text-left px-4 py-2">Style</th>
+              <th scope="col" className="text-left px-4 py-2">Efficiency</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">

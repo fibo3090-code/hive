@@ -1,25 +1,40 @@
-import { Bell, Check, X, AlertTriangle, XCircle, AlertCircle, Info, Clock } from 'lucide-react';
+import { Bell, Check, X, AlertTriangle, XCircle, AlertCircle, Info, Clock, Repeat } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useState } from 'react';
 import { useHiveData } from '@/api/queries/useHiveData';
+import { LoopDetectionModal, type LoopDetectionPayload } from '@/components/modals/LoopDetectionModal';
 
-const typeConfig = {
+const typeConfig: Record<string, { icon: typeof XCircle; color: string; bg: string; dot: string }> = {
   critical: { icon: XCircle, color: 'text-destructive', bg: 'bg-destructive/10', dot: 'bg-destructive' },
   high: { icon: AlertTriangle, color: 'text-warning', bg: 'bg-warning/10', dot: 'bg-warning' },
   medium: { icon: AlertCircle, color: 'text-info', bg: 'bg-info/10', dot: 'bg-info' },
   info: { icon: Info, color: 'text-muted-foreground', bg: 'bg-muted/10', dot: 'bg-muted-foreground' },
+  loop_detected: { icon: Repeat, color: 'text-warning', bg: 'bg-warning/10', dot: 'bg-warning' },
 };
+
+const FALLBACK_TYPE = typeConfig.info;
+
+function isLoopPayload(value: unknown): value is LoopDetectionPayload {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.agentId === 'string' && Array.isArray(v.samples);
+}
 
 export function NotificationDropdown() {
   const [open, setOpen] = useState(false);
+  const [loopPayload, setLoopPayload] = useState<LoopDetectionPayload | undefined>(undefined);
   const { state, markNotificationRead, markAllNotificationsRead, dismissNotification } = useHiveData();
   const { notifications } = state;
   const unreadCount = notifications.filter(n => !n.read).length;
 
   const handleAction = (id: string) => {
     markNotificationRead(id);
-    // In a real app this would trigger the action
+    const target = notifications.find(n => n.id === id);
+    if (target?.type === 'loop_detected' && isLoopPayload(target.payload)) {
+      setLoopPayload(target.payload);
+      setOpen(false);
+    }
   };
 
   return (
@@ -75,7 +90,7 @@ export function NotificationDropdown() {
                   </div>
                 ) : (
                   notifications.map(n => {
-                    const config = typeConfig[n.type];
+                    const config = typeConfig[n.type] ?? FALLBACK_TYPE;
                     const Icon = config.icon;
                     return (
                       <motion.div
@@ -134,6 +149,13 @@ export function NotificationDropdown() {
           </>
         )}
       </AnimatePresence>
+      <LoopDetectionModal
+        open={loopPayload !== undefined}
+        onOpenChange={next => {
+          if (!next) setLoopPayload(undefined);
+        }}
+        payload={loopPayload}
+      />
     </div>
   );
 }

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
+import { API_BASE_URL } from '@/api/client';
 import {
   Settings as SettingsIcon, Cpu, GitBranch, Github, Link2,
   Shield, Bell, Keyboard, Palette, Database, Info, Plug, FileLock, Wrench,
@@ -570,6 +572,11 @@ function LlmProvidersSection() {
                 className="w-full font-mono"
               />
             </div>
+            {!isSaveAllowed(p, d) && d.apiKey && (
+              <p className="text-xs text-warning -mb-1">
+                Test the key first to enable Save.
+              </p>
+            )}
             <div className="flex items-center gap-2">
               <button
                 onClick={() => void onSave(p)}
@@ -727,21 +734,163 @@ function ToolsSandboxSection({
 }
 
 function DataPrivacySection({ draft, patch }: { readonly draft: SettingsState; readonly patch: <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => void }) {
+  const { activeProject } = useHiveData();
+  const [clearOpen, setClearOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [clearingChat, setClearingChat] = useState(false);
+  const navigate = useNavigate();
+
+  const onExport = async () => {
+    if (!activeProject) {
+      toast.error('No active project to export');
+      return;
+    }
+    setExporting(true);
+    try {
+      // Use a direct fetch (not the JSON `api()` helper) so we get the
+      // raw blob with Content-Disposition handling.
+      const response = await fetch(
+        `${API_BASE_URL}/v1/projects/${activeProject.id}/export`,
+        { method: 'GET' },
+      );
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `Export failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      // Try to preserve the server-supplied filename; fall back to a
+      // sensible default.
+      const disposition = response.headers.get('content-disposition') ?? '';
+      const filenameMatch = /filename="([^"]+)"/.exec(disposition);
+      a.download =
+        filenameMatch?.[1] ??
+        `hive-export-${activeProject.id}-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success('Project exported');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Export failed');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const onClearChat = async () => {
+    if (!activeProject) return;
+    setClearingChat(true);
+    try {
+      const result = await fetch(
+        `${API_BASE_URL}/v1/projects/${activeProject.id}/chat-history`,
+        { method: 'DELETE' },
+      );
+      if (!result.ok) throw new Error(`Clear failed (${result.status})`);
+      const body = (await result.json()) as { threadsDeleted?: number };
+      toast.success(
+        `Cleared ${body.threadsDeleted ?? 0} chat thread(s)`,
+      );
+      setClearOpen(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Clear failed');
+    } finally {
+      setClearingChat(false);
+    }
+  };
+
+  const onDeleteProject = async () => {
+    if (!activeProject) return;
+    try {
+      const result = await fetch(
+        `${API_BASE_URL}/v1/projects/${activeProject.id}`,
+        { method: 'DELETE' },
+      );
+      if (!result.ok) throw new Error(`Delete failed (${result.status})`);
+      toast.success('Project deleted');
+      setDeleteOpen(false);
+      navigate('/projects');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Delete failed');
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-xl">
       <h2 className="text-lg font-semibold">Data & Privacy</h2>
       <ConfirmDeleteModal
+        open={clearOpen}
+        onOpenChange={setClearOpen}
+        title="Clear chat history"
+        description={`This will permanently delete every chat thread and message in "${activeProject?.name ?? 'this project'}". This action cannot be undone.`}
+        onConfirm={() => void onClearChat()}
+      />
+      <ConfirmDeleteModal
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
-        title="Delete All Data"
-        description="This will permanently delete all project data, session history, and settings. This action cannot be undone."
-        onConfirm={() => { toast.success('All data deleted'); setDeleteOpen(false); }}
+        title={`Delete project "${activeProject?.name ?? ''}"`}
+        description="This permanently deletes the project, its agents, sprints, tasks, and audit log. The export above is the only recovery path."
+        onConfirm={() => void onDeleteProject()}
       />
-      <Row label="Data Retention" desc="How long to keep session data"><SelectField value={draft.dataPrivacy.retention} options={['30 days', '90 days', '1 year']} onChange={(value) => patch('dataPrivacy', { ...draft.dataPrivacy, retention: value })} /></Row>
-      <Row label="Export Data" desc="Download all project data"><button onClick={() => toast.success('Data export started — download will begin shortly')} className="text-xs text-primary bg-primary/10 px-3 py-1.5 rounded hover:bg-primary/20">Export</button></Row>
-      <Row label="Delete All Data" desc="Permanently delete all project data"><button onClick={() => setDeleteOpen(true)} className="text-xs text-destructive bg-destructive/10 px-3 py-1.5 rounded hover:bg-destructive/20">Delete</button></Row>
-      <Row label="Cookie Consent" desc="Manage cookie preferences"><Switch checked={draft.dataPrivacy.cookieConsent} onCheckedChange={(checked) => patch('dataPrivacy', { ...draft.dataPrivacy, cookieConsent: checked })} /></Row>
+      <Row label="Data Retention" desc="How long to keep session data">
+        <SelectField
+          value={draft.dataPrivacy.retention}
+          options={['30 days', '90 days', '1 year', 'forever']}
+          onChange={(value) =>
+            patch('dataPrivacy', { ...draft.dataPrivacy, retention: value })
+          }
+        />
+      </Row>
+      <Row
+        label="Export project"
+        desc="Download a JSON archive: project + agents + sprints + tasks + every chat thread"
+      >
+        <button
+          type="button"
+          onClick={() => void onExport()}
+          disabled={exporting || !activeProject}
+          className="text-xs text-primary bg-primary/10 px-3 py-1.5 rounded hover:bg-primary/20 disabled:opacity-50"
+        >
+          {exporting ? 'Exporting…' : 'Export'}
+        </button>
+      </Row>
+      <Row
+        label="Clear chat history"
+        desc="Delete every thread and message in this project. Agents, sprints, and tasks are preserved."
+      >
+        <button
+          type="button"
+          onClick={() => setClearOpen(true)}
+          disabled={clearingChat || !activeProject}
+          className="text-xs text-warning bg-warning/10 px-3 py-1.5 rounded hover:bg-warning/20 disabled:opacity-50"
+        >
+          Clear
+        </button>
+      </Row>
+      <Row
+        label="Delete project"
+        desc="Permanently delete the project. This is irreversible — export first."
+      >
+        <button
+          type="button"
+          onClick={() => setDeleteOpen(true)}
+          disabled={!activeProject}
+          className="text-xs text-destructive bg-destructive/10 px-3 py-1.5 rounded hover:bg-destructive/20 disabled:opacity-50"
+        >
+          Delete
+        </button>
+      </Row>
+      <Row label="Cookie consent" desc="Manage cookie preferences">
+        <Switch
+          checked={draft.dataPrivacy.cookieConsent}
+          onCheckedChange={(checked) =>
+            patch('dataPrivacy', { ...draft.dataPrivacy, cookieConsent: checked })
+          }
+        />
+      </Row>
     </div>
   );
 }
