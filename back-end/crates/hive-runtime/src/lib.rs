@@ -14,6 +14,7 @@ pub mod executor;
 pub mod loop_detector;
 pub mod prompt;
 pub mod registry;
+pub mod spawn;
 pub mod spec_doc;
 pub mod turn_driver;
 
