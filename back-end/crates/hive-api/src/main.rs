@@ -22,9 +22,11 @@ use clap::{Parser, Subcommand};
 use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
-        agent_messages, agents, alerts, audit, chat_attachments, chat_messages, chat_threads,
-        cost_events, llm_providers, notes, notifications, project_workspaces, projects, sessions,
-        settings, sprints, synthesis_jobs, tasks, tech_debt,
+        agent_mcp_bindings, agent_messages, agent_spawn_requests, agent_task_assignments, agents,
+        alerts, audit, chat_attachments, chat_messages, chat_threads, connectors, cost_events,
+        custom_mcp_servers, drift_events, llm_providers, notes, notifications,
+        project_workspaces, projects, sessions, settings, skills, spec_document_sections,
+        spec_documents, sprints, synthesis_jobs, tasks, tech_debt,
     },
     seed::seed_demo,
     Db,
@@ -33,7 +35,10 @@ use hive_git::{
     CreatePullRequest, GitDiff, GitError, GitFile, GitHubClient, GitRepo, GitTreeEntry,
 };
 use hive_llm::{client_for, ModelInfo, ProviderConfig, ProviderKind};
-use hive_runtime::{EventBus, RuntimeEvent, TurnDriver, TurnDriverError, TurnRequest};
+use hive_runtime::{
+    spec_doc::{into_upserts, materialize_decomposition, parse_sections, DecomposeOutput},
+    EventBus, RuntimeEvent, TurnDriver, TurnDriverError, TurnRequest,
+};
 use hive_sandbox::LocalFsSandbox;
 use hive_search::{SearxNgProvider, TavilyProvider};
 use hive_tools::{
@@ -676,6 +681,79 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             post(unpublish_synthesis_job),
         )
         .route("/v1/modules/published", get(list_published_modules))
+        // ── Phase 1b: redesign endpoints ─────────────────────────────
+        // Skills
+        .route(
+            "/v1/projects/:project_id/skills",
+            get(list_skills).post(create_skill),
+        )
+        .route(
+            "/v1/skills/:skill_id",
+            patch(update_skill).delete(delete_skill),
+        )
+        // Connectors (HTTP API + MCP servers)
+        .route(
+            "/v1/projects/:project_id/connectors",
+            get(list_connectors).post(create_connector),
+        )
+        .route(
+            "/v1/connectors/:connector_id",
+            patch(update_connector_status).delete(delete_connector),
+        )
+        // Spec documents + sections
+        .route(
+            "/v1/projects/:project_id/spec-documents",
+            get(list_spec_documents).post(create_spec_document),
+        )
+        .route(
+            "/v1/spec-documents/:spec_document_id",
+            get(get_spec_document).patch(update_spec_document_markdown),
+        )
+        .route(
+            "/v1/spec-documents/:spec_document_id/sections",
+            get(list_spec_sections),
+        )
+        .route(
+            "/v1/spec-documents/:spec_document_id/decompose",
+            post(decompose_spec_document),
+        )
+        // Agent task assignments (the Skill-Sprint planning view)
+        .route(
+            "/v1/projects/:project_id/agent-task-assignments",
+            get(list_assignments_for_project).post(create_assignment),
+        )
+        .route(
+            "/v1/agent-task-assignments/:assignment_id",
+            patch(update_assignment),
+        )
+        // Drift events
+        .route(
+            "/v1/projects/:project_id/drift-events",
+            get(list_drift_events),
+        )
+        .route(
+            "/v1/drift-events/:event_id",
+            patch(update_drift_event_status),
+        )
+        // Custom MCP servers (auto-spawn output)
+        .route(
+            "/v1/projects/:project_id/custom-mcp-servers",
+            get(list_custom_mcp_servers),
+        )
+        // Agent spawn requests (auto-spawn pipeline state)
+        .route(
+            "/v1/projects/:project_id/spawn-requests",
+            get(list_spawn_requests).post(create_spawn_request),
+        )
+        .route(
+            "/v1/spawn-requests/:spawn_request_id",
+            get(get_spawn_request).patch(update_spawn_request),
+        )
+        // Agent ↔ MCP bindings
+        .route(
+            "/v1/agents/:agent_id/mcp-bindings",
+            get(list_mcp_bindings_for_agent),
+        )
         .with_state(state)
         .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(cors_layer())
@@ -4762,4 +4840,462 @@ use the `spawn_agent` tool to recruit one; use `message_agent` to coordinate wit
         role = agent.role,
         name = agent.name,
     ))
+}
+
+// ─── Phase 1b: redesign handlers ─────────────────────────────────────────
+//
+// CRUD surface for the entities introduced in Phase 0b. The frontend
+// (Phases 2-5) consumes these to render the new Forge / Planning / Stats
+// pages. Each handler is intentionally thin — most of the logic lives in
+// `hive-db::repos::*` and `hive-runtime::spec_doc`.
+
+// Skills ─────────────────────────────────────────────────────────────────
+
+async fn list_skills(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        skills::list_for_project(database.conn(), &project_id).await?
+    )))
+}
+
+async fn create_skill(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<skills::CreateSkill>,
+) -> Result<Json<Value>, AppError> {
+    let mut payload = body;
+    // Honour the path param even if the body omits/conflicts. `None` in
+    // the body explicitly means "global skill"; only override when the
+    // body left it unset.
+    if payload.project_id.is_none() {
+        payload.project_id = Some(project_id);
+    }
+    let database = db(&state).await;
+    let row = skills::create(database.conn(), payload).await?;
+    Ok(Json(json!(row)))
+}
+
+async fn update_skill(
+    State(state): State<AppState>,
+    Path(skill_id): Path<String>,
+    Json(body): Json<skills::UpdateSkill>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let row = skills::update(database.conn(), &skill_id, body).await?;
+    Ok(Json(json!(row)))
+}
+
+async fn delete_skill(
+    State(state): State<AppState>,
+    Path(skill_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    skills::delete(database.conn(), &skill_id).await?;
+    Ok(Json(json!({ "ok": true, "id": skill_id })))
+}
+
+// Connectors ─────────────────────────────────────────────────────────────
+
+async fn list_connectors(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        connectors::list_for_project(database.conn(), &project_id).await?
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateConnectorBody {
+    kind: String,
+    slug: String,
+    name: String,
+    base_url: Option<String>,
+    auth_kind: Option<String>,
+    /// Plain credential to be encrypted server-side. Mirrors
+    /// `set_provider_key` for LLM providers.
+    credential: Option<String>,
+    #[serde(default)]
+    config_json: Option<Value>,
+}
+
+async fn create_connector(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<CreateConnectorBody>,
+) -> Result<Json<Value>, AppError> {
+    let auth_kind = body.auth_kind.unwrap_or_else(|| "none".to_owned());
+    let (encrypted, masked) = if let Some(plain) = body.credential.as_deref() {
+        if plain.trim().is_empty() {
+            (None, None)
+        } else {
+            let sealed = state
+                .crypto
+                .seal(plain.as_bytes())
+                .map_err(|e| AppError::Internal(format!("encrypt connector cred: {e}")))?;
+            // Store the ciphertext as its JSON byte-array encoding so the
+            // column can stay TEXT (mirrors how settings persist sealed
+            // tavily/github tokens). On read, decode with
+            // `serde_json::from_str::<Vec<u8>>(&ct).and_then(Crypto::open)`.
+            let json_ct = serde_json::to_string(&sealed)
+                .map_err(|e| AppError::Internal(format!("encode connector cred: {e}")))?;
+            (Some(json_ct), Some(mask_key(plain)))
+        }
+    } else {
+        (None, None)
+    };
+    let database = db(&state).await;
+    let row = connectors::create(
+        database.conn(),
+        connectors::CreateConnector {
+            project_id,
+            kind: body.kind,
+            slug: body.slug,
+            name: body.name,
+            base_url: body.base_url,
+            auth_kind,
+            encrypted_credentials: encrypted,
+            masked_key: masked,
+            config_json: body.config_json.unwrap_or_else(|| json!({})),
+        },
+    )
+    .await?;
+    Ok(Json(json!(row)))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectorStatusBody {
+    status: String,
+    #[serde(default)]
+    handshake: Option<Value>,
+}
+
+async fn update_connector_status(
+    State(state): State<AppState>,
+    Path(connector_id): Path<String>,
+    Json(body): Json<ConnectorStatusBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let row =
+        connectors::set_status(database.conn(), &connector_id, &body.status, body.handshake)
+            .await?;
+    Ok(Json(json!(row)))
+}
+
+async fn delete_connector(
+    State(state): State<AppState>,
+    Path(connector_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    connectors::delete(database.conn(), &connector_id).await?;
+    Ok(Json(json!({ "ok": true, "id": connector_id })))
+}
+
+// Spec documents + sections ─────────────────────────────────────────────
+
+async fn list_spec_documents(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        spec_documents::list_for_project(database.conn(), &project_id).await?
+    )))
+}
+
+async fn create_spec_document(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<spec_documents::CreateSpecDocument>,
+) -> Result<Json<Value>, AppError> {
+    let mut payload = body;
+    // Path param wins to keep the FK consistent.
+    payload.project_id = project_id;
+    let database = db(&state).await;
+    let doc = spec_documents::create(database.conn(), payload.clone()).await?;
+    // Sync sections derived from the markdown so anchors land at write-time.
+    if !payload.markdown.trim().is_empty() {
+        let sections = parse_sections(&payload.markdown);
+        spec_document_sections::sync_for_document(
+            database.conn(),
+            &doc.id,
+            into_upserts(sections),
+        )
+        .await?;
+    }
+    Ok(Json(json!(doc)))
+}
+
+async fn get_spec_document(
+    State(state): State<AppState>,
+    Path(spec_document_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let row = spec_documents::get(database.conn(), &spec_document_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("spec document {spec_document_id} not found")))?;
+    Ok(Json(json!(row)))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateSpecDocBody {
+    #[serde(default)]
+    title: Option<String>,
+    markdown: String,
+}
+
+async fn update_spec_document_markdown(
+    State(state): State<AppState>,
+    Path(spec_document_id): Path<String>,
+    Json(body): Json<UpdateSpecDocBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let row = spec_documents::update_markdown(
+        database.conn(),
+        &spec_document_id,
+        body.title,
+        body.markdown.clone(),
+    )
+    .await?;
+    // Re-sync sections from the new markdown so spec_section_id FKs from
+    // tasks remain resolvable. Anchors are slugify-stable, so most
+    // existing references survive across edits.
+    let sections = parse_sections(&body.markdown);
+    spec_document_sections::sync_for_document(database.conn(), &spec_document_id, into_upserts(sections))
+        .await?;
+    Ok(Json(json!(row)))
+}
+
+async fn list_spec_sections(
+    State(state): State<AppState>,
+    Path(spec_document_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        spec_document_sections::list_for_document(database.conn(), &spec_document_id).await?
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DecomposeBody {
+    /// Project the new sprints belong to.
+    project_id: String,
+    /// Hand-built or LLM-produced decomposition. Phase 1c will add an
+    /// LLM-driven endpoint that produces this shape automatically.
+    decomposition: DecomposeOutput,
+    /// Optional offset for sprint position to chain with existing rows.
+    #[serde(default)]
+    starting_position: i32,
+}
+
+async fn decompose_spec_document(
+    State(state): State<AppState>,
+    Path(spec_document_id): Path<String>,
+    Json(body): Json<DecomposeBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let result = materialize_decomposition(
+        database.conn(),
+        &body.project_id,
+        &spec_document_id,
+        body.decomposition,
+        body.starting_position,
+    )
+    .await?;
+    emit(
+        &state,
+        "spec_document.decomposed",
+        json!({
+            "specDocumentId": spec_document_id,
+            "projectId": body.project_id,
+            "sprintIds": result.sprint_ids,
+            "taskIds": result.task_ids,
+        }),
+    )
+    .await;
+    Ok(Json(json!(result)))
+}
+
+// Agent task assignments ────────────────────────────────────────────────
+
+async fn list_assignments_for_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        agent_task_assignments::list_for_project_via_tasks(database.conn(), &project_id).await?
+    )))
+}
+
+async fn create_assignment(
+    State(state): State<AppState>,
+    Path(_project_id): Path<String>,
+    Json(body): Json<agent_task_assignments::CreateAssignment>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let row = agent_task_assignments::create(database.conn(), body).await?;
+    emit(
+        &state,
+        "agent_task_assignment.created",
+        json!({ "id": row.id, "agentId": row.agent_id, "taskId": row.task_id, "state": row.state }),
+    )
+    .await;
+    Ok(Json(json!(row)))
+}
+
+async fn update_assignment(
+    State(state): State<AppState>,
+    Path(assignment_id): Path<String>,
+    Json(body): Json<agent_task_assignments::UpdateAssignment>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let row = agent_task_assignments::update(database.conn(), &assignment_id, body).await?;
+    emit(
+        &state,
+        "agent_task_assignment.updated",
+        json!({ "id": row.id, "state": row.state, "driftScore": row.drift_score }),
+    )
+    .await;
+    Ok(Json(json!(row)))
+}
+
+// Drift events ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriftListQuery {
+    #[serde(default)]
+    open_only: bool,
+}
+
+async fn list_drift_events(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DriftListQuery>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        drift_events::list_for_project(database.conn(), &project_id, query.open_only).await?
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriftStatusBody {
+    /// `"approved"`, `"corrected"`, `"dismissed"`, or `"open"` (re-open).
+    status: String,
+}
+
+async fn update_drift_event_status(
+    State(state): State<AppState>,
+    Path(event_id): Path<String>,
+    Json(body): Json<DriftStatusBody>,
+) -> Result<Json<Value>, AppError> {
+    let valid = matches!(body.status.as_str(), "open" | "approved" | "corrected" | "dismissed");
+    if !valid {
+        return Err(AppError::BadRequest(format!(
+            "invalid drift status `{}`", body.status
+        )));
+    }
+    let database = db(&state).await;
+    let row = drift_events::set_status(database.conn(), &event_id, &body.status).await?;
+    emit(
+        &state,
+        "drift_event.updated",
+        json!({ "id": row.id, "status": row.status, "kind": row.kind }),
+    )
+    .await;
+    Ok(Json(json!(row)))
+}
+
+// Custom MCP servers ────────────────────────────────────────────────────
+
+async fn list_custom_mcp_servers(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        custom_mcp_servers::list_for_project(database.conn(), &project_id).await?
+    )))
+}
+
+// Spawn requests ────────────────────────────────────────────────────────
+
+async fn list_spawn_requests(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        agent_spawn_requests::list_for_project(database.conn(), &project_id).await?
+    )))
+}
+
+async fn create_spawn_request(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<agent_spawn_requests::CreateSpawnRequest>,
+) -> Result<Json<Value>, AppError> {
+    let mut payload = body;
+    payload.project_id = project_id;
+    let database = db(&state).await;
+    let row = agent_spawn_requests::create(database.conn(), payload).await?;
+    emit(
+        &state,
+        "agent_spawn_request.queued",
+        json!({ "id": row.id, "role": row.requested_role, "status": row.status }),
+    )
+    .await;
+    Ok(Json(json!(row)))
+}
+
+async fn get_spawn_request(
+    State(state): State<AppState>,
+    Path(spawn_request_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let row = agent_spawn_requests::get(database.conn(), &spawn_request_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("spawn request {spawn_request_id} not found"))
+        })?;
+    Ok(Json(json!(row)))
+}
+
+async fn update_spawn_request(
+    State(state): State<AppState>,
+    Path(spawn_request_id): Path<String>,
+    Json(body): Json<agent_spawn_requests::UpdateSpawnRequest>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let row = agent_spawn_requests::update(database.conn(), &spawn_request_id, body).await?;
+    emit(
+        &state,
+        "agent_spawn_request.updated",
+        json!({ "id": row.id, "status": row.status }),
+    )
+    .await;
+    Ok(Json(json!(row)))
+}
+
+// Agent ↔ MCP bindings ──────────────────────────────────────────────────
+
+async fn list_mcp_bindings_for_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        agent_mcp_bindings::list_for_agent(database.conn(), &agent_id).await?
+    )))
 }
