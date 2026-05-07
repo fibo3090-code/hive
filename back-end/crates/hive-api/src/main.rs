@@ -1175,7 +1175,7 @@ async fn project_payload(
         "lastActivityAt": project.last_activity_at,
         "budget": {
             "used": cents_to_dollars(used_cents),
-            "total": cents_to_dollars(i64::from(project.budget_total_cents))
+            "total": cents_to_dollars(project.budget_total_cents)
         },
         "createdAt": project.created_at,
         "updatedAt": project.updated_at
@@ -1210,7 +1210,7 @@ async fn session_payload(database: &Db, project_id: &str) -> Result<Value, AppEr
             "elapsed": format_elapsed(&session.started_at, session.ended_at.as_deref()),
             "tokensUsed": tokens_used,
             "budgetUsed": cents_to_dollars(budget_cents),
-            "budgetTotal": cents_to_dollars(i64::from(project.budget_total_cents)),
+            "budgetTotal": cents_to_dollars(project.budget_total_cents),
             "agentCount": agent_count
         }))
     } else {
@@ -1222,7 +1222,7 @@ async fn session_payload(database: &Db, project_id: &str) -> Result<Value, AppEr
             "elapsed": "00:00:00",
             "tokensUsed": 0,
             "budgetUsed": 0,
-            "budgetTotal": cents_to_dollars(i64::from(project.budget_total_cents)),
+            "budgetTotal": cents_to_dollars(project.budget_total_cents),
             "agentCount": agent_count
         }))
     }

@@ -838,7 +838,7 @@ function DataPrivacySection({ draft, patch }: { readonly draft: SettingsState; r
       <Row label="Data Retention" desc="How long to keep session data">
         <SelectField
           value={draft.dataPrivacy.retention}
-          options={['30 days', '90 days', '1 year', 'forever']}
+          options={['30 days', '90 days', '1 year']}
           onChange={(value) =>
             patch('dataPrivacy', { ...draft.dataPrivacy, retention: value })
           }

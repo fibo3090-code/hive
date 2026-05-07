@@ -226,7 +226,10 @@ fn tool_definitions(registry: &ToolRegistry) -> Vec<ToolDefinition> {
         .collect()
 }
 
-fn tool_invocations_from_response(text: &str, tool_calls: &[ToolCall]) -> Option<Vec<ToolInvocation>> {
+fn tool_invocations_from_response(
+    text: &str,
+    tool_calls: &[ToolCall],
+) -> Option<Vec<ToolInvocation>> {
     if !tool_calls.is_empty() {
         return Some(
             tool_calls
@@ -289,10 +292,7 @@ fn validate_against_schema(args: &Value, schema: &Value) -> Result<(), String> {
                 .iter()
                 .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "?".into()))
                 .collect();
-            return Err(format!(
-                "value must be one of [{}]",
-                rendered.join(", ")
-            ));
+            return Err(format!("value must be one of [{}]", rendered.join(", ")));
         }
     }
 
@@ -307,7 +307,10 @@ fn validate_against_schema(args: &Value, schema: &Value) -> Result<(), String> {
         }
     }
 
-    if let (Some(object), Some(properties)) = (args.as_object(), schema.get("properties").and_then(Value::as_object)) {
+    if let (Some(object), Some(properties)) = (
+        args.as_object(),
+        schema.get("properties").and_then(Value::as_object),
+    ) {
         for (key, value) in object {
             if let Some(property_schema) = properties.get(key) {
                 validate_against_schema(value, property_schema)
@@ -319,15 +322,17 @@ fn validate_against_schema(args: &Value, schema: &Value) -> Result<(), String> {
     // Array items: every element must satisfy the items schema.
     if let (Some(array), Some(items_schema)) = (args.as_array(), schema.get("items")) {
         for (idx, item) in array.iter().enumerate() {
-            validate_against_schema(item, items_schema)
-                .map_err(|e| format!("[{idx}]: {e}"))?;
+            validate_against_schema(item, items_schema).map_err(|e| format!("[{idx}]: {e}"))?;
         }
     }
 
     Ok(())
 }
 
-fn validate_tool_invocation(registry: &ToolRegistry, invocation: &ToolInvocation) -> Result<(), String> {
+fn validate_tool_invocation(
+    registry: &ToolRegistry,
+    invocation: &ToolInvocation,
+) -> Result<(), String> {
     let Some(tool) = registry.get(&invocation.tool) else {
         return Err(format!("tool `{}` is not registered", invocation.tool));
     };
@@ -343,25 +348,31 @@ fn tool_result_json(tool: &str, error: impl Into<String>) -> Value {
     })
 }
 
+struct CancelledTurnState<'a> {
+    final_answer: &'a str,
+    total_tokens_in: u32,
+    total_tokens_out: u32,
+    total_cost: i64,
+    executed_calls: &'a [Value],
+}
+
 async fn finalize_cancelled(
     db: &Db,
     bus: &EventBus,
     thread_id: &str,
     assistant_message_id: &str,
-    final_answer: &str,
-    total_tokens_in: u32,
-    total_tokens_out: u32,
-    total_cost: i64,
-    executed_calls: &[Value],
+    state: CancelledTurnState<'_>,
 ) -> Result<(), ChatError> {
-    let _ = chat_messages::set_tool_calls(db.conn(), assistant_message_id, json!(executed_calls)).await?;
+    let _ =
+        chat_messages::set_tool_calls(db.conn(), assistant_message_id, json!(state.executed_calls))
+            .await?;
     let _ = chat_messages::finalize(
         db.conn(),
         assistant_message_id,
-        final_answer,
-        total_tokens_in as i32,
-        total_tokens_out as i32,
-        total_cost,
+        state.final_answer,
+        state.total_tokens_in as i32,
+        state.total_tokens_out as i32,
+        state.total_cost,
         "cancelled",
     )
     .await?;
@@ -447,7 +458,8 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         .ok_or_else(|| ChatError::NotFound(thread_id.clone()))?;
 
     let mut history = chat_messages::list_by_thread(db.conn(), &thread_id).await?;
-    history.retain(|m| m.id != assistant_message_id && m.status != "cancelled" && m.status != "error");
+    history
+        .retain(|m| m.id != assistant_message_id && m.status != "cancelled" && m.status != "error");
     if history.len() > history_limit {
         let skip = history.len() - history_limit;
         history.drain(..skip);
@@ -595,7 +607,9 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     const MAX_TOTAL_TOOL_CALLS: usize = 60;
     let mut total_tool_calls: usize = 0;
 
-    let can_use_tools = tool_registry.as_ref().is_some_and(|registry| !registry.names().is_empty())
+    let can_use_tools = tool_registry
+        .as_ref()
+        .is_some_and(|registry| !registry.names().is_empty())
         && tool_context.is_some();
 
     for _ in 0..MAX_TOOL_ROUNDS {
@@ -605,11 +619,13 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                 &bus,
                 &thread_id,
                 &assistant_message_id,
-                &final_answer,
-                total_tokens_in,
-                total_tokens_out,
-                total_cost,
-                &executed_calls,
+                CancelledTurnState {
+                    final_answer: &final_answer,
+                    total_tokens_in,
+                    total_tokens_out,
+                    total_cost,
+                    executed_calls: &executed_calls,
+                },
             )
             .await?;
             return Ok(());
@@ -617,44 +633,42 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
 
         if !can_use_tools {
             let request = ChatRequest::new(model.clone(), messages.clone());
-            let outcome =
-                match collect_response(&provider, request, &cancel).await {
-                    Ok(collected) => collected,
-                    Err(ChatError::Llm(err)) => {
-                        let detail = err.to_string();
-                        let _ = chat_messages::set_tool_calls(
-                            db.conn(),
-                            &assistant_message_id,
-                            json!(executed_calls),
-                        )
-                        .await;
-                        let _ = chat_messages::finalize(
-                            db.conn(),
-                            &assistant_message_id,
-                            &format!("[error] {detail}"),
-                            total_tokens_in as i32,
-                            total_tokens_out as i32,
-                            total_cost,
-                            "error",
-                        )
-                        .await;
-                        bus.emit(
-                            format!("chat.{thread_id}.error"),
-                            json!({
-                                "threadId": thread_id,
-                                "messageId": assistant_message_id,
-                                "error": detail,
-                            }),
-                        );
-                        return Err(ChatError::Llm(err));
-                    }
-                    Err(other) => return Err(other),
-                };
+            let outcome = match collect_response(&provider, request, &cancel).await {
+                Ok(collected) => collected,
+                Err(ChatError::Llm(err)) => {
+                    let detail = err.to_string();
+                    let _ = chat_messages::set_tool_calls(
+                        db.conn(),
+                        &assistant_message_id,
+                        json!(executed_calls),
+                    )
+                    .await;
+                    let _ = chat_messages::finalize(
+                        db.conn(),
+                        &assistant_message_id,
+                        &format!("[error] {detail}"),
+                        total_tokens_in as i32,
+                        total_tokens_out as i32,
+                        total_cost,
+                        "error",
+                    )
+                    .await;
+                    bus.emit(
+                        format!("chat.{thread_id}.error"),
+                        json!({
+                            "threadId": thread_id,
+                            "messageId": assistant_message_id,
+                            "error": detail,
+                        }),
+                    );
+                    return Err(ChatError::Llm(err));
+                }
+                Err(other) => return Err(other),
+            };
 
             total_tokens_in += outcome.tokens_in;
             total_tokens_out += outcome.tokens_out;
-            total_cost +=
-                cost_cents(provider_kind, &model, outcome.tokens_in, outcome.tokens_out);
+            total_cost += cost_cents(provider_kind, &model, outcome.tokens_in, outcome.tokens_out);
             finish_reason = outcome.finish_reason;
             final_answer = outcome.accumulated;
             // If cancellation flipped during streaming, stop here. The
@@ -666,11 +680,13 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                     &bus,
                     &thread_id,
                     &assistant_message_id,
-                    &final_answer,
-                    total_tokens_in,
-                    total_tokens_out,
-                    total_cost,
-                    &executed_calls,
+                    CancelledTurnState {
+                        final_answer: &final_answer,
+                        total_tokens_in,
+                        total_tokens_out,
+                        total_cost,
+                        executed_calls: &executed_calls,
+                    },
                 )
                 .await?;
                 return Ok(());
@@ -680,7 +696,8 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
 
         let registry = tool_registry.as_ref().expect("checked above");
         let ctx = tool_context.as_ref().expect("checked above");
-        let request = ChatRequest::new(model.clone(), messages.clone()).with_tools(tool_definitions(registry));
+        let request = ChatRequest::new(model.clone(), messages.clone())
+            .with_tools(tool_definitions(registry));
         let response = match provider.chat(request).await {
             Ok(response) => response,
             Err(err) => {
@@ -723,7 +740,9 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         );
         finish_reason = response.finish_reason.clone();
 
-        let Some(invocations) = tool_invocations_from_response(&response.text, &response.tool_calls) else {
+        let Some(invocations) =
+            tool_invocations_from_response(&response.text, &response.tool_calls)
+        else {
             final_answer = response.text;
             break;
         };
@@ -745,11 +764,13 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                     &bus,
                     &thread_id,
                     &assistant_message_id,
-                    &final_answer,
-                    total_tokens_in,
-                    total_tokens_out,
-                    total_cost,
-                    &executed_calls,
+                    CancelledTurnState {
+                        final_answer: &final_answer,
+                        total_tokens_in,
+                        total_tokens_out,
+                        total_cost,
+                        executed_calls: &executed_calls,
+                    },
                 )
                 .await?;
                 return Ok(());
@@ -798,7 +819,8 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
             const PER_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
             let result = match validate_tool_invocation(registry, &invocation) {
                 Ok(()) => {
-                    let invoke_fut = registry.invoke(&invocation.tool, invocation.arguments.clone(), ctx);
+                    let invoke_fut =
+                        registry.invoke(&invocation.tool, invocation.arguments.clone(), ctx);
                     match tokio::time::timeout(PER_TOOL_TIMEOUT, invoke_fut).await {
                         Ok(Ok(value)) => value,
                         Ok(Err(err)) => err.to_result_json(),
@@ -877,7 +899,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
 
     for chunk in final_answer.as_bytes().chunks(48) {
         let delta = String::from_utf8_lossy(chunk).into_owned();
-        let _ = chat_messages::append_content(db.conn(), &assistant_message_id, &delta).await?;
+        chat_messages::append_content(db.conn(), &assistant_message_id, &delta).await?;
         bus.emit(
             format!("chat.{thread_id}.token"),
             json!({
@@ -967,8 +989,7 @@ mod tests {
                 }
             }
         });
-        let err =
-            validate_against_schema(&json!({"filter": {}}), &schema).unwrap_err();
+        let err = validate_against_schema(&json!({"filter": {}}), &schema).unwrap_err();
         assert!(err.contains("filter"), "{err}");
         assert!(err.contains("kind"), "{err}");
     }
@@ -981,12 +1002,8 @@ mod tests {
                 "mode": { "enum": ["fast", "deep"] }
             }
         });
-        assert!(
-            validate_against_schema(&json!({"mode": "fast"}), &schema).is_ok()
-        );
-        assert!(
-            validate_against_schema(&json!({"mode": "balanced"}), &schema).is_err()
-        );
+        assert!(validate_against_schema(&json!({"mode": "fast"}), &schema).is_ok());
+        assert!(validate_against_schema(&json!({"mode": "balanced"}), &schema).is_err());
     }
 
     #[test]
@@ -997,11 +1014,7 @@ mod tests {
                 "tags": { "type": "array", "items": { "type": "string" } }
             }
         });
-        assert!(validate_against_schema(
-            &json!({"tags": ["a", "b"]}),
-            &schema,
-        )
-        .is_ok());
+        assert!(validate_against_schema(&json!({"tags": ["a", "b"]}), &schema,).is_ok());
         let err = validate_against_schema(&json!({"tags": [1]}), &schema).unwrap_err();
         assert!(err.contains("string"));
     }
@@ -1111,8 +1124,8 @@ mod tests {
         assert!(!matches_schema_type(&json!(42), "string"));
         assert!(matches_schema_type(&json!(42), "integer"));
         assert!(matches_schema_type(&json!(42), "number"));
-        assert!(matches_schema_type(&json!(3.14), "number"));
-        assert!(!matches_schema_type(&json!(3.14), "integer"));
+        assert!(matches_schema_type(&json!(2.5), "number"));
+        assert!(!matches_schema_type(&json!(2.5), "integer"));
         assert!(matches_schema_type(&json!(true), "boolean"));
         assert!(matches_schema_type(&json!([]), "array"));
         assert!(matches_schema_type(&json!({}), "object"));

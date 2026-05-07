@@ -187,14 +187,20 @@ impl Sandbox for LocalFsSandbox {
         // see. Clear everything, then re-add a minimal allowlist so
         // common tooling still works.
         command.env_clear();
+        for var in ["PATH", "LANG", "LC_ALL", "TZ", "TERM", "USER", "LOGNAME"] {
+            if let Ok(value) = std::env::var(var) {
+                command.env(var, value);
+            }
+        }
+        #[cfg(windows)]
         for var in [
-            "PATH",
-            "LANG",
-            "LC_ALL",
-            "TZ",
-            "TERM",
-            "USER",
-            "LOGNAME",
+            "ComSpec",
+            "PATHEXT",
+            "SystemDrive",
+            "SystemRoot",
+            "TEMP",
+            "TMP",
+            "WINDIR",
         ] {
             if let Ok(value) = std::env::var(var) {
                 command.env(var, value);
@@ -386,10 +392,7 @@ mod tests {
         std::env::set_var("HIVE_TEST_FAKE_KEY", "supersecret");
         let sb = LocalFsSandbox::new(tmp()).unwrap();
         let (cmd, args) = shell_command("echo $HIVE_TEST_FAKE_KEY");
-        let out = sb
-            .exec(&cmd, &args, Duration::from_secs(5))
-            .await
-            .unwrap();
+        let out = sb.exec(&cmd, &args, Duration::from_secs(5)).await.unwrap();
         std::env::remove_var("HIVE_TEST_FAKE_KEY");
         assert!(
             !out.stdout.contains("supersecret"),

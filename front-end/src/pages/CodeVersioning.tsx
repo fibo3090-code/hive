@@ -21,7 +21,7 @@ import {
   useRestoreGit,
   type GitTreeEntry,
 } from '@/api/git';
-import { GitBranch, File, FolderOpen, Check, X, ChevronDown, ChevronRight, Github, RefreshCw, Plus } from 'lucide-react';
+import { GitBranch, File, FolderOpen, X, ChevronDown, ChevronRight, Github, RefreshCw, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 
 type TreeNode = {
