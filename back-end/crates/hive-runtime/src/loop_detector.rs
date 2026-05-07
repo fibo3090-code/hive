@@ -271,10 +271,15 @@ async fn insert_notification_if_new(
     let title = format!(
         "{} repeated {} {} times",
         payload.agent_name,
-        payload.samples.first().map(|s| s.tool.as_str()).unwrap_or("a tool"),
+        payload
+            .samples
+            .first()
+            .map(|s| s.tool.as_str())
+            .unwrap_or("a tool"),
         payload.occurrences
     );
-    let message = "The loop detector noticed a repeated tool pattern. Review and resolve.".to_string();
+    let message =
+        "The loop detector noticed a repeated tool pattern. Review and resolve.".to_string();
     notifications::create(
         db.conn(),
         notifications::CreateNotification {
@@ -298,4 +303,3 @@ async fn insert_notification_if_new(
     );
     Ok(())
 }
-

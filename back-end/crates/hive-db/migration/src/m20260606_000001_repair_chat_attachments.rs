@@ -1,19 +1,8 @@
-//! `chat_message_attachments` — files the user attaches to a chat
-//! message before send. Storage path is workspace-relative so the
-//! per-project sandbox already handles isolation; the row is the
-//! source of truth for size, mime type, and the original filename.
-//!
-//! Columns:
-//!   id TEXT PK
-//!   message_id TEXT NOT NULL FK→chat_messages
-//!   kind TEXT NOT NULL                — 'image' | 'text' | 'binary'
-//!   name TEXT NOT NULL                — original filename
-//!   mime_type TEXT NOT NULL
-//!   bytes_size INTEGER NOT NULL
-//!   storage_path TEXT NOT NULL        — relative to ~/.hive/attachments/{project_id}/
-//!   created_at TEXT NOT NULL
-//!
-//! Indexed on `message_id` so listing-per-message is O(rows).
+//! Repair migration for local databases where
+//! `m20260603_000001_chat_attachments` was recorded but the table is
+//! missing. The original migration already used `IF NOT EXISTS`; this
+//! later migration makes the repair visible to SeaORM's migration
+//! runner even when the original version is marked as applied.
 
 use sea_orm_migration::prelude::*;
 
@@ -21,7 +10,7 @@ pub struct Migration;
 
 impl MigrationName for Migration {
     fn name(&self) -> &str {
-        "m20260603_000001_chat_attachments"
+        "m20260606_000001_repair_chat_attachments"
     }
 }
 
@@ -64,6 +53,7 @@ impl MigrationTrait for Migration {
                     .name("idx_chat_message_attachments_message")
                     .table(Alias::new("chat_message_attachments"))
                     .col(Alias::new("message_id"))
+                    .if_not_exists()
                     .to_owned(),
             )
             .await?;
@@ -71,13 +61,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .drop_table(
-                Table::drop()
-                    .table(Alias::new("chat_message_attachments"))
-                    .to_owned(),
-            )
-            .await
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        Ok(())
     }
 }

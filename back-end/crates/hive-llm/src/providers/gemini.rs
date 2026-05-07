@@ -427,7 +427,11 @@ mod tests {
         });
         let parsed = parse_response(&response).unwrap();
         assert_eq!(parsed.tool_calls.len(), 2);
-        let ids: Vec<_> = parsed.tool_calls.iter().filter_map(|c| c.id.as_deref()).collect();
+        let ids: Vec<_> = parsed
+            .tool_calls
+            .iter()
+            .filter_map(|c| c.id.as_deref())
+            .collect();
         assert_eq!(ids.len(), 2);
         assert_ne!(ids[0], ids[1]);
     }

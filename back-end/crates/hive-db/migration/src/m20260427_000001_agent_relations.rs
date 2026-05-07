@@ -15,7 +15,10 @@ impl MigrationTrait for Migration {
         let alterations: [(Agents, ColumnDef); 6] = [
             (
                 Agents::ParentAgentId,
-                ColumnDef::new(Agents::ParentAgentId).string().null().to_owned(),
+                ColumnDef::new(Agents::ParentAgentId)
+                    .string()
+                    .null()
+                    .to_owned(),
             ),
             (
                 Agents::SpawnedByMessageId,
@@ -34,7 +37,10 @@ impl MigrationTrait for Migration {
             ),
             (
                 Agents::SystemPrompt,
-                ColumnDef::new(Agents::SystemPrompt).text().null().to_owned(),
+                ColumnDef::new(Agents::SystemPrompt)
+                    .text()
+                    .null()
+                    .to_owned(),
             ),
             (
                 Agents::ModelProviderId,
@@ -161,7 +167,12 @@ impl MigrationTrait for Migration {
             Agents::ModelId,
         ] {
             manager
-                .alter_table(Table::alter().table(Agents::Table).drop_column(col).to_owned())
+                .alter_table(
+                    Table::alter()
+                        .table(Agents::Table)
+                        .drop_column(col)
+                        .to_owned(),
+                )
                 .await?;
         }
 

@@ -59,7 +59,11 @@ impl MigrationTrait for Migration {
                             .string()
                             .not_null(),
                     )
-                    .col(ColumnDef::new(ProjectWorkspaces::ContainerId).string().null())
+                    .col(
+                        ColumnDef::new(ProjectWorkspaces::ContainerId)
+                            .string()
+                            .null(),
+                    )
                     .col(
                         ColumnDef::new(ProjectWorkspaces::Status)
                             .string()

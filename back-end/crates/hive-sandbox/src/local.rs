@@ -104,6 +104,41 @@ impl LocalFsSandbox {
     }
 }
 
+#[cfg(windows)]
+fn is_windows_echo(cmd: &str) -> bool {
+    cmd.eq_ignore_ascii_case("echo")
+}
+
+#[cfg(windows)]
+fn escape_cmd_echo_arg(arg: &str) -> String {
+    let mut out = String::with_capacity(arg.len());
+    for ch in arg.chars() {
+        match ch {
+            '\r' | '\n' => out.push(' '),
+            '^' | '&' | '|' | '<' | '>' | '(' | ')' | '%' | '"' => {
+                out.push('^');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+#[cfg(windows)]
+fn windows_echo_command_line(args: &[String]) -> String {
+    if args.is_empty() {
+        return "echo.".to_owned();
+    }
+    format!(
+        "echo {}",
+        args.iter()
+            .map(|arg| escape_cmd_echo_arg(arg))
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
+}
+
 #[async_trait]
 impl Sandbox for LocalFsSandbox {
     fn kind(&self) -> SandboxKind {
@@ -172,9 +207,30 @@ impl Sandbox for LocalFsSandbox {
         args: &[String],
         timeout: Duration,
     ) -> Result<ExecOutput, SandboxError> {
-        let mut command = Command::new(cmd);
+        #[cfg(windows)]
+        let mut command = if is_windows_echo(cmd) {
+            let shell = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_owned());
+            let mut command = Command::new(shell);
+            command
+                .arg("/D")
+                .arg("/S")
+                .arg("/C")
+                .arg(windows_echo_command_line(args));
+            command
+        } else {
+            let mut command = Command::new(cmd);
+            command.args(args);
+            command
+        };
+
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new(cmd);
+            command.args(args);
+            command
+        };
+
         command
-            .args(args)
             .current_dir(&self.root)
             .kill_on_drop(true)
             .stdin(std::process::Stdio::null())
@@ -328,6 +384,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.stdout.trim(), "hello");
+        assert_eq!(out.exit_code, Some(0));
+        assert!(!out.timed_out);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn exec_supports_windows_echo_builtin() {
+        let sb = LocalFsSandbox::new(tmp()).unwrap();
+        let out = sb
+            .exec(
+                "echo",
+                &[String::from("Hello from the shell!")],
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.stdout.trim(), "Hello from the shell!");
         assert_eq!(out.exit_code, Some(0));
         assert!(!out.timed_out);
     }

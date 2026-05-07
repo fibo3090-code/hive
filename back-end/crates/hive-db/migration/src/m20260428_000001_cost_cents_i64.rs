@@ -34,8 +34,11 @@ impl MigrationTrait for Migration {
                 "ALTER TABLE cost_events ALTER COLUMN cost_cents TYPE BIGINT",
                 "ALTER TABLE chat_messages ALTER COLUMN cost_cents TYPE BIGINT",
             ] {
-                conn.execute(Statement::from_string(DatabaseBackend::Postgres, sql.to_owned()))
-                    .await?;
+                conn.execute(Statement::from_string(
+                    DatabaseBackend::Postgres,
+                    sql.to_owned(),
+                ))
+                .await?;
             }
         }
         // SQLite: no schema change required; entity-side i64 is sufficient.
@@ -52,8 +55,11 @@ impl MigrationTrait for Migration {
                 "ALTER TABLE cost_events ALTER COLUMN cost_cents TYPE INTEGER",
                 "ALTER TABLE chat_messages ALTER COLUMN cost_cents TYPE INTEGER",
             ] {
-                conn.execute(Statement::from_string(DatabaseBackend::Postgres, sql.to_owned()))
-                    .await?;
+                conn.execute(Statement::from_string(
+                    DatabaseBackend::Postgres,
+                    sql.to_owned(),
+                ))
+                .await?;
             }
         }
         Ok(())

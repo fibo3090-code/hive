@@ -8,7 +8,9 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::events::EventBus;
-use crate::executor::{spawn_executor, AgentExecutor, DriverSlot, ExecutorError, ExecutorState, InboxItem};
+use crate::executor::{
+    spawn_executor, AgentExecutor, DriverSlot, ExecutorError, ExecutorState, InboxItem,
+};
 use crate::turn_driver::TurnDriver;
 
 #[derive(Clone)]

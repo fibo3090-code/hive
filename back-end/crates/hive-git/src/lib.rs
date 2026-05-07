@@ -351,7 +351,11 @@ pub struct GitHubClient {
 }
 
 impl GitHubClient {
-    pub fn new(owner: impl Into<String>, repo: impl Into<String>, token: impl Into<String>) -> Self {
+    pub fn new(
+        owner: impl Into<String>,
+        repo: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Self {
         Self {
             http: reqwest::Client::new(),
             owner: owner.into(),
@@ -364,7 +368,10 @@ impl GitHubClient {
         self.http
             .request(
                 method,
-                format!("https://api.github.com/repos/{}/{}/{}", self.owner, self.repo, path),
+                format!(
+                    "https://api.github.com/repos/{}/{}/{}",
+                    self.owner, self.repo, path
+                ),
             )
             .bearer_auth(&self.token)
             .header("User-Agent", "hive-api")
@@ -404,7 +411,10 @@ impl GitHubClient {
         Ok(payload
             .into_iter()
             .map(|pr| GitHubPullRequest {
-                number: pr.get("number").and_then(serde_json::Value::as_i64).unwrap_or_default(),
+                number: pr
+                    .get("number")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or_default(),
                 title: pr
                     .get("title")
                     .and_then(serde_json::Value::as_str)
@@ -458,7 +468,10 @@ impl GitHubClient {
             .await?;
         let pr: serde_json::Value = response.error_for_status()?.json().await?;
         Ok(GitHubPullRequest {
-            number: pr.get("number").and_then(serde_json::Value::as_i64).unwrap_or_default(),
+            number: pr
+                .get("number")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or_default(),
             title: pr
                 .get("title")
                 .and_then(serde_json::Value::as_str)

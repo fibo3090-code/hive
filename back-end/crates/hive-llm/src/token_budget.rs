@@ -43,7 +43,11 @@ pub fn estimate_tool_call_tokens(call: &ToolCall) -> u64 {
 /// Approximate token count for a single chat message including envelope.
 pub fn estimate_message_tokens(message: &ChatMessage) -> u64 {
     let content = estimate_string_tokens(&message.content);
-    let tool_calls: u64 = message.tool_calls.iter().map(estimate_tool_call_tokens).sum();
+    let tool_calls: u64 = message
+        .tool_calls
+        .iter()
+        .map(estimate_tool_call_tokens)
+        .sum();
     // ~4 tokens of envelope overhead per message (role + separators).
     content + tool_calls + 4
 }
@@ -160,17 +164,17 @@ mod tests {
         // Tight budget that will force trimming.
         let outcome = trim_to_fit(&mut msgs, &[], 30);
         // System (idx 0) and last (current question) preserved.
-        assert!(matches!(msgs.first().map(|m| m.role), Some(crate::chat::ChatRole::System)));
+        assert!(matches!(
+            msgs.first().map(|m| m.role),
+            Some(crate::chat::ChatRole::System)
+        ));
         assert_eq!(msgs.last().unwrap().content, "current question");
         assert!(outcome.dropped > 0);
     }
 
     #[test]
     fn trim_no_op_when_under_budget() {
-        let mut msgs = vec![
-            ChatMessage::system("sys"),
-            ChatMessage::user("hi"),
-        ];
+        let mut msgs = vec![ChatMessage::system("sys"), ChatMessage::user("hi")];
         let outcome = trim_to_fit(&mut msgs, &[], 1_000);
         assert_eq!(outcome.dropped, 0);
         assert_eq!(msgs.len(), 2);
@@ -178,9 +182,7 @@ mod tests {
 
     #[test]
     fn trim_with_tools_accounts_for_catalog() {
-        let mut msgs = vec![
-            ChatMessage::user("a".repeat(100)),
-        ];
+        let mut msgs = vec![ChatMessage::user("a".repeat(100))];
         let tool = ToolDefinition {
             name: "web_search".into(),
             description: "search the web".into(),

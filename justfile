@@ -47,7 +47,7 @@ dev-front:
 # helpful error if `tmux` isn't installed.
 [windows]
 up: setup
-    @Write-Error "'just up' needs tmux and a Unix-like shell. Run 'just dev-back' and 'just dev-front' in two terminals on Windows."; exit 1
+    @powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/dev-up.ps1
 
 [unix]
 up: setup
@@ -62,7 +62,7 @@ up: setup
 # Kill the tmux session if it's running.
 [windows]
 down:
-    @Write-Host "'just down' only stops the tmux session used by 'just up' on Unix-like systems."
+    @powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/dev-down.ps1
 
 [unix]
 down:

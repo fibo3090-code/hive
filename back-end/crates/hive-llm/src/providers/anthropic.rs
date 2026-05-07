@@ -165,7 +165,10 @@ fn parse_response(value: &Value) -> Result<ChatResponse, LlmError> {
                         .and_then(Value::as_str)
                         .ok_or_else(|| LlmError::Parse("missing anthropic tool name".into()))?;
                     tool_calls.push(ToolCall {
-                        id: item.get("id").and_then(Value::as_str).map(ToOwned::to_owned),
+                        id: item
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
                         name: name.to_owned(),
                         arguments: item.get("input").cloned().unwrap_or_else(|| json!({})),
                     });
@@ -313,10 +316,7 @@ impl LlmProvider for AnthropicProvider {
 ///   `delta.stop_reason`. We merge in the cached input tokens here.
 /// - `message_stop` — terminator. The HTTP stream ends right after.
 /// - `ping` — keep-alive; ignore.
-fn parse_event(
-    msg: &crate::sse::SseMessage,
-    input_tokens: &AtomicU32,
-) -> Option<StreamEvent> {
+fn parse_event(msg: &crate::sse::SseMessage, input_tokens: &AtomicU32) -> Option<StreamEvent> {
     if msg.data.is_empty() {
         return None;
     }

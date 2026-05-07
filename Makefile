@@ -37,8 +37,7 @@ dev-front:
 
 up: setup
 ifeq ($(OS),Windows_NT)
-	@echo "make up" needs tmux and a Unix-like shell. Run "make dev-back" and "make dev-front" in two terminals on Windows.
-	@exit /b 1
+	@powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/dev-up.ps1
 else
 	@command -v tmux >/dev/null || { \
 		echo "✗ 'make up' needs tmux. Install it (apt: tmux, brew: tmux) or run 'make dev-back' and 'make dev-front' in two terminals."; \
@@ -51,7 +50,7 @@ endif
 
 down:
 ifeq ($(OS),Windows_NT)
-	@echo "make down" only stops the tmux session used by "make up" on Unix-like systems.
+	@powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/dev-down.ps1
 else
 	-tmux kill-session -t hive 2>/dev/null || true
 endif

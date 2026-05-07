@@ -29,9 +29,7 @@ impl MigrationTrait for Migration {
             .alter_table(
                 Table::alter()
                     .table(SynthesisJobs::Table)
-                    .add_column(
-                        ColumnDef::new(SynthesisJobs::PublishedAt).string().null(),
-                    )
+                    .add_column(ColumnDef::new(SynthesisJobs::PublishedAt).string().null())
                     .to_owned(),
             )
             .await?;

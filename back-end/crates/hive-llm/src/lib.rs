@@ -18,8 +18,8 @@ pub use chat::{
 use std::{fmt, pin::Pin, str::FromStr};
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use futures_core::Stream;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

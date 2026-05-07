@@ -34,7 +34,9 @@ impl Tool for SpawnAgent {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "spawn_agent".into(),
-            description: "Create a new sub-agent under the calling agent and dispatch it an initial task.".into(),
+            description:
+                "Create a new sub-agent under the calling agent and dispatch it an initial task."
+                    .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -87,15 +89,12 @@ impl Tool for SpawnAgent {
             .and_then(|m| m.get("modelId"))
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let tools = args
-            .get("tools")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            });
+        let tools = args.get("tools").and_then(Value::as_array).map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        });
         let system_prompt = args
             .get("systemPrompt")
             .and_then(Value::as_str)

@@ -113,9 +113,18 @@ mod tests {
 
     #[test]
     fn anthropic_4x_family_is_200k() {
-        assert_eq!(context_window_for(ProviderKind::Anthropic, "claude-opus-4-7"), 200_000);
-        assert_eq!(context_window_for(ProviderKind::Anthropic, "claude-sonnet-4-6"), 200_000);
-        assert_eq!(context_window_for(ProviderKind::Anthropic, "claude-haiku-4-5-20251001"), 200_000);
+        assert_eq!(
+            context_window_for(ProviderKind::Anthropic, "claude-opus-4-7"),
+            200_000
+        );
+        assert_eq!(
+            context_window_for(ProviderKind::Anthropic, "claude-sonnet-4-6"),
+            200_000
+        );
+        assert_eq!(
+            context_window_for(ProviderKind::Anthropic, "claude-haiku-4-5-20251001"),
+            200_000
+        );
     }
 
     #[test]
@@ -129,7 +138,10 @@ mod tests {
     #[test]
     fn openai_gpt5_400k() {
         assert_eq!(context_window_for(ProviderKind::Openai, "gpt-5"), 400_000);
-        assert_eq!(context_window_for(ProviderKind::Openai, "gpt-5-mini"), 400_000);
+        assert_eq!(
+            context_window_for(ProviderKind::Openai, "gpt-5-mini"),
+            400_000
+        );
     }
 
     #[test]

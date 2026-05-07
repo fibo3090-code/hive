@@ -372,7 +372,10 @@ fn parse_event(msg: &crate::sse::SseMessage, state: &Mutex<StreamState>) -> Opti
         // and copies the cached finish_reason. If usage never arrives
         // (older API or `include_usage:false`), the runtime keeps this
         // event's finish_reason and only loses the token counts.
-        state.lock().unwrap_or_else(|e| e.into_inner()).finish_reason = Some(reason.clone());
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .finish_reason = Some(reason.clone());
         return Some(StreamEvent::Complete {
             tokens_in: 0,
             tokens_out: 0,
@@ -482,9 +485,7 @@ mod tests {
         let state = Mutex::new(StreamState::default());
 
         // First, a finish_reason chunk arrives with no tokens.
-        let finish = frame(
-            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
-        );
+        let finish = frame(r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#);
         match parse_event(&finish, &state).expect("Complete pre-emit") {
             StreamEvent::Complete {
                 tokens_in,

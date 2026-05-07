@@ -51,7 +51,9 @@ pub fn price_for(kind: ProviderKind, model: &str) -> Price {
                     input_per_mtok: 5.0,
                     output_per_mtok: 20.0,
                 }
-            } else if m.contains("gpt-4.1-mini") || m.contains("gpt-4o-mini") || m.contains("o3-mini")
+            } else if m.contains("gpt-4.1-mini")
+                || m.contains("gpt-4o-mini")
+                || m.contains("o3-mini")
                 || m.contains("o4-mini")
             {
                 Price {
@@ -244,7 +246,12 @@ mod tests {
     #[test]
     fn gemini_flash_cheaper_than_pro() {
         let pro = cost_cents(ProviderKind::Gemini, "gemini-2.5-pro", 1_000_000, 1_000_000);
-        let flash = cost_cents(ProviderKind::Gemini, "gemini-2.5-flash", 1_000_000, 1_000_000);
+        let flash = cost_cents(
+            ProviderKind::Gemini,
+            "gemini-2.5-flash",
+            1_000_000,
+            1_000_000,
+        );
         let lite = cost_cents(
             ProviderKind::Gemini,
             "gemini-2.5-flash-lite",

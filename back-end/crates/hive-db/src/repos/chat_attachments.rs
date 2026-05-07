@@ -87,10 +87,7 @@ pub async fn delete(db: &DatabaseConnection, id: &str) -> Result<(), DbErr> {
     Ok(())
 }
 
-pub async fn count_for_message(
-    db: &DatabaseConnection,
-    message_id: &str,
-) -> Result<u64, DbErr> {
+pub async fn count_for_message(db: &DatabaseConnection, message_id: &str) -> Result<u64, DbErr> {
     Entity::find()
         .filter(Column::MessageId.eq(message_id))
         .count(db)

@@ -73,7 +73,16 @@ impl SearchProvider for SearxNgProvider {
                 ("safesearch", "1"),
             ])
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                if e.is_connect() {
+                    SearchError::Config(format!(
+                        "searxng is not reachable at {base}; start SearxNG or configure Tavily in Settings > Tools Sandbox"
+                    ))
+                } else {
+                    SearchError::Http(e)
+                }
+            })?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();

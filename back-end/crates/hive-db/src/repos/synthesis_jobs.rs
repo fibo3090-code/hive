@@ -14,10 +14,7 @@ pub struct CreateSynthesisJob {
     pub model_id: Option<String>,
 }
 
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateSynthesisJob,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateSynthesisJob) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     ActiveModel {
         id: Set(new_id()),
