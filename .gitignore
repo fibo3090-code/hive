@@ -13,6 +13,7 @@ bun.lock
 .env
 .env.local
 .env.*.local
+back-end/config/local.toml
 
 # Build output
 dist

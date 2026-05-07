@@ -16,11 +16,18 @@ help:
 	@echo "make build     — release builds for both halves"
 
 setup:
+ifeq ($(OS),Windows_NT)
+	@if exist "back-end\config\local.toml" (type nul >NUL) else (copy /Y "back-end\config\local.example.toml" "back-end\config\local.toml" >NUL)
+	@if exist "back-end\.env" (type nul >NUL) else (copy /Y "back-end\.env.example" "back-end\.env" >NUL)
+	@if exist "front-end\.env" (type nul >NUL) else (copy /Y "front-end\.env.example" "front-end\.env" >NUL)
+	@echo HIVE setup ready. Run "make dev-back" and "make dev-front" in two terminals.
+else
 	@test -f back-end/config/local.toml \
 	    || cp back-end/config/local.example.toml back-end/config/local.toml
 	@test -f back-end/.env || cp back-end/.env.example back-end/.env
 	@test -f front-end/.env || cp front-end/.env.example front-end/.env
 	@echo "✓ HIVE setup ready. 'make dev-back' and 'make dev-front' in two terminals — or 'make up'."
+endif
 
 dev-back:
 	cd back-end && cargo run -p hive-api -- serve
@@ -29,6 +36,10 @@ dev-front:
 	cd front-end && npm run dev
 
 up: setup
+ifeq ($(OS),Windows_NT)
+	@echo "make up" needs tmux and a Unix-like shell. Run "make dev-back" and "make dev-front" in two terminals on Windows.
+	@exit /b 1
+else
 	@command -v tmux >/dev/null || { \
 		echo "✗ 'make up' needs tmux. Install it (apt: tmux, brew: tmux) or run 'make dev-back' and 'make dev-front' in two terminals."; \
 		exit 1; \
@@ -36,9 +47,14 @@ up: setup
 	tmux new-session -d -s hive 'cd back-end && cargo run -p hive-api -- serve' \; \
 	    split-window -h 'cd front-end && npm run dev' \; \
 	    attach
+endif
 
 down:
+ifeq ($(OS),Windows_NT)
+	@echo "make down" only stops the tmux session used by "make up" on Unix-like systems.
+else
 	-tmux kill-session -t hive 2>/dev/null || true
+endif
 
 test:
 	cd back-end && cargo test --workspace
