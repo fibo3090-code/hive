@@ -9,6 +9,7 @@
 
 pub mod agent_tools;
 pub mod chat;
+pub mod drift;
 pub mod events;
 pub mod executor;
 pub mod loop_detector;
