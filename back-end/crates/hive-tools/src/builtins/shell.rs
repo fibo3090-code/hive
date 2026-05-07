@@ -136,11 +136,7 @@ mod tests {
         let mut reg = ToolRegistry::new();
         reg.insert(Arc::new(ShellExecTool));
         let ctx = ToolContext::new("p1", fresh_sandbox());
-        let (command, args) = if cfg!(windows) {
-            shell_command("exit 0")
-        } else {
-            shell_command("exit 0")
-        };
+        let (command, args) = shell_command("exit 0");
         // 10 000 s is clamped to 300 s, but since `true` exits instantly
         // the test just verifies no rejection.
         let out = reg

@@ -43,6 +43,25 @@ const statusTaskColors: Record<string, string> = {
   blocked: 'text-destructive',
 };
 
+const agentColors = [
+  'hsl(var(--primary))',
+  'hsl(var(--success))',
+  'hsl(var(--info))',
+  'hsl(var(--warning))',
+  'hsl(var(--destructive))',
+  'hsl(var(--muted-foreground))',
+];
+
+const taskStatusColors: Record<string, string> = {
+  completed: 'hsl(var(--success))',
+  'in-progress': 'hsl(var(--primary))',
+  in_progress: 'hsl(var(--primary))',
+  blocked: 'hsl(var(--destructive))',
+  queued: 'hsl(var(--muted-foreground))',
+  todo: 'hsl(var(--muted-foreground))',
+  pending: 'hsl(var(--muted-foreground))',
+};
+
 const commitFeed: Array<{ hash: string; message: string; author: string; time: string }> = [];
 const activityIcons = { Bot, GitCommit, AlertTriangle, TestTube2, FileText, DollarSign, Eye } as const;
 type ActivityFeedEntry = ActivityFeedItem & { activityIcon: LucideIcon };
@@ -300,14 +319,6 @@ export default function Dashboard() {
     [costTimelineRaw],
   );
 
-  const agentColors = [
-    'hsl(var(--primary))',
-    'hsl(var(--success))',
-    'hsl(var(--info))',
-    'hsl(var(--warning))',
-    'hsl(var(--destructive))',
-    'hsl(var(--muted-foreground))',
-  ];
   const agentTokenData = useMemo(() => {
     return agentTokenRaw.slice(0, 6).map((row, idx) => {
       const agent = agents.find((a) => a.id === row.agentId);
@@ -319,15 +330,6 @@ export default function Dashboard() {
     });
   }, [agentTokenRaw, agents]);
 
-  const taskStatusColors: Record<string, string> = {
-    completed: 'hsl(var(--success))',
-    'in-progress': 'hsl(var(--primary))',
-    in_progress: 'hsl(var(--primary))',
-    blocked: 'hsl(var(--destructive))',
-    queued: 'hsl(var(--muted-foreground))',
-    todo: 'hsl(var(--muted-foreground))',
-    pending: 'hsl(var(--muted-foreground))',
-  };
   const taskStatusData = useMemo(
     () =>
       taskDistributionRaw.map((row) => ({

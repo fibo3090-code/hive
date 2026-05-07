@@ -3,13 +3,13 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "postinstall": "cd front-end && bun install",
-    "dev": "cd front-end && bun install && bun run dev",
-    "build": "cd front-end && bun install && bun run build && rm -rf ../dist && cp -r dist ../dist",
-    "build:dev": "cd front-end && bun install && bun run build:dev && rm -rf ../dist && cp -r dist ../dist",
-    "preview": "cd front-end && bun run preview",
-    "lint": "cd front-end && bun run lint",
-    "typecheck": "cd front-end && bun run typecheck",
-    "test": "cd front-end && bun run test"
+    "postinstall": "npm --prefix front-end install",
+    "dev": "npm --prefix front-end run dev",
+    "build": "npm --prefix front-end run build && node scripts/sync-dist.mjs",
+    "build:dev": "npm --prefix front-end run build:dev && node scripts/sync-dist.mjs",
+    "preview": "npm --prefix front-end run preview",
+    "lint": "npm --prefix front-end run lint",
+    "typecheck": "npm --prefix front-end run typecheck",
+    "test": "npm --prefix front-end run test"
   }
 }
