@@ -348,6 +348,28 @@ fn tool_result_json(tool: &str, error: impl Into<String>) -> Value {
     })
 }
 
+/// Build a structured tool-result for a validation failure that
+/// includes the offending arguments **and** the tool's input schema, so
+/// the next LLM round has everything it needs to self-correct without
+/// another guess. This is the repair-loop hint the plan called out as
+/// a quick win for tool-calling reliability — the actual "retry" is
+/// just letting `MAX_TOOL_ROUNDS` carry the conversation forward; we
+/// don't manually re-dispatch.
+fn tool_validation_error_json(
+    tool: &str,
+    error: impl Into<String>,
+    arguments: &Value,
+    schema: &Value,
+) -> Value {
+    json!({
+        "ok": false,
+        "tool": tool,
+        "error": error.into(),
+        "submittedArguments": arguments,
+        "inputSchema": schema,
+        "hint": "Re-emit the tool call with arguments matching `inputSchema`. \
+The previous attempt is in `submittedArguments` for diff context.",
+    })
 struct CancelledTurnState<'a> {
     final_answer: &'a str,
     total_tokens_in: u32,
@@ -466,22 +488,32 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     }
 
     let mut messages: Vec<ChatMessage> = Vec::new();
-    let mut system_parts = Vec::new();
-    if let Some(s) = system_prompt {
-        if !s.trim().is_empty() {
-            system_parts.push(s);
+
+    // Phase 0c: replace the ad-hoc agent + 2-line blurb + tool dump with a
+    // deterministic four-layer composition (see `crate::prompt`). The first
+    // two layers are byte-identical across turns when the agent and tool
+    // catalog don't change, which lets provider prompt caching hit. Project
+    // memory walks `HIVE.md` from the project's data directory; reminders
+    // (live state) go last so the cache prefix survives.
+    let project_root = data_dir.join("projects").join(&project_id);
+    let tool_catalog_block = tool_registry.as_ref().and_then(|r| {
+        if r.names().is_empty() {
+            None
+        } else {
+            Some(format!(
+                "Use tools when they materially improve accuracy or execution. \
+                 Call tools using the provider's native tool interface.\n\n{}",
+                tool_protocol_prompt(r)
+            ))
         }
-    }
-    if let Some(registry) = &tool_registry {
-        if !registry.names().is_empty() {
-            system_parts.push(
-                "Use tools when they materially improve accuracy or execution. Call tools using the provider's native tool interface.".into(),
-            );
-            system_parts.push(tool_protocol_prompt(registry));
-        }
-    }
-    if !system_parts.is_empty() {
-        messages.push(ChatMessage::system(system_parts.join("\n\n")));
+    });
+    let composed = crate::prompt::PromptComposer::new()
+        .with_agent_prompt(system_prompt)
+        .with_tool_catalog(tool_catalog_block)
+        .with_hive_memory(Some(&project_root))
+        .build();
+    if let Some(s) = composed {
+        messages.push(ChatMessage::system(s));
     }
     for row in history {
         let role = match row.role.as_str() {
@@ -840,7 +872,37 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                         }
                     }
                 }
-                Err(error) => tool_result_json(&invocation.tool, error),
+                Err(error) => {
+                    // Schema validation failed — emit a dedicated SSE event so
+                    // the UI can surface *why* the tool was skipped (small
+                    // models on Ollama in particular emit malformed args
+                    // that would otherwise vanish into the regular
+                    // tool_result stream as "ok:false"). The tool-result we
+                    // feed back to the LLM also embeds the input schema +
+                    // submitted arguments so the next round can self-correct
+                    // without re-guessing the contract — Phase 0c-bis
+                    // repair-loop hint.
+                    let schema = registry
+                        .get(&invocation.tool)
+                        .map(|t| t.manifest().input_schema)
+                        .unwrap_or(Value::Null);
+                    bus.emit(
+                        format!("chat.{thread_id}.tool_validation_error"),
+                        json!({
+                            "threadId": thread_id,
+                            "messageId": assistant_message_id,
+                            "tool": invocation.tool,
+                            "arguments": invocation.arguments,
+                            "error": error,
+                        }),
+                    );
+                    tool_validation_error_json(
+                        &invocation.tool,
+                        error,
+                        &invocation.arguments,
+                        &schema,
+                    )
+                }
             };
 
             executed_calls.push(json!({
@@ -1140,5 +1202,28 @@ mod tests {
         assert_eq!(payload["ok"], json!(false));
         assert_eq!(payload["tool"], json!("web_search"));
         assert_eq!(payload["error"], json!("missing query"));
+    }
+
+    #[test]
+    fn tool_validation_error_json_carries_schema_and_submitted_args() {
+        // The repair-loop contract: when the schema validator rejects an
+        // arg, the tool-result the LLM sees must include enough context
+        // to fix the call without guessing — both what was sent and what
+        // was expected. This test locks the shape so a future refactor
+        // can't quietly drop one of those fields.
+        let args = json!({ "qry": "rust" });
+        let schema = json!({
+            "type": "object",
+            "properties": { "query": { "type": "string" } },
+            "required": ["query"],
+        });
+        let payload =
+            tool_validation_error_json("web_search", "missing required field `query`", &args, &schema);
+        assert_eq!(payload["ok"], json!(false));
+        assert_eq!(payload["tool"], json!("web_search"));
+        assert_eq!(payload["error"], json!("missing required field `query`"));
+        assert_eq!(payload["submittedArguments"], args);
+        assert_eq!(payload["inputSchema"], schema);
+        assert!(payload["hint"].as_str().is_some_and(|s| s.contains("inputSchema")));
     }
 }

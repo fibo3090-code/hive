@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::chat::{ChatRequest, ChatResponse, StreamChunk, StreamEvent, ToolCall};
-use crate::model_metadata::{context_window_for, supports_tools};
+use crate::model_metadata::{context_window_for, supports_streaming_tools, supports_tools};
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
 pub struct OllamaProvider {
@@ -62,7 +62,8 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
             // families gain support by editing `model_metadata.rs`.
             let context = Some(context_window_for(ProviderKind::Ollama, &e.name));
             let tools = supports_tools(ProviderKind::Ollama, &e.name);
-            ModelInfo::build(e.name, label, context, tools, true)
+            let streaming_tools = supports_streaming_tools(ProviderKind::Ollama, &e.name);
+            ModelInfo::build(e.name, label, context, tools, true, streaming_tools)
         })
         .collect())
 }
@@ -133,6 +134,48 @@ fn request_body(request: &ChatRequest, stream: bool) -> Value {
     body
 }
 
+/// Coerce Ollama's `function.arguments` into a JSON object regardless of how
+/// the model surfaced it. Small Ollama checkpoints frequently return a JSON
+/// string ("{\"q\":\"rust\"}") instead of an object — and sometimes outright
+/// malformed JSON. Mirror the OpenAI provider's policy: never blow up the
+/// turn for a model formatting glitch; pass an empty object so the schema
+/// validator returns a structured error the LLM can self-correct on.
+fn coerce_tool_arguments(name: &str, raw: Option<&Value>) -> Value {
+    let Some(raw) = raw else {
+        return Value::Object(serde_json::Map::new());
+    };
+    if raw.is_object() {
+        return raw.clone();
+    }
+    if let Some(s) = raw.as_str() {
+        match serde_json::from_str::<Value>(s) {
+            Ok(v) if v.is_object() => return v,
+            Ok(_) => {
+                tracing::warn!(
+                    tool = name,
+                    raw = s,
+                    "ollama: tool arguments parsed as non-object — passing empty object"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    tool = name,
+                    raw = s,
+                    error = %err,
+                    "ollama: malformed tool arguments — passing empty object so the tool layer can return a structured error"
+                );
+            }
+        }
+        return Value::Object(serde_json::Map::new());
+    }
+    tracing::warn!(
+        tool = name,
+        kind = ?raw,
+        "ollama: tool arguments neither object nor string — passing empty object"
+    );
+    Value::Object(serde_json::Map::new())
+}
+
 fn parse_chat_response(value: &Value) -> Result<ChatResponse, LlmError> {
     let message = value.get("message").cloned().unwrap_or(Value::Null);
     let text = message
@@ -152,12 +195,12 @@ fn parse_chat_response(value: &Value) -> Result<ChatResponse, LlmError> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| LlmError::Parse("missing ollama tool name".into()))?;
             tool_calls.push(ToolCall {
-                id: None,
+                // Ollama doesn't surface a tool-call id; mint one so the
+                // runtime can disambiguate parallel calls in persisted
+                // records (matches OpenAI's fallback behaviour).
+                id: Some(format!("call_{}", ulid::Ulid::new())),
                 name: name.to_owned(),
-                arguments: function
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or_else(|| json!({})),
+                arguments: coerce_tool_arguments(name, function.get("arguments")),
             });
         }
     }
@@ -236,7 +279,7 @@ impl LlmProvider for OllamaProvider {
                             if line.is_empty() {
                                 continue;
                             }
-                            if let Some(event) = parse_line(&line) {
+                            for event in parse_line(&line) {
                                 yield Ok(event);
                             }
                         }
@@ -277,10 +320,48 @@ impl LlmProvider for OllamaProvider {
     }
 }
 
-fn parse_line(line: &str) -> Option<StreamEvent> {
-    let value: Value = serde_json::from_str(line).ok()?;
+/// Parse one NDJSON line of an Ollama `/api/chat` stream into zero or more
+/// `StreamEvent`s. Ollama streams text deltas in intermediate frames and
+/// surfaces `tool_calls` only in the terminal `done:true` frame; previously
+/// the runtime ignored them, so any tool the model emitted via streaming
+/// was silently dropped. We now lower the terminal frame to a sequence of
+/// `ToolCallStart` / `ToolCallDelta` / `ToolCallEnd` events followed by the
+/// `Complete` event so the runtime can either consume the tool calls
+/// inline or fall through to the non-streaming round-trip.
+fn parse_line(line: &str) -> Vec<StreamEvent> {
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return Vec::new();
+    };
     let done = value.get("done").and_then(Value::as_bool).unwrap_or(false);
+
     if done {
+        let mut events = Vec::new();
+        if let Some(items) = value
+            .get("message")
+            .and_then(|m| m.get("tool_calls"))
+            .and_then(Value::as_array)
+        {
+            for item in items {
+                let Some(function) = item.get("function") else {
+                    continue;
+                };
+                let Some(name) = function.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let id = format!("call_{}", ulid::Ulid::new());
+                let args = coerce_tool_arguments(name, function.get("arguments"));
+                let chunk = serde_json::to_string(&args).unwrap_or_else(|_| "{}".into());
+                events.push(StreamEvent::ToolCallStart {
+                    id: id.clone(),
+                    name: name.to_owned(),
+                });
+                events.push(StreamEvent::ToolCallDelta {
+                    id: id.clone(),
+                    args_chunk: chunk,
+                });
+                events.push(StreamEvent::ToolCallEnd { id });
+            }
+        }
         let tokens_in = value
             .get("prompt_eval_count")
             .and_then(Value::as_u64)
@@ -290,22 +371,27 @@ fn parse_line(line: &str) -> Option<StreamEvent> {
             .get("done_reason")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
-        return Some(StreamEvent::Complete {
+        events.push(StreamEvent::Complete {
             tokens_in,
             tokens_out,
             finish_reason: finish,
         });
+        return events;
     }
-    let text = value
+
+    let Some(text) = value
         .get("message")
         .and_then(|m| m.get("content"))
-        .and_then(Value::as_str)?;
+        .and_then(Value::as_str)
+    else {
+        return Vec::new();
+    };
     if text.is_empty() {
-        return None;
+        return Vec::new();
     }
-    Some(StreamEvent::Delta(StreamChunk {
+    vec![StreamEvent::Delta(StreamChunk {
         delta: text.to_owned(),
-    }))
+    })]
 }
 
 #[cfg(test)]
@@ -347,5 +433,126 @@ mod tests {
     #[test]
     fn invalid_json_is_parse_error() {
         assert!(matches!(parse_models("bad"), Err(LlmError::Parse(_))));
+    }
+
+    #[test]
+    fn parse_chat_response_handles_object_arguments() {
+        let value = json!({
+            "message": {
+                "content": "ok",
+                "tool_calls": [{
+                    "function": {
+                        "name": "web_search",
+                        "arguments": { "query": "rust" }
+                    }
+                }]
+            },
+            "prompt_eval_count": 12,
+            "eval_count": 34,
+            "done_reason": "stop"
+        });
+        let resp = parse_chat_response(&value).unwrap();
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].name, "web_search");
+        assert_eq!(resp.tool_calls[0].arguments["query"], "rust");
+        assert!(resp.tool_calls[0].id.as_deref().is_some_and(|id| id.starts_with("call_")));
+    }
+
+    #[test]
+    fn parse_chat_response_coerces_string_arguments() {
+        // Some Ollama checkpoints serialise `arguments` as a JSON string
+        // instead of an object — coerce instead of failing the turn.
+        let value = json!({
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "function": {
+                        "name": "web_search",
+                        "arguments": "{\"query\":\"rust\"}"
+                    }
+                }]
+            }
+        });
+        let resp = parse_chat_response(&value).unwrap();
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].arguments["query"], "rust");
+    }
+
+    #[test]
+    fn parse_chat_response_recovers_from_malformed_arguments() {
+        // Match the OpenAI provider policy: malformed JSON in tool
+        // arguments must not blow up the turn — the schema validator
+        // downstream returns a structured error instead.
+        let value = json!({
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "function": {
+                        "name": "web_search",
+                        "arguments": "{not json"
+                    }
+                }]
+            }
+        });
+        let resp = parse_chat_response(&value).expect("provider must not fail the turn");
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].arguments, json!({}));
+    }
+
+    #[test]
+    fn parse_line_extracts_tool_calls_from_done_chunk() {
+        // The motivating bug: Ollama emits `tool_calls` only in the final
+        // `done:true` frame. The streaming parser used to drop them; now we
+        // lower them to ToolCallStart / Delta / End before the Complete.
+        let line = r#"{"done":true,"message":{"content":"","tool_calls":[{"function":{"name":"web_search","arguments":{"query":"rust"}}}]},"prompt_eval_count":5,"eval_count":7,"done_reason":"stop"}"#;
+        let events = parse_line(line);
+        assert_eq!(events.len(), 4, "ToolCallStart + Delta + End + Complete");
+        match &events[0] {
+            StreamEvent::ToolCallStart { name, .. } => assert_eq!(name, "web_search"),
+            other => panic!("expected ToolCallStart, got {other:?}"),
+        }
+        match &events[1] {
+            StreamEvent::ToolCallDelta { args_chunk, .. } => {
+                assert!(args_chunk.contains("rust"))
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+        assert!(matches!(events[2], StreamEvent::ToolCallEnd { .. }));
+        match &events[3] {
+            StreamEvent::Complete {
+                tokens_in,
+                tokens_out,
+                finish_reason,
+            } => {
+                assert_eq!(*tokens_in, 5);
+                assert_eq!(*tokens_out, 7);
+                assert_eq!(finish_reason.as_deref(), Some("stop"));
+            }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_line_done_without_tool_calls_emits_only_complete() {
+        let line = r#"{"done":true,"message":{"content":""},"eval_count":3}"#;
+        let events = parse_line(line);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], StreamEvent::Complete { .. }));
+    }
+
+    #[test]
+    fn parse_line_text_delta_yields_single_event() {
+        let line = r#"{"done":false,"message":{"content":"hi"}}"#;
+        let events = parse_line(line);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::Delta(chunk) => assert_eq!(chunk.delta, "hi"),
+            other => panic!("expected Delta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_line_malformed_json_yields_no_events() {
+        assert!(parse_line("not json").is_empty());
     }
 }

@@ -409,6 +409,8 @@ async fn ensure_tasks(
                 estimated_tokens,
                 agent_id,
                 sprint_id: None,
+                spec_section_id: None,
+                due_at: None,
             },
         )
         .await?;

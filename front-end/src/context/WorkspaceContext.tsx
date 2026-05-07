@@ -14,6 +14,17 @@ export interface OnboardingDraft {
   describeMode: 'interview' | 'import';
   description: string;
   uploadedSpecName: string | null;
+  /** Phase 2: when on, the CEO chat in the Describe step is allowed to
+   *  delegate to a base team (research / architect / product) instead
+   *  of doing solo lower-quality research. Persisted so a refresh mid-
+   *  onboarding doesn't lose the choice. */
+  teamMode: boolean;
+  /** Phase 2: ids of LLM providers the user has confirmed in the new
+   *  "Connect LLMs" step. Acts as a guard so we don't advance past
+   *  Connect-LLMs without at least one working provider. Stored as ids
+   *  rather than masked keys so the Settings UI is the single source of
+   *  truth for the actual credentials. */
+  connectedProviderIds: string[];
 }
 
 export type AccentPresetId = 'amber' | 'blue' | 'green' | 'red' | 'violet';
@@ -129,6 +140,8 @@ const defaultOnboardingDraft: OnboardingDraft = {
   describeMode: 'interview',
   description: '',
   uploadedSpecName: null,
+  teamMode: true,
+  connectedProviderIds: [],
 };
 
 export const defaultSettings: SettingsState = {

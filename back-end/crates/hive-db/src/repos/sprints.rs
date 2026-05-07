@@ -28,7 +28,7 @@ pub async fn list_by_project(
         .await
 }
 
-pub async fn create(db: &DatabaseConnection, input: CreateSprint) -> Result<Model, DbErr> {
+pub async fn create<C: ConnectionTrait>(db: &C, input: CreateSprint) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     ActiveModel {
         id: Set(new_id()),

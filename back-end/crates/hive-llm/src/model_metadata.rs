@@ -107,6 +107,31 @@ pub fn supports_tools(kind: ProviderKind, model: &str) -> bool {
     }
 }
 
+/// Whether a model can deliver tool calls inside a streaming response.
+///
+/// Some providers (Anthropic, OpenAI, Gemini) interleave tool-call deltas
+/// with text deltas in their SSE stream. Ollama only emits `tool_calls` in
+/// the terminal `done:true` chunk — historically not parsed by our streaming
+/// path — so until that's wired everywhere, treat Ollama as
+/// non-streaming-tools and let the runtime fall back to `chat()` round-trips
+/// when tools are present.
+///
+/// Implies `supports_tools`: a model that doesn't support tools at all
+/// can't support streaming tools either.
+pub fn supports_streaming_tools(kind: ProviderKind, model: &str) -> bool {
+    if !supports_tools(kind, model) {
+        return false;
+    }
+    match kind {
+        ProviderKind::Anthropic | ProviderKind::Openai | ProviderKind::Gemini => true,
+        // Conservatively false. The streaming `parse_line` now extracts
+        // `tool_calls` from the `done` chunk, but small Ollama models still
+        // misformat arguments often enough that the non-streaming round-trip
+        // (with its synchronous validation surface) is the safer default.
+        ProviderKind::Ollama => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,5 +177,29 @@ mod tests {
         assert!(supports_tools(ProviderKind::Ollama, "llama3.1:8b"));
         assert!(supports_tools(ProviderKind::Ollama, "qwen2.5:14b"));
         assert!(!supports_tools(ProviderKind::Ollama, "llama2:7b"));
+    }
+
+    #[test]
+    fn streaming_tools_implies_tools() {
+        // A model that doesn't support tools at all can never support
+        // streaming tools.
+        assert!(!supports_streaming_tools(ProviderKind::Openai, "gpt-3.5-turbo"));
+        assert!(!supports_streaming_tools(ProviderKind::Ollama, "llama2:7b"));
+    }
+
+    #[test]
+    fn streaming_tools_enabled_for_frontier_providers() {
+        assert!(supports_streaming_tools(ProviderKind::Anthropic, "claude-opus-4-7"));
+        assert!(supports_streaming_tools(ProviderKind::Openai, "gpt-5"));
+        assert!(supports_streaming_tools(ProviderKind::Gemini, "gemini-2.5-pro"));
+    }
+
+    #[test]
+    fn streaming_tools_disabled_for_ollama_even_when_tool_capable() {
+        // Conservative default: even tool-capable Ollama families return
+        // false here so the runtime takes the non-streaming path with its
+        // synchronous validation surface.
+        assert!(supports_tools(ProviderKind::Ollama, "qwen2.5:14b"));
+        assert!(!supports_streaming_tools(ProviderKind::Ollama, "qwen2.5:14b"));
     }
 }

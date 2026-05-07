@@ -9,10 +9,14 @@
 
 pub mod agent_tools;
 pub mod chat;
+pub mod drift;
 pub mod events;
 pub mod executor;
 pub mod loop_detector;
+pub mod prompt;
 pub mod registry;
+pub mod spawn;
+pub mod spec_doc;
 pub mod turn_driver;
 
 pub use agent_tools::register_agent_tools;

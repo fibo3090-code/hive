@@ -19,6 +19,20 @@ pub struct Model {
     pub updated_at: String,
     pub completed_at: Option<String>,
     pub deleted_at: Option<String>,
+    /// Phase 0b: anchor link from a task back to the section of the
+    /// SpecDocument that originated it. Slugified at write-time so it
+    /// remains stable across spec re-renders. Nullable for legacy/
+    /// manually-added tasks.
+    #[sea_orm(default = None)]
+    pub spec_section_id: Option<String>,
+    /// Phase 0b: SLA deadline. `is_late` is derived in the API layer
+    /// (`now > due_at AND status != 'completed'`).
+    #[sea_orm(default = None)]
+    pub due_at: Option<String>,
+    /// Phase 0b: last time an agent reported progress on this task.
+    /// Used by the planning view to flag stalled work.
+    #[sea_orm(default = None)]
+    pub last_progress_at: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
