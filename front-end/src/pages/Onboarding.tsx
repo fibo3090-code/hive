@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
-import { Hexagon, FileCode, Layout, Upload, ChevronRight, Check, Loader2 } from 'lucide-react';
+import { Hexagon, FileCode, Layout, Upload, ChevronRight, Check, Loader2, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Progress } from '@/components/ui/progress';
@@ -10,6 +10,7 @@ import { useWorkspace } from '@/context/WorkspaceContext';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { api } from '@/api/client';
 import { toast } from 'sonner';
+import { StepConnectLlms } from './onboarding/StepConnectLlms';
 
 interface GenesisPlanPhase {
   phase: string;
@@ -23,7 +24,14 @@ interface GenesisPlanPreview {
   sourceCharacters: number;
 }
 
-const steps = ['Source', 'Budget', 'Describe', 'Plan Review', 'Launch'];
+// Phase 2 of the redesign: insert Connect-LLMs as step 2, between
+// Budget and the CEO Describe chat. The total length stays in lockstep
+// with the `nextStep`/`prevStep` clamps below — keep them in sync if
+// you ever add or remove a step.
+const steps = ['Source', 'Budget', 'Connect LLMs', 'Describe', 'Plan Review', 'Launch'];
+const LAST_STEP_INDEX = steps.length - 1;
+const LAUNCH_INDEX = LAST_STEP_INDEX;
+const PLAN_REVIEW_INDEX = LAST_STEP_INDEX - 1;
 
 export default function Onboarding() {
   const navigate = useNavigate();
@@ -31,8 +39,18 @@ export default function Onboarding() {
   const { addProject } = useHiveData();
 
   const step = onboardingDraft.step;
-  const nextStep = () => updateOnboardingDraft((draft) => ({ ...draft, step: Math.min(draft.step + 1, 4) }));
+  const nextStep = () => updateOnboardingDraft((draft) => ({ ...draft, step: Math.min(draft.step + 1, LAST_STEP_INDEX) }));
   const prevStep = () => updateOnboardingDraft((draft) => ({ ...draft, step: Math.max(draft.step - 1, 0) }));
+
+  // Step gating. The Connect-LLMs step (2) won't let you advance until
+  // at least one provider key has been confirmed — without one the CEO
+  // chat in the next step would silently fail.
+  const canAdvance = useMemo(() => {
+    if (step === 2) {
+      return onboardingDraft.connectedProviderIds.length > 0;
+    }
+    return true;
+  }, [step, onboardingDraft.connectedProviderIds]);
 
   const estimatedCost = useMemo(() => {
     const factorIfHybrid = onboardingDraft.tier === 'hybrid' ? 1 : 1.4;
@@ -102,24 +120,38 @@ export default function Onboarding() {
           />
         )}
         {step === 2 && (
-          <StepDescribe
-            mode={onboardingDraft.describeMode}
-            description={onboardingDraft.description}
-            uploadedSpecName={onboardingDraft.uploadedSpecName}
-            onModeChange={(describeMode) => updateOnboardingDraft({ describeMode })}
-            onDescriptionChange={(description) => updateOnboardingDraft({ description })}
-            onSpecUpload={(file) =>
-              updateOnboardingDraft({
-                uploadedSpecName: file.name,
-                // Use the spec text as the description so the genesis
-                // preview is grounded in it. Cap at 32 KB to keep
-                // request payloads sane.
-                description: file.text.slice(0, 32 * 1024),
-              })
+          <StepConnectLlms
+            connectedProviderIds={onboardingDraft.connectedProviderIds}
+            onChange={(connectedProviderIds) =>
+              updateOnboardingDraft({ connectedProviderIds })
             }
           />
         )}
         {step === 3 && (
+          <>
+            <StepDescribe
+              mode={onboardingDraft.describeMode}
+              description={onboardingDraft.description}
+              uploadedSpecName={onboardingDraft.uploadedSpecName}
+              onModeChange={(describeMode) => updateOnboardingDraft({ describeMode })}
+              onDescriptionChange={(description) => updateOnboardingDraft({ description })}
+              onSpecUpload={(file) =>
+                updateOnboardingDraft({
+                  uploadedSpecName: file.name,
+                  // Use the spec text as the description so the genesis
+                  // preview is grounded in it. Cap at 32 KB to keep
+                  // request payloads sane.
+                  description: file.text.slice(0, 32 * 1024),
+                })
+              }
+            />
+            <TeamModeToggle
+              teamMode={onboardingDraft.teamMode}
+              onChange={(teamMode) => updateOnboardingDraft({ teamMode })}
+            />
+          </>
+        )}
+        {step === PLAN_REVIEW_INDEX && (
           <StepPlanReview
             source={onboardingDraft.source}
             budget={onboardingDraft.budget}
@@ -129,14 +161,19 @@ export default function Onboarding() {
             description={onboardingDraft.description}
           />
         )}
-        {step === 4 && <StepLaunch onComplete={launchProject} />}
+        {step === LAUNCH_INDEX && <StepLaunch onComplete={launchProject} />}
       </div>
 
-      {step < 4 && (
+      {step < LAUNCH_INDEX && (
         <div className="flex gap-3 mt-8">
           {step > 0 && <Button variant="outline" onClick={prevStep}>Back</Button>}
-          <Button onClick={nextStep} className="gap-1.5">
-            {step === 3 ? 'Launch' : 'Next'} <ChevronRight className="h-4 w-4" />
+          <Button
+            onClick={nextStep}
+            className="gap-1.5"
+            disabled={!canAdvance}
+            title={canAdvance ? undefined : 'Connect at least one provider to continue'}
+          >
+            {step === PLAN_REVIEW_INDEX ? 'Launch' : 'Next'} <ChevronRight className="h-4 w-4" />
           </Button>
         </div>
       )}
@@ -495,6 +532,57 @@ function StepLaunch({ onComplete }: { readonly onComplete: () => void }) {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// Phase 2: Team-mode toggle for the CEO chat. When ON, the CEO is
+// allowed to delegate to its base team (research / architect / product
+// blueprints — added by the runtime side of Phase 1b). When OFF, it
+// works alone with degraded research quality. We only persist the
+// preference here; the runtime reads it on `/coordinator/converse`.
+function TeamModeToggle({
+  teamMode,
+  onChange,
+}: {
+  readonly teamMode: boolean;
+  readonly onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="mt-6 rounded-lg border border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <Users className={cn('mt-0.5 h-5 w-5', teamMode ? 'text-primary' : 'text-muted-foreground')} />
+        <div className="flex-1">
+          <div className="flex items-center justify-between gap-4">
+            <h3 className="text-sm font-semibold">Team mode</h3>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={teamMode}
+              onClick={() => onChange(!teamMode)}
+              className={cn(
+                'relative h-5 w-9 rounded-full border transition-colors',
+                teamMode
+                  ? 'border-primary bg-primary/20'
+                  : 'border-border bg-surface-2',
+              )}
+            >
+              <span
+                className={cn(
+                  'absolute top-0.5 h-3.5 w-3.5 rounded-full transition-all',
+                  teamMode ? 'left-[18px] bg-primary' : 'left-0.5 bg-muted-foreground',
+                )}
+              />
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            With team mode on, the CEO delegates research and design to specialised
+            agents — higher-quality output, slightly higher cost. With it off, the
+            CEO works alone using direct web search; faster and cheaper, but the
+            spec doc tends to be thinner.
+          </p>
+        </div>
       </div>
     </div>
   );

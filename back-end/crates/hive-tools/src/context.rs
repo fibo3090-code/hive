@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use hive_sandbox::Sandbox;
 
+use crate::permission::PermissionMatrix;
+
 /// Per-invocation environment handed to `Tool::invoke`.
 #[derive(Clone)]
 pub struct ToolContext {
@@ -19,6 +21,10 @@ pub struct ToolContext {
     pub message_id: Option<String>,
     /// Sandbox for file/shell operations.
     pub sandbox: Arc<dyn Sandbox>,
+    /// Capability gating policy. Defaults to `PermissionMatrix::unrestricted`
+    /// so existing tools keep working; the runtime will swap in a profile
+    /// matrix per-agent in Phase 0c-bis when the approval SSE flow lands.
+    permissions: PermissionMatrix,
 }
 
 impl ToolContext {
@@ -29,6 +35,7 @@ impl ToolContext {
             thread_id: None,
             message_id: None,
             sandbox,
+            permissions: PermissionMatrix::default(),
         }
     }
 
@@ -45,5 +52,18 @@ impl ToolContext {
     pub fn with_message(mut self, id: impl Into<String>) -> Self {
         self.message_id = Some(id.into());
         self
+    }
+
+    /// Override the default permission matrix. Use the named profiles on
+    /// `PermissionMatrix` (`plan`, `build`, `explore`) or build a custom
+    /// one. Tools should read this via [`Self::permissions`].
+    pub fn with_permissions(mut self, matrix: PermissionMatrix) -> Self {
+        self.permissions = matrix;
+        self
+    }
+
+    /// Read-only access to the active permission matrix.
+    pub fn permissions(&self) -> &PermissionMatrix {
+        &self.permissions
     }
 }

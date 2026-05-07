@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::chat::{ChatRequest, ChatResponse, StreamChunk, StreamEvent, ToolCall};
-use crate::model_metadata::{context_window_for, supports_tools};
+use crate::model_metadata::{context_window_for, supports_streaming_tools, supports_tools};
 use crate::sse::sse_stream;
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
@@ -50,7 +50,8 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
             let label = id.clone();
             let context = Some(context_window_for(ProviderKind::Openai, &id));
             let tools = supports_tools(ProviderKind::Openai, &id);
-            ModelInfo::build(id, label, context, tools, true)
+            let streaming_tools = supports_streaming_tools(ProviderKind::Openai, &id);
+            ModelInfo::build(id, label, context, tools, true, streaming_tools)
         })
         .collect())
 }
@@ -415,7 +416,7 @@ mod tests {
         );
         assert!(models
             .iter()
-            .all(|m| m.supports_tools && m.supports_streaming));
+            .all(|m| m.supports_tools && m.supports_streaming && m.supports_streaming_tools));
     }
 
     #[test]

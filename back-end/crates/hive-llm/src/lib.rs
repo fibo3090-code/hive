@@ -108,6 +108,15 @@ pub struct ModelInfo {
     pub context_window: Option<u64>,
     pub supports_tools: bool,
     pub supports_streaming: bool,
+    /// Whether the model can deliver tool calls **inside a streaming**
+    /// response. When false, the runtime must fall back to the non-streaming
+    /// `chat()` round-trip whenever tools are configured. Distinct from
+    /// `supports_tools`: a model can support tools (via non-streaming) yet
+    /// fail to surface them through the streaming path. Ollama is the
+    /// motivating example — its `done:true` chunk historically wasn't parsed
+    /// for `tool_calls`.
+    #[serde(default)]
+    pub supports_streaming_tools: bool,
 }
 
 impl ModelInfo {
@@ -120,6 +129,7 @@ impl ModelInfo {
         context_window: Option<u64>,
         supports_tools: bool,
         supports_streaming: bool,
+        supports_streaming_tools: bool,
     ) -> Option<Self> {
         let id = id.into();
         let label = label.into();
@@ -141,6 +151,7 @@ impl ModelInfo {
             context_window,
             supports_tools,
             supports_streaming,
+            supports_streaming_tools,
         })
     }
 }

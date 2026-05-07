@@ -15,12 +15,14 @@ pub mod builtins;
 pub mod context;
 pub mod error;
 pub mod manifest;
+pub mod permission;
 pub mod registry;
 
 pub use builtins::{default_names, register_defaults, register_web_search};
 pub use context::ToolContext;
 pub use error::{ToolError, ToolResult};
 pub use manifest::ToolManifest;
+pub use permission::{ActionClass, PermissionDecision, PermissionMatrix, ToolOverride};
 pub use registry::ToolRegistry;
 
 use async_trait::async_trait;

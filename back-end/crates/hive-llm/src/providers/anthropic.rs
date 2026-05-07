@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::chat::{ChatRequest, ChatResponse, ChatRole, StreamChunk, StreamEvent, ToolCall};
-use crate::model_metadata::{context_window_for, supports_tools};
+use crate::model_metadata::{context_window_for, supports_streaming_tools, supports_tools};
 use crate::sse::sse_stream;
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
@@ -52,7 +52,8 @@ pub(crate) fn parse_models(body: &str) -> Result<Vec<ModelInfo>, LlmError> {
             let label = e.display_name.unwrap_or_else(|| id.clone());
             let context = Some(context_window_for(ProviderKind::Anthropic, &id));
             let tools = supports_tools(ProviderKind::Anthropic, &id);
-            ModelInfo::build(id, label, context, tools, true)
+            let streaming_tools = supports_streaming_tools(ProviderKind::Anthropic, &id);
+            ModelInfo::build(id, label, context, tools, true, streaming_tools)
         })
         .collect())
 }
