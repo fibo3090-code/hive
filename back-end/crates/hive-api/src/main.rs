@@ -1923,13 +1923,88 @@ async fn cancel_agent_subtree(
     ))
 }
 
+/// Optional body for `ensure_coordinator`. When `team_mode` is supplied,
+/// the coordinator's tool registry is rewritten to match the requested
+/// stance:
+///   - `true`  → drop direct `web_search`, force delegation via
+///               `spawn_agent` + `message_agent`. Higher-quality
+///               research at the cost of more LLM turns.
+///   - `false` → solo loadout: keep `web_search` + `web_fetch` so the
+///               coordinator can do shallow research itself. Faster
+///               + cheaper, but the spec doc tends to be thinner.
+/// Omit the body entirely (POST `{}`) for the original behaviour:
+/// every tool enabled, no team-mode opinion.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct EnsureCoordinatorBody {
+    #[serde(default)]
+    team_mode: Option<bool>,
+}
+
+/// Tool set for the coordinator under the chosen team-mode stance.
+fn coordinator_tools(team_mode: Option<bool>) -> Vec<String> {
+    let mut tools = vec![
+        "fs_read".to_owned(),
+        "fs_list".to_owned(),
+        "fs_write".to_owned(),
+        "shell_exec".to_owned(),
+        "web_fetch".to_owned(),
+        "spawn_agent".to_owned(),
+        "message_agent".to_owned(),
+    ];
+    match team_mode {
+        Some(true) => {
+            // Team mode: no direct web_search — push the coordinator
+            // toward delegating research to a specialist sub-agent.
+        }
+        Some(false) | None => {
+            tools.push("web_search".to_owned());
+        }
+    }
+    tools
+}
+
+fn coordinator_system_prompt(team_mode: Option<bool>) -> String {
+    let lead = "You are the Coordinator (CEO) for this project. \
+Your job is to turn the user's intent into a single, well-scoped spec \
+document and delegate execution.";
+    let team_clause = match team_mode {
+        Some(true) =>
+            " Team mode is ON: spawn specialist agents (research, architect, product) for non-trivial work. \
+Don't do deep research yourself — delegate.",
+        Some(false) =>
+            " Team mode is OFF: you work alone. Use web_search sparingly; the spec doc you produce \
+will be lower-fidelity than the team-mode equivalent.",
+        None => "",
+    };
+    format!("{lead}{team_clause}")
+}
+
 async fn ensure_coordinator(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
+    body: Option<Json<EnsureCoordinatorBody>>,
 ) -> Result<Json<Value>, AppError> {
+    let team_mode = body.as_ref().and_then(|b| b.team_mode);
     let database = db(&state).await;
     let existing = agents::list_by_project(database.conn(), &project_id).await?;
     if let Some(coord) = existing.into_iter().find(|a| a.role == "Coordinator") {
+        // If a team-mode preference was supplied, rewrite the tool set
+        // and system prompt so the next turn honours it. Skipped when
+        // the body is absent so callers that just want a "find or
+        // create" round-trip don't pay for an UPDATE.
+        if team_mode.is_some() {
+            let _ = agents::update(
+                database.conn(),
+                &coord.id,
+                agents::UpdateAgent {
+                    enabled_tools: Some(coordinator_tools(team_mode)),
+                    system_prompt: Some(Some(coordinator_system_prompt(team_mode))),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
         let _ = state.executors.ensure(&coord.id, &project_id).await;
         return Ok(Json(json!(coord)));
     }
@@ -1944,20 +2019,8 @@ async fn ensure_coordinator(
             status: "idle".into(),
             parent_agent_id: None,
             spawned_by_message_id: None,
-            enabled_tools: Some(vec![
-                "fs_read".into(),
-                "fs_list".into(),
-                "fs_write".into(),
-                "shell_exec".into(),
-                "web_fetch".into(),
-                "web_search".into(),
-                "spawn_agent".into(),
-                "message_agent".into(),
-            ]),
-            system_prompt: Some(
-                "You are the Coordinator. Plan tasks, then spawn specialist agents to execute them."
-                    .into(),
-            ),
+            enabled_tools: Some(coordinator_tools(team_mode)),
+            system_prompt: Some(coordinator_system_prompt(team_mode)),
             model_provider_id: None,
             model_id: None,
         },
