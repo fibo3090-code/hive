@@ -133,18 +133,24 @@ struct CollectOutcome {
     tokens_out: u32,
     finish_reason: Option<String>,
     cancelled: bool,
+    tool_calls: Vec<ToolCall>,
 }
 
 async fn collect_response(
     provider: &Arc<dyn LlmProvider>,
     request: ChatRequest,
     cancel: &Arc<Mutex<bool>>,
+    bus: Option<&EventBus>,
+    thread_id: Option<&str>,
+    message_id: Option<&str>,
 ) -> Result<CollectOutcome, ChatError> {
     let mut stream = provider.chat_stream(request).await?;
     let mut accumulated = String::new();
     let mut tokens_in = 0;
     let mut tokens_out = 0;
     let mut finish_reason = None;
+    let mut tool_calls = Vec::new();
+    let mut active_args = std::collections::HashMap::<String, String>::new();
     // Poll the cancel flag every 50ms so a flip during a long stream
     // tears the request down within ~50ms instead of after the full
     // response. The interval cost is negligible vs network latency.
@@ -166,13 +172,26 @@ async fn collect_response(
                         tokens_out,
                         finish_reason,
                         cancelled: true,
+                        tool_calls,
                     });
                 }
             }
             next = stream.next() => {
                 let Some(next) = next else { break };
                 match next {
-                    Ok(StreamEvent::Delta(chunk)) => accumulated.push_str(&chunk.delta),
+                    Ok(StreamEvent::Delta(chunk)) => {
+                        accumulated.push_str(&chunk.delta);
+                        if let (Some(b), Some(tid), Some(mid)) = (bus, thread_id, message_id) {
+                            b.emit(
+                                format!("chat.{tid}.token"),
+                                json!({
+                                    "threadId": tid,
+                                    "messageId": mid,
+                                    "delta": chunk.delta,
+                                }),
+                            );
+                        }
+                    }
                     Ok(StreamEvent::Start { input_tokens: tin }) => {
                         // Capture early — providers that emit Start (Anthropic)
                         // give us input tokens before the final Complete arrives.
@@ -201,13 +220,26 @@ async fn collect_response(
                             finish_reason = fin;
                         }
                     }
-                    // Tool-call boundary events: today, tool calls are materialised
-                    // from the non-streaming `chat()` round-trip. These variants
-                    // exist for forward compatibility; routing them to SSE
-                    // `tool_call` events is a follow-up.
-                    Ok(StreamEvent::ToolCallStart { .. })
-                    | Ok(StreamEvent::ToolCallDelta { .. })
-                    | Ok(StreamEvent::ToolCallEnd { .. }) => {}
+                    Ok(StreamEvent::ToolCallStart { id, name }) => {
+                        tool_calls.push(ToolCall {
+                            id: Some(id.clone()),
+                            name,
+                            arguments: Value::Null,
+                        });
+                        active_args.insert(id, String::new());
+                    }
+                    Ok(StreamEvent::ToolCallDelta { id, args_chunk }) => {
+                        if let Some(args) = active_args.get_mut(&id) {
+                            args.push_str(&args_chunk);
+                        }
+                    }
+                    Ok(StreamEvent::ToolCallEnd { id }) => {
+                        if let Some(args) = active_args.remove(&id) {
+                            if let Some(tc) = tool_calls.iter_mut().find(|tc| tc.id.as_deref() == Some(id.as_str())) {
+                                tc.arguments = serde_json::from_str(&args).unwrap_or(Value::Null);
+                            }
+                        }
+                    }
                     Err(err) => return Err(ChatError::Llm(err)),
                 }
             }
@@ -220,6 +252,7 @@ async fn collect_response(
         tokens_out,
         finish_reason,
         cancelled: false,
+        tool_calls,
     })
 }
 
@@ -677,76 +710,17 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
             return Ok(());
         }
 
-        if !can_use_tools {
-            let request = ChatRequest::new(model.clone(), messages.clone());
-            let outcome = match collect_response(&provider, request, &cancel).await {
-                Ok(collected) => collected,
-                Err(ChatError::Llm(err)) => {
-                    let detail = err.to_string();
-                    let _ = chat_messages::set_tool_calls(
-                        db.conn(),
-                        &assistant_message_id,
-                        json!(executed_calls),
-                    )
-                    .await;
-                    let _ = chat_messages::finalize(
-                        db.conn(),
-                        &assistant_message_id,
-                        &format!("[error] {detail}"),
-                        total_tokens_in as i32,
-                        total_tokens_out as i32,
-                        total_cost,
-                        "error",
-                    )
-                    .await;
-                    bus.emit(
-                        format!("chat.{thread_id}.error"),
-                        json!({
-                            "threadId": thread_id,
-                            "messageId": assistant_message_id,
-                            "error": detail,
-                        }),
-                    );
-                    return Err(ChatError::Llm(err));
-                }
-                Err(other) => return Err(other),
-            };
+        let request = ChatRequest::new(model.clone(), messages.clone());
+        let request = if can_use_tools {
+            let registry = tool_registry.as_ref().expect("checked above");
+            request.with_tools(tool_definitions(registry))
+        } else {
+            request
+        };
 
-            total_tokens_in += outcome.tokens_in;
-            total_tokens_out += outcome.tokens_out;
-            total_cost += cost_cents(provider_kind, &model, outcome.tokens_in, outcome.tokens_out);
-            finish_reason = outcome.finish_reason;
-            final_answer = outcome.accumulated;
-            // If cancellation flipped during streaming, stop here. The
-            // caller path below already emits cancelled / persists state
-            // when it sees the cancel flag set; we just take that path.
-            if outcome.cancelled {
-                finalize_cancelled(
-                    &db,
-                    &bus,
-                    &thread_id,
-                    &assistant_message_id,
-                    CancelledTurnState {
-                        final_answer: &final_answer,
-                        total_tokens_in,
-                        total_tokens_out,
-                        total_cost,
-                        executed_calls: &executed_calls,
-                    },
-                )
-                .await?;
-                return Ok(());
-            }
-            break;
-        }
-
-        let registry = tool_registry.as_ref().expect("checked above");
-        let ctx = tool_context.as_ref().expect("checked above");
-        let request = ChatRequest::new(model.clone(), messages.clone())
-            .with_tools(tool_definitions(registry));
-        let response = match provider.chat(request).await {
-            Ok(response) => response,
-            Err(err) => {
+        let outcome = match collect_response(&provider, request, &cancel, Some(&bus), Some(&thread_id), Some(&assistant_message_id)).await {
+            Ok(collected) => collected,
+            Err(ChatError::Llm(err)) => {
                 let detail = err.to_string();
                 let _ = chat_messages::set_tool_calls(
                     db.conn(),
@@ -774,37 +748,60 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                 );
                 return Err(ChatError::Llm(err));
             }
+            Err(other) => return Err(other),
         };
 
-        total_tokens_in += response.tokens_in;
-        total_tokens_out += response.tokens_out;
-        total_cost += cost_cents(
-            provider_kind,
-            &model,
-            response.tokens_in,
-            response.tokens_out,
-        );
-        finish_reason = response.finish_reason.clone();
+        total_tokens_in += outcome.tokens_in;
+        total_tokens_out += outcome.tokens_out;
+        total_cost += cost_cents(provider_kind, &model, outcome.tokens_in, outcome.tokens_out);
+        finish_reason = outcome.finish_reason;
 
-        let trimmed = response.text.trim();
+        let trimmed = outcome.accumulated.trim();
         if !trimmed.is_empty() {
-            last_non_empty_assistant_text = Some(response.text.clone());
+            last_non_empty_assistant_text = Some(outcome.accumulated.clone());
         }
 
+        // If cancellation flipped during streaming, stop here.
+        if outcome.cancelled {
+            finalize_cancelled(
+                &db,
+                &bus,
+                &thread_id,
+                &assistant_message_id,
+                CancelledTurnState {
+                    final_answer: &outcome.accumulated,
+                    total_tokens_in,
+                    total_tokens_out,
+                    total_cost,
+                    executed_calls: &executed_calls,
+                },
+            )
+            .await?;
+            return Ok(());
+        }
+
+        if !can_use_tools {
+            final_answer = outcome.accumulated;
+            break;
+        }
+
+        let ctx = tool_context.as_ref().expect("checked above");
+        let registry = tool_registry.as_ref().expect("checked above");
+
         let Some(invocations) =
-            tool_invocations_from_response(&response.text, &response.tool_calls)
+            tool_invocations_from_response(&outcome.accumulated, &outcome.tool_calls)
         else {
-            final_answer = response.text;
+            final_answer = outcome.accumulated;
             break;
         };
         if invocations.is_empty() {
-            final_answer = response.text;
+            final_answer = outcome.accumulated;
             break;
         }
 
         messages.push(ChatMessage::assistant_with_tool_calls(
-            response.text.clone(),
-            response.tool_calls.clone(),
+            outcome.accumulated.clone(),
+            outcome.tool_calls.clone(),
         ));
 
         let mut halted_for_repeat = false;
