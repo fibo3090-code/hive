@@ -1,5 +1,14 @@
 //! Built-in tools shipped with the runtime. These are the "safe" bundle
 //! that every agent gets access to once its workspace is initialised.
+//!
+//! ## Schema audit (pre-invoke validation in `hive-runtime::chat`)
+//!
+//! Chat validates each tool call against the manifest `required` list before
+//! dispatch. Small models most often omit fields on tools with **multiple**
+//! required keys — highest risk: **`fs_write`** (`path` + `content`). Others:
+//! **`fs_read`** / **`web_fetch`** / **`web_search`** each require one string
+//! (`path`, `url`, `query`). **`shell_exec`** requires `command`. **`fs_list`**
+//! defaults `path` to `"."` so it is lenient.
 
 pub mod fs;
 pub mod shell;

@@ -649,6 +649,9 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     /// each individual call is unique (no fingerprint collision).
     const MAX_TOTAL_TOOL_CALLS: usize = 60;
     let mut total_tool_calls: usize = 0;
+    // When the model never emits a tool-free round, surface the last non-empty
+    // assistant `response.text` instead of only the generic exhaustion line.
+    let mut last_non_empty_assistant_text: Option<String> = None;
 
     let can_use_tools = tool_registry
         .as_ref()
@@ -782,6 +785,11 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
             response.tokens_out,
         );
         finish_reason = response.finish_reason.clone();
+
+        let trimmed = response.text.trim();
+        if !trimmed.is_empty() {
+            last_non_empty_assistant_text = Some(response.text.clone());
+        }
 
         let Some(invocations) =
             tool_invocations_from_response(&response.text, &response.tool_calls)
@@ -960,8 +968,9 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     }
 
     if final_answer.is_empty() {
-        final_answer =
-            "I exhausted the available tool rounds without producing a final answer.".to_owned();
+        final_answer = last_non_empty_assistant_text.unwrap_or_else(|| {
+            "I exhausted the available tool rounds without producing a final answer.".to_owned()
+        });
     }
 
     if !executed_calls.is_empty() {
