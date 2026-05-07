@@ -13,4 +13,14 @@
 //! research+synth stages actually run. Aggressive matching is what keeps
 //! per-spawn cost bounded at scale.
 
+pub mod driver;
 pub mod matcher;
+
+pub use driver::{
+    run_pipeline, DiscoveredApi, PipelineContext, PipelineDeps, PipelineError, PipelineOutcome,
+    SynthesizedMcp,
+};
+pub use matcher::{
+    match_capabilities, score_candidate, Candidate, CandidateKind, MatchHit, MatchPlan,
+    MatcherConfig,
+};
