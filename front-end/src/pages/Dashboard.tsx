@@ -425,7 +425,7 @@ export default function Dashboard() {
       {/* Summary tiles */}
       <div className="grid grid-cols-5 gap-3">
         {[
-          { label: 'Health Score', value: String(healthScore), icon: Heart, color: 'text-success', sub: '+2 from last session', path: '/insights' },
+          { label: 'Health Score', value: String(healthScore), icon: Heart, color: healthScore <= 0 ? 'text-muted-foreground' : 'text-success', sub: healthScore > 0 ? '+2 from last session' : 'No session yet', path: '/insights' },
           { label: 'Budget', value: `$${budgetUsed}/$${budgetTotal}`, icon: DollarSign, color: budgetPct > 80 ? 'text-warning' : 'text-foreground', sub: `${budgetPct}% consumed`, path: '/settings' },
           { label: 'Spec Completion', value: `${specCompletion}%`, icon: FileCheck, color: 'text-info', sub: `${activeProject?.name ?? 'Project'} requirements`, path: '/spec' },
           { label: 'Test Coverage', value: `${testCoverage}%`, icon: TestTube2, color: 'text-primary', sub: '87/94 passing', path: '/insights' },
@@ -462,58 +462,78 @@ export default function Dashboard() {
         {/* Token usage over time */}
         <div className="col-span-2 rounded-lg border border-border bg-card p-4">
           <h3 className="text-sm font-semibold mb-3">Token & Cost Timeline</h3>
-          <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={tokenTimelineData}>
-              <defs>
-                <linearGradient id="tokenGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="time" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
-              <YAxis tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={30} />
-              <Tooltip content={<CustomTooltip />} />
-              <Area type="monotone" dataKey="tokens" stroke="hsl(var(--primary))" fill="url(#tokenGrad)" strokeWidth={2} />
-              <Area type="monotone" dataKey="cost" stroke="hsl(var(--warning))" fill="none" strokeWidth={1.5} strokeDasharray="4 2" />
-            </AreaChart>
-          </ResponsiveContainer>
+          {tokenTimelineData.length === 0 ? (
+            <div className="flex h-[160px] items-center justify-center rounded-md border border-dashed border-border text-xs text-muted-foreground">
+              No token usage yet — start a session to populate the timeline.
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={160}>
+              <AreaChart data={tokenTimelineData}>
+                <defs>
+                  <linearGradient id="tokenGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                    <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="time" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+                <YAxis tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={30} />
+                <Tooltip content={<CustomTooltip />} />
+                <Area type="monotone" dataKey="tokens" stroke="hsl(var(--primary))" fill="url(#tokenGrad)" strokeWidth={2} />
+                <Area type="monotone" dataKey="cost" stroke="hsl(var(--warning))" fill="none" strokeWidth={1.5} strokeDasharray="4 2" />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         {/* Task status pie */}
         <div className="rounded-lg border border-border bg-card p-4">
           <h3 className="text-sm font-semibold mb-3">Task Distribution</h3>
-          <ResponsiveContainer width="100%" height={120}>
-            <PieChart>
-              <Pie data={taskStatusData} cx="50%" cy="50%" innerRadius={30} outerRadius={50} dataKey="value" paddingAngle={3}>
-                {taskStatusData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
-              </Pie>
-              <Tooltip content={<CustomTooltip />} />
-            </PieChart>
-          </ResponsiveContainer>
-          <div className="flex flex-wrap gap-2 mt-2 justify-center">
-            {taskStatusData.map(d => (
-              <span key={d.name} className="flex items-center gap-1 text-micro text-muted-foreground">
-                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: d.color }} />
-                {d.name} ({d.value})
-              </span>
-            ))}
-          </div>
+          {taskStatusData.length === 0 ? (
+            <div className="flex h-[120px] items-center justify-center rounded-md border border-dashed border-border text-xs text-muted-foreground text-center px-2">
+              No tasks yet.
+            </div>
+          ) : (
+            <>
+              <ResponsiveContainer width="100%" height={120}>
+                <PieChart>
+                  <Pie data={taskStatusData} cx="50%" cy="50%" innerRadius={30} outerRadius={50} dataKey="value" paddingAngle={3}>
+                    {taskStatusData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                  </Pie>
+                  <Tooltip content={<CustomTooltip />} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="flex flex-wrap gap-2 mt-2 justify-center">
+                {taskStatusData.map(d => (
+                  <span key={d.name} className="flex items-center gap-1 text-micro text-muted-foreground">
+                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: d.color }} />
+                    {d.name} ({d.value})
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
       {/* Agent token bar chart */}
       <div className="rounded-lg border border-border bg-card p-4">
         <h3 className="text-sm font-semibold mb-3">Token Usage by Agent (K)</h3>
-        <ResponsiveContainer width="100%" height={120}>
-          <BarChart data={agentTokenData} layout="vertical">
-            <XAxis type="number" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
-            <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={70} />
-            <Tooltip content={<CustomTooltip />} />
-            <Bar dataKey="tokens" radius={[0, 4, 4, 0]}>
-              {agentTokenData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
+        {agentTokenData.length === 0 ? (
+          <div className="flex h-[120px] items-center justify-center rounded-md border border-dashed border-border text-xs text-muted-foreground">
+            No agent activity yet.
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={120}>
+            <BarChart data={agentTokenData} layout="vertical">
+              <XAxis type="number" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} width={70} />
+              <Tooltip content={<CustomTooltip />} />
+              <Bar dataKey="tokens" radius={[0, 4, 4, 0]}>
+                {agentTokenData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        )}
       </div>
 
       {/* Sprint timeline */}

@@ -480,8 +480,14 @@ export default function ChatCentral() {
         )}
 
         {!messagesQuery.isLoading && renderMessages.length === 0 && (
-          <div className="text-center text-xs text-muted-foreground mt-12">
-            No messages yet. Ask the hive something to get started.
+          <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center px-6">
+            <div className="rounded-full bg-surface-2 p-4 mb-4">
+              <Hexagon className="h-8 w-8 text-primary" fill="currentColor" />
+            </div>
+            <h3 className="text-sm font-semibold mb-1">Start a conversation with the hive</h3>
+            <p className="text-xs text-muted-foreground max-w-sm">
+              Ask a question, mention an agent with @name, or attach a file to get started.
+            </p>
           </div>
         )}
 

@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "scripts": {
     "postinstall": "npm --prefix front-end install",
-    "dev": "npm --prefix front-end run dev",
+    "dev": "npm --prefix front-end run dev --",
     "build": "npm --prefix front-end run build && node scripts/sync-dist.mjs",
     "build:dev": "npm --prefix front-end run build:dev && node scripts/sync-dist.mjs",
     "preview": "npm --prefix front-end run preview",
