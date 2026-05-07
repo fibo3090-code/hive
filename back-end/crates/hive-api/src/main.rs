@@ -36,11 +36,12 @@ use hive_git::{
 };
 use hive_llm::{client_for, ModelInfo, ProviderConfig, ProviderKind};
 use hive_runtime::{
+    spawn::{run_pipeline, BlueprintEntry, LlmPipelineDeps},
     spec_doc::{into_upserts, materialize_decomposition, parse_sections, DecomposeOutput},
     EventBus, RuntimeEvent, TurnDriver, TurnDriverError, TurnRequest,
 };
 use hive_sandbox::LocalFsSandbox;
-use hive_search::{SearxNgProvider, TavilyProvider};
+use hive_search::providers::{searxng::SearxNgProvider, tavily::TavilyProvider};
 use hive_tools::{
     default_names as default_tool_names, register_defaults, register_web_search, ToolContext,
     ToolRegistry,
@@ -774,6 +775,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route(
             "/v1/spawn-requests/:spawn_request_id",
             get(get_spawn_request).patch(update_spawn_request),
+        )
+        .route(
+            "/v1/spawn-requests/:spawn_request_id/approve",
+            post(approve_spawn_request),
         )
         // Agent ↔ MCP bindings
         .route(
@@ -5536,22 +5541,151 @@ async fn list_spawn_requests(
     )))
 }
 
+async fn build_pipeline_deps(
+    state: &AppState,
+    _project_id: &str,
+) -> Result<Arc<LlmPipelineDeps>, AppError> {
+    let database = db(state).await;
+
+    // Resolve model for pipeline stages (Stage 0, 3, 4)
+    let (provider_id, model_id) = resolve_chat_target(state, None).await?;
+    let provider_row = llm_providers::get(database.conn(), &provider_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("llm provider {provider_id} not found")))?;
+    let config = build_provider_config(state, &provider_row).await?;
+    let provider = Arc::from(client_for(config));
+
+    // Build search provider
+    let search_settings = current_tools_sandbox_settings(state).await?;
+    let provider_kind = search_settings
+        .get("searchProvider")
+        .and_then(Value::as_str)
+        .unwrap_or("searxng");
+    let searxng_url = search_settings
+        .get("searxngUrl")
+        .and_then(Value::as_str)
+        .unwrap_or("http://localhost:8888")
+        .to_owned();
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| AppError::Internal(format!("build search client: {e}")))?;
+
+    let search_provider: Option<Arc<dyn hive_search::SearchProvider>> = if provider_kind == "tavily"
+    {
+        if let Some(ciphertext) = read_tavily_ciphertext(state).await? {
+            let key = String::from_utf8(
+                state
+                    .crypto
+                    .open(&ciphertext)
+                    .map_err(|e| AppError::Internal(format!("decrypt tavily key: {e}")))?,
+            )
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+            Some(Arc::new(TavilyProvider::new(http, key)))
+        } else {
+            None
+        }
+    } else {
+        Some(Arc::new(SearxNgProvider::new(http, searxng_url)))
+    };
+
+    let blueprints: Vec<BlueprintEntry> = serde_json::from_value(
+        read_setting_json(state, "global", "agentBlueprints", json!([])).await?,
+    )
+    .unwrap_or_default();
+
+    let whitelist: Vec<String> = serde_json::from_value(
+        read_setting_json(
+            state,
+            "global",
+            "spawn.apiDomainWhitelist",
+            json!([
+                "api.github.com",
+                "api.openweathermap.org",
+                "api.openai.com",
+                "api.anthropic.com",
+                "api.linear.app",
+                "api.notion.com",
+                "api.stripe.com",
+                "nominatim.openstreetmap.org"
+            ]),
+        )
+        .await?,
+    )
+    .unwrap_or_default();
+
+    Ok(Arc::new(LlmPipelineDeps {
+        provider,
+        model: model_id,
+        search: search_provider,
+        executors: state.executors.clone(),
+        blueprints,
+        api_domain_whitelist: whitelist,
+        db: database.clone(),
+    }))
+}
+
 async fn create_spawn_request(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
     Json(body): Json<agent_spawn_requests::CreateSpawnRequest>,
 ) -> Result<Json<Value>, AppError> {
     let mut payload = body;
-    payload.project_id = project_id;
+    payload.project_id = project_id.clone();
     let database = db(&state).await;
     let row = agent_spawn_requests::create(database.conn(), payload).await?;
+
     emit(
         &state,
         "agent_spawn_request.queued",
         json!({ "id": row.id, "role": row.requested_role, "status": row.status }),
     )
     .await;
+
+    // Launch the pipeline in the background.
+    let deps = build_pipeline_deps(&state, &project_id).await?;
+    let bus = EventBus::new(state.events.clone());
+    let db_clone = database.clone();
+    let id = row.id.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = run_pipeline(db_clone.conn(), &bus, deps, &id).await {
+            tracing::error!("spawn pipeline failed: {}", e);
+        }
+    });
+
     Ok(Json(json!(row)))
+}
+
+async fn approve_spawn_request(
+    State(state): State<AppState>,
+    Path(spawn_request_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let row = agent_spawn_requests::get(database.conn(), &spawn_request_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("spawn request {spawn_request_id} not found")))?;
+
+    if row.status != "awaiting-approval" {
+        return Err(AppError::BadRequest(format!(
+            "spawn request {} is in status {}, cannot approve",
+            spawn_request_id, row.status
+        )));
+    }
+
+    // Re-spawn the pipeline (it will resume from the current state)
+    let deps = build_pipeline_deps(&state, &row.project_id).await?;
+    let bus = EventBus::new(state.events.clone());
+    let db_clone = database.clone();
+    let id = spawn_request_id.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = run_pipeline(db_clone.conn(), &bus, deps, &id).await {
+            tracing::error!("spawn pipeline failed: {}", e);
+        }
+    });
+
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn get_spawn_request(

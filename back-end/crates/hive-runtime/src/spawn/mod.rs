@@ -14,12 +14,14 @@
 //! per-spawn cost bounded at scale.
 
 pub mod driver;
+pub mod llm_deps;
 pub mod matcher;
 
 pub use driver::{
     run_pipeline, DiscoveredApi, PipelineContext, PipelineDeps, PipelineError, PipelineOutcome,
     SynthesizedMcp,
 };
+pub use llm_deps::{BlueprintEntry, LlmPipelineDeps};
 pub use matcher::{
     match_capabilities, score_candidate, Candidate, CandidateKind, MatchHit, MatchPlan,
     MatcherConfig,
