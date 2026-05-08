@@ -969,7 +969,13 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
 
     if final_answer.is_empty() {
         final_answer = last_non_empty_assistant_text.unwrap_or_else(|| {
-            "I exhausted the available tool rounds without producing a final answer.".to_owned()
+            if rounds_used >= MAX_TOOL_ROUNDS {
+                format!(
+                    "I exhausted the available tool rounds ({MAX_TOOL_ROUNDS}) without producing a final answer."
+                )
+            } else {
+                "The model returned an empty response. This often means the model produced no text and no tool calls — try rephrasing the request, switching models, or checking the provider logs.".to_owned()
+            }
         });
     }
 
