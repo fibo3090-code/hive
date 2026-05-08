@@ -40,8 +40,8 @@ export function StepConnectLlms({ connectedProviderIds, onChange }: StepConnectL
     const fresh = data
       .filter((p) => p.connected)
       .map((p) => p.id)
-      .sort();
-    const current = [...connectedProviderIds].sort();
+      .sort((a, b) => a.localeCompare(b));
+    const current = [...connectedProviderIds].sort((a, b) => a.localeCompare(b));
     if (fresh.join('|') !== current.join('|')) {
       onChange(fresh);
     }

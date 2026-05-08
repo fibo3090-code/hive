@@ -334,7 +334,7 @@ function StepDescribe({
               ref={fileInputRef}
               type="file"
               accept=".md,.txt,.markdown,.text"
-              onChange={(event) => void handleFileChange(event)}
+              onChange={(event) => handleFileChange(event)}
               className="hidden"
             />
             <button

@@ -877,7 +877,7 @@ function DataPrivacySection({ draft, patch }: { readonly draft: SettingsState; r
         onOpenChange={setClearOpen}
         title="Clear chat history"
         description={`This will permanently delete every chat thread and message in "${activeProject?.name ?? 'this project'}". This action cannot be undone.`}
-        onConfirm={() => void onClearChat()}
+        onConfirm={() => onClearChat()}
       />
       <ConfirmDeleteModal
         open={deleteOpen}

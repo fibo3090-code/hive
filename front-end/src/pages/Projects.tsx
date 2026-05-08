@@ -46,7 +46,7 @@ export default function Projects() {
                 activeProject?.id === project.id && 'border-primary/40 glow-amber'
               )}
               onClick={() => {
-                setActiveProject(project.id).catch(console.error);
+                setActiveProject(project.id);
                 navigate('/dashboard');
               }}
             >
@@ -113,7 +113,7 @@ export default function Projects() {
         </button>
       </div>
 
-      <p className="text-micro text-muted-foreground animate-fade-in" style={{ animationDelay: '200ms' }}>
+      <p className="text-micro text-muted-foreground animate-fade-in">
         HIVE v6.0 — Select a project to enter, or create a new one
       </p>
 
@@ -123,6 +123,10 @@ export default function Projects() {
         onConfirm={handleDelete}
         title="Delete Project"
         description="Are you sure you want to delete this project? This action follows GDPR right to erasure and will permanently wipe all associated agents, memory, and history."
+      />
+    </div>
+  );
+}
       />
     </div>
   );
