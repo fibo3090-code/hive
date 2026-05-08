@@ -683,6 +683,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     /// each individual call is unique (no fingerprint collision).
     const MAX_TOTAL_TOOL_CALLS: usize = 60;
     let mut total_tool_calls: usize = 0;
+    let mut rounds_used: usize = 0;
     // When the model never emits a tool-free round, surface the last non-empty
     // assistant `response.text` instead of only the generic exhaustion line.
     let mut last_non_empty_assistant_text: Option<String> = None;
