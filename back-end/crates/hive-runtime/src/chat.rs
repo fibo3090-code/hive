@@ -694,6 +694,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         && tool_context.is_some();
 
     for _ in 0..MAX_TOOL_ROUNDS {
+        rounds_used += 1;
         if *cancel.lock().await {
             finalize_cancelled(
                 &db,
