@@ -102,3 +102,9 @@ pub async fn clear_for_project(db: &DatabaseConnection, project_id: &str) -> Res
         .await?;
     Ok(result.rows_affected)
 }
+
+pub async fn delete(db: &DatabaseConnection, id: &str) -> Result<(), DbErr> {
+    crate::repos::chat_messages::delete_for_thread(db, id).await?;
+    Entity::delete_by_id(id.to_owned()).exec(db).await?;
+    Ok(())
+}

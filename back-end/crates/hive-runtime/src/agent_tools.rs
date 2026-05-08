@@ -230,6 +230,10 @@ impl Tool for MessageAgent {
             .map_err(|e| ToolError::Other(format!("lookup agent: {e}")))?
             .ok_or_else(|| ToolError::Other(format!("agent {agent_id} not found")))?;
 
+        if target.project_id != ctx.project_id {
+            return Err(ToolError::InvalidArgs(format!("Access denied: agent {} belongs to a different project", agent_id)));
+        }
+
         let msg = agent_messages::enqueue(
             self.db.conn(),
             agent_messages::EnqueueAgentMessage {

@@ -4,13 +4,14 @@ import { useTheme } from 'next-themes';
 import { useSettingsData } from '@/api/queries/useServerData';
 
 type ThemeMode = 'dark' | 'light' | 'system';
+import type { SovereigntyTier } from '@/types/domain';
 
 export interface OnboardingDraft {
   step: number;
   source: 'scratch' | 'template' | 'import' | null;
   budget: number;
   agents: number;
-  tier: 'local' | 'hybrid' | 'cloud';
+  tier: SovereigntyTier;
   describeMode: 'interview' | 'import';
   description: string;
   uploadedSpecName: string | null;
@@ -41,7 +42,7 @@ export interface SettingsState {
     projectName: string;
     autoSave: boolean;
     sessionTimeout: number;
-    sovereigntyTier: 'local' | 'hybrid' | 'cloud';
+    sovereigntyTier: SovereigntyTier;
     telemetry: boolean;
     language: 'English' | 'Deutsch' | '日本語';
   };
@@ -136,7 +137,7 @@ const defaultOnboardingDraft: OnboardingDraft = {
   source: null,
   budget: 100,
   agents: 4,
-  tier: 'hybrid',
+  tier: 'local',
   describeMode: 'interview',
   description: '',
   uploadedSpecName: null,
@@ -149,7 +150,7 @@ export const defaultSettings: SettingsState = {
     projectName: 'HIVE Dashboard',
     autoSave: true,
     sessionTimeout: 30,
-    sovereigntyTier: 'hybrid',
+    sovereigntyTier: 'local',
     telemetry: false,
     language: 'English',
   },

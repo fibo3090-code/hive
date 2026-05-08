@@ -60,7 +60,7 @@ function DNAViewer({
 }
 
 const roles = ['Frontend', 'Backend', 'Testing', 'DevOps', 'Security', 'Documentation', 'Custom'] as const;
-const tiers = ['Local', 'Hybrid', 'Cloud'] as const;
+const tiers = [{ id: 'Local', label: 'Local' }, { id: 'Cloud', label: 'Cloud (Coming Soon)' }] as const;
 const autonomyLevels = ['Low', 'Medium', 'High'] as const;
 
 export default function AgentForge() {
@@ -75,7 +75,7 @@ export default function AgentForge() {
   const [agentName, setAgentName] = useState('');
   const [role, setRole] = useState<string>(roles[0]);
   const [model, setModel] = useState<ModelSelection | null>(defaultModel);
-  const [tier, setTier] = useState<string>(tiers[1]);
+  const [tier, setTier] = useState<string>(tiers[0].id);
   const [autonomy, setAutonomy] = useState<string>(autonomyLevels[1]);
 
   useEffect(() => {
@@ -113,7 +113,7 @@ export default function AgentForge() {
     setAgentName('');
     setRole(roles[0]);
     setModel(defaultModel);
-    setTier(tiers[1]);
+    setTier(tiers[0].id);
     setAutonomy(autonomyLevels[1]);
   };
 
@@ -123,7 +123,7 @@ export default function AgentForge() {
     setAgentName(blueprint.name);
     setRole(blueprint.role);
     setModel(defaultModel);
-    setTier('Hybrid');
+    setTier('Local');
     setAutonomy('Medium');
   };
 
@@ -269,14 +269,16 @@ export default function AgentForge() {
                 <div className="flex flex-wrap gap-2">
                   {tiers.map((option) => (
                     <button
-                      key={option}
-                      onClick={() => setTier(option)}
+                      key={option.id}
+                      disabled={option.id === 'Cloud'}
+                      onClick={() => setTier(option.id)}
                       className={cn(
                         'rounded-md border px-3 py-1.5 text-xs transition-colors',
-                        tier === option ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'
+                        tier === option.id ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground',
+                        option.id === 'Cloud' ? 'opacity-50 cursor-not-allowed' : 'hover:text-foreground'
                       )}
                     >
-                      {option}
+                      {option.label}
                     </button>
                   ))}
                 </div>

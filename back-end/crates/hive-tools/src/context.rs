@@ -25,6 +25,8 @@ pub struct ToolContext {
     /// so existing tools keep working; the runtime will swap in a profile
     /// matrix per-agent in Phase 0c-bis when the approval SSE flow lands.
     permissions: PermissionMatrix,
+    /// User-defined files that are blocked from modification.
+    pub protected_files: Vec<String>,
 }
 
 impl ToolContext {
@@ -36,6 +38,7 @@ impl ToolContext {
             message_id: None,
             sandbox,
             permissions: PermissionMatrix::default(),
+            protected_files: Vec::new(),
         }
     }
 
@@ -59,6 +62,12 @@ impl ToolContext {
     /// one. Tools should read this via [`Self::permissions`].
     pub fn with_permissions(mut self, matrix: PermissionMatrix) -> Self {
         self.permissions = matrix;
+        self
+    }
+
+    /// Set user-defined protected files that the tools (e.g. fs_write) cannot modify.
+    pub fn with_protected_files(mut self, files: Vec<String>) -> Self {
+        self.protected_files = files;
         self
     }
 

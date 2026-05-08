@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub enum SovereigntyTier {
     Local,
-    Hybrid,
     Cloud,
 }
 
@@ -12,7 +11,6 @@ impl std::fmt::Display for SovereigntyTier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Local => write!(f, "local"),
-            Self::Hybrid => write!(f, "hybrid"),
             Self::Cloud => write!(f, "cloud"),
         }
     }
@@ -21,9 +19,8 @@ impl std::fmt::Display for SovereigntyTier {
 impl std::str::FromStr for SovereigntyTier {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        match s.to_lowercase().as_str() {
             "local" => Ok(Self::Local),
-            "hybrid" => Ok(Self::Hybrid),
             "cloud" => Ok(Self::Cloud),
             _ => Err(format!("invalid sovereignty tier: {s}")),
         }

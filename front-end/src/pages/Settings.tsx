@@ -22,6 +22,7 @@ import { defaultSettings, useWorkspace, type SettingsState } from '@/context/Wor
 import type { ModelSelection } from '@/components/shared/ModelPicker';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useSettingsData } from '@/api/queries/useServerData';
+import { useConnectGitHub, useGitHubStatus } from '@/api/git';
 import { toast } from 'sonner';
 import { ConfirmDeleteModal } from '@/components/modals/ConfirmDeleteModal';
 
@@ -131,6 +132,12 @@ export default function Settings() {
   const { accentPresets } = useWorkspace();
   const { activeProject } = useHiveData();
   const { data: settings, saveSettings } = useSettingsData();
+  const githubStatusQuery = useGitHubStatus(activeProject?.id ?? null);
+  const connectGitHub = useConnectGitHub(activeProject?.id ?? null);
+  const [githubOwner, setGithubOwner] = useState('');
+  const [githubRepo, setGithubRepo] = useState('');
+  const [githubToken, setGithubToken] = useState('');
+
   const [draft, setDraft] = useState<SettingsState>(() => {
     const next = cloneSettings((settings as SettingsState | undefined) ?? defaultSettings);
     if (activeProject) {
@@ -173,6 +180,16 @@ export default function Settings() {
       toast.success('Settings saved');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to save settings');
+    }
+  };
+
+  const connectRepo = async () => {
+    try {
+      await connectGitHub.mutateAsync({ token: githubToken.trim(), owner: githubOwner.trim(), repo: githubRepo.trim() });
+      setGithubToken('');
+      toast.success('GitHub connected');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'GitHub connect failed');
     }
   };
 
@@ -232,13 +249,18 @@ export default function Settings() {
             </Row>
             <Row label="Default Sovereignty Tier" desc="Data sovereignty level for new projects">
               <div className="flex gap-1">
-                {(['local', 'hybrid', 'cloud'] as const).map((tier) => (
+                {(['local', 'cloud'] as const).map((tier) => (
                   <button
                     key={tier}
+                    disabled={tier === 'cloud'}
                     onClick={() => patch('general', { ...draft.general, sovereigntyTier: tier })}
-                    className={cn('rounded-md px-3 py-1 text-xs border capitalize', draft.general.sovereigntyTier === tier ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground')}
+                    className={cn(
+                      'rounded-md px-3 py-1 text-xs border capitalize',
+                      draft.general.sovereigntyTier === tier ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground',
+                      tier === 'cloud' ? 'opacity-50 cursor-not-allowed' : 'hover:text-foreground'
+                    )}
                   >
-                    {tier}
+                    {tier === 'cloud' ? 'cloud (Enterprise)' : tier}
                   </button>
                 ))}
               </div>
@@ -312,7 +334,36 @@ export default function Settings() {
         {section === 'github' && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-semibold">GitHub Sync</h2>
-            <div className="rounded-lg border border-success/30 bg-success/5 p-4 flex items-center gap-3"><Check className="h-4 w-4 text-success" /><div><span className="text-sm font-medium text-success">Connected</span><p className="text-xs text-muted-foreground">github.com/org/{(activeProject?.name ?? 'hive-dashboard').toLowerCase().replace(/\s+/g, '-')}</p></div></div>
+            {githubStatusQuery.data?.connected ? (
+              <div className="rounded-lg border border-success/30 bg-success/5 p-4 flex items-center gap-3">
+                <Check className="h-4 w-4 text-success" />
+                <div>
+                  <span className="text-sm font-medium text-success">Connected</span>
+                  <p className="text-xs text-muted-foreground">
+                    github.com/{githubStatusQuery.data.owner}/{githubStatusQuery.data.repo}
+                  </p>
+                  <div className="text-micro text-muted-foreground mt-1">Token: {githubStatusQuery.data.maskedToken}</div>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-md border border-border bg-surface-2 p-4 space-y-3">
+                <h3 className="text-sm font-medium">Connect to GitHub</h3>
+                <input value={githubOwner} onChange={(event) => setGithubOwner(event.target.value)} placeholder="Owner (e.g. your-org)" className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm" />
+                <input value={githubRepo} onChange={(event) => setGithubRepo(event.target.value)} placeholder="Repo name" className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm" />
+                <input
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={githubToken}
+                  onChange={(event) => setGithubToken(event.target.value)}
+                  placeholder="github_pat_... (Personal Access Token)"
+                  className="h-9 w-full rounded-md border border-border bg-card px-3 text-sm font-mono"
+                />
+                <button onClick={() => void connectRepo()} className="w-full rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90">
+                  Connect Repository
+                </button>
+              </div>
+            )}
             <Row label="Auto-push" desc="Push commits to remote automatically"><Switch checked={draft.github.autoPush} onCheckedChange={(checked) => patch('github', { ...draft.github, autoPush: checked })} /></Row>
             <Row label="PR Auto-create" desc="Create PRs for feature branches"><Switch checked={draft.github.autoCreatePr} onCheckedChange={(checked) => patch('github', { ...draft.github, autoCreatePr: checked })} /></Row>
             <Row label="Status Checks" desc="Require CI checks before merge"><Switch checked={draft.github.requireChecks} onCheckedChange={(checked) => patch('github', { ...draft.github, requireChecks: checked })} /></Row>

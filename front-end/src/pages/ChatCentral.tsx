@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { CodeViewerDialog } from '@/components/modals/CodeViewerDialog';
-import { Send, Paperclip, AtSign, Hexagon, Copy, Eye, Code, AlertTriangle, ArrowDown, Check, Square, Plus, Settings2, X, FileText, Image as ImageIcon, FileBox } from 'lucide-react';
+import { Send, Paperclip, AtSign, Hexagon, Copy, Eye, Code, AlertTriangle, ArrowDown, Check, Square, Plus, Settings2, X, FileText, Image as ImageIcon, FileBox, Trash2, LayoutList } from 'lucide-react';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
@@ -10,6 +10,7 @@ import {
   useChatMessages,
   useChatStream,
   useCreateChatThread,
+  useDeleteChatThread,
   useSendChatMessage,
   useCancelChatMessage,
   useChatAttachments,
@@ -110,6 +111,25 @@ function splitCodeBlock(content: string): { body: string; code: { language: stri
     body: content.replace(full, '').trim(),
     code: { language: lang ?? 'txt', code },
   };
+}
+
+function splitThinkingBlock(content: string): { thinking: string; body: string } {
+  let thinking = '';
+  let body = '';
+  const startIdx = content.indexOf('<thinking>');
+  if (startIdx !== -1) {
+    const endIdx = content.indexOf('</thinking>');
+    if (endIdx !== -1) {
+      thinking = content.substring(startIdx + 10, endIdx);
+      body = content.substring(0, startIdx) + content.substring(endIdx + 11);
+    } else {
+      thinking = content.substring(startIdx + 10);
+      body = content.substring(0, startIdx);
+    }
+  } else {
+    body = content;
+  }
+  return { thinking: thinking.trim(), body: body.trim() };
 }
 
 function formatTimestamp(iso: string): string {
@@ -241,9 +261,11 @@ export default function ChatCentral() {
   const [showNewPill, setShowNewPill] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [modelOverride, setModelOverride] = useState<ModelSelection | null>(null);
+  const [compactMode, setCompactMode] = useState(false);
   const { chatTargetAgentId, setChatTargetAgentId, defaultModel } = useWorkspace();
 
   const createThreadMutation = useCreateChatThread();
+  const deleteThreadMutation = useDeleteChatThread();
   const cancelMutation = useCancelChatMessage();
 
   // Pick the first thread once loaded.
@@ -444,90 +466,136 @@ export default function ChatCentral() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Thread tabs */}
-      <div className="flex items-center gap-1 border-b border-border px-4 py-2 overflow-x-auto scrollbar-thin">
-        {threads.map((thread) => {
-          const agent = thread.agentId ? state.agents.find((a) => a.id === thread.agentId) : null;
-          return (
+    <div className="flex h-full w-full bg-background overflow-hidden">
+      {/* Sidebar for threads */}
+      <div className="w-64 shrink-0 flex flex-col border-r border-border bg-surface-2 overflow-hidden">
+        <div className="flex items-center justify-between p-3 border-b border-border">
+          <span className="text-xs font-semibold uppercase text-muted-foreground">Conversations</span>
+          <div className="flex gap-1">
             <button
-              key={thread.id}
-              onClick={() => setActiveThreadId(thread.id)}
-              className={cn(
-                'flex items-center gap-1.5 rounded-full px-3 py-1 text-xs whitespace-nowrap transition-colors',
-                activeThreadId === thread.id ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'
-              )}
+              onClick={() => setCompactMode(c => !c)}
+              className={cn("p-1.5 rounded-md hover:bg-surface-3 text-muted-foreground transition-colors", compactMode && "text-primary")}
+              title="Toggle Compact Mode"
             >
-              {agent ? <StatusDot status={agent.status} size="sm" /> : null}
-              {thread.title}
+              <LayoutList className="h-3.5 w-3.5" />
             </button>
-          );
-        })}
-        <button
-          onClick={handleNewThread}
-          className="flex items-center gap-1 rounded-full px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
-          aria-label="New thread"
-        >
-          <Plus className="h-3 w-3" />
-          New
-        </button>
+            <button
+              onClick={handleNewThread}
+              className="p-1.5 rounded-md hover:bg-surface-3 text-muted-foreground hover:text-foreground transition-colors"
+              title="New thread"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto scrollbar-thin p-2 space-y-4">
+          {/* Group threads by agent */}
+          {Array.from(new Set(threads.map(t => t.agentId))).map(agentId => {
+            const agent = agentId ? state.agents.find((a) => a.id === agentId) : null;
+            const agentThreads = threads.filter(t => t.agentId === agentId);
+            return (
+              <div key={agentId ?? 'global'} className="space-y-1">
+                <div className="flex items-center gap-1.5 px-2 py-1 mb-1">
+                  {agent ? <StatusDot status={agent.status} size="sm" /> : <Hexagon className="h-3.5 w-3.5 text-muted-foreground" />}
+                  <span className="text-xs font-semibold truncate">{agent ? agent.name : 'Project Threads'}</span>
+                </div>
+                {agentThreads.map((thread) => (
+                  <div key={thread.id} className="group flex items-center justify-between gap-1 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-surface-3 relative">
+                    <button
+                      onClick={() => setActiveThreadId(thread.id)}
+                      className={cn(
+                        'flex-1 text-left truncate',
+                        activeThreadId === thread.id ? 'text-primary font-medium' : 'text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      {thread.title}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteThreadMutation.mutate(thread.id);
+                        if (activeThreadId === thread.id) setActiveThreadId(null);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-destructive rounded hover:bg-surface-2 absolute right-1 bg-surface-3"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Messages */}
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-auto scrollbar-thin p-4 space-y-4 relative">
-        {messagesQuery.isLoading && (
-          <div className="text-center text-xs text-muted-foreground">Loading messages…</div>
-        )}
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        {/* Messages */}
+        <div ref={scrollRef} onScroll={handleScroll} className={cn("flex-1 overflow-auto scrollbar-thin p-4 space-y-4 relative", compactMode && "p-2 space-y-2")}>
+          {messagesQuery.isLoading && (
+            <div className="text-center text-xs text-muted-foreground">Loading messages…</div>
+          )}
 
-        {!messagesQuery.isLoading && renderMessages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center px-6">
-            <div className="rounded-full bg-surface-2 p-4 mb-4">
-              <Hexagon className="h-8 w-8 text-primary" fill="currentColor" />
+          {!messagesQuery.isLoading && renderMessages.length === 0 && (
+            <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center px-6">
+              <div className="rounded-full bg-surface-2 p-4 mb-4">
+                <Hexagon className="h-8 w-8 text-primary" fill="currentColor" />
+              </div>
+              <h3 className="text-sm font-semibold mb-1">Start a conversation with the hive</h3>
+              <p className="text-xs text-muted-foreground max-w-sm">
+                Ask a question, mention an agent with @name, or attach a file to get started.
+              </p>
             </div>
-            <h3 className="text-sm font-semibold mb-1">Start a conversation with the hive</h3>
-            <p className="text-xs text-muted-foreground max-w-sm">
-              Ask a question, mention an agent with @name, or attach a file to get started.
-            </p>
-          </div>
-        )}
+          )}
 
-        {renderMessages.map((message) => {
-          if (message.role === 'system') {
+          {renderMessages.map((message) => {
+            if (message.role === 'system') {
+              return (
+                <motion.div key={message.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-center">
+                  <span className="rounded-full bg-surface-2 px-3 py-1 text-micro text-muted-foreground">{message.content}</span>
+                </motion.div>
+              );
+            }
+
+            const isUser = message.role === 'user';
+            const { thinking, body: contentAfterThinking } = splitThinkingBlock(message.content);
+            const { body, code } = splitCodeBlock(contentAfterThinking);
+            const isStreaming = message.status === 'streaming' || message.status === 'pending';
+            const isCancelled = message.status === 'cancelled';
+            const isError = message.status === 'error';
+
             return (
-              <motion.div key={message.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-center">
-                <span className="rounded-full bg-surface-2 px-3 py-1 text-micro text-muted-foreground">{message.content}</span>
-              </motion.div>
-            );
-          }
-
-          const isUser = message.role === 'user';
-          const { body, code } = splitCodeBlock(message.content);
-          const isStreaming = message.status === 'streaming' || message.status === 'pending';
-          const isCancelled = message.status === 'cancelled';
-          const isError = message.status === 'error';
-
-          return (
-            <motion.div
-              key={message.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={cn('flex gap-3 max-w-[80%]', isUser ? 'ml-auto flex-row-reverse' : '')}
-            >
-              {!isUser && (
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
-                  <Hexagon className="h-4 w-4 text-primary" />
-                </div>
-              )}
-              <div className={cn('rounded-lg px-4 py-2.5', isUser ? 'bg-primary/10 text-foreground' : 'bg-card border border-border')}>
-                {!isUser && message.model && (
-                  <span className="text-micro font-medium text-primary block mb-1">
-                    {message.providerId ?? 'model'} · {message.model}
-                  </span>
+              <motion.div
+                key={message.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className={cn('flex gap-3 max-w-[80%]', isUser ? 'ml-auto flex-row-reverse' : '')}
+              >
+                {!isUser && (
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
+                    <Hexagon className="h-4 w-4 text-primary" />
+                  </div>
                 )}
-                <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                  {body || (isStreaming ? <span className="opacity-50">…</span> : null)}
-                  {isStreaming && <span className="inline-block ml-0.5 animate-pulse">▊</span>}
-                </div>
+                <div className={cn('rounded-lg px-4 py-2.5', isUser ? 'bg-primary/10 text-foreground' : 'bg-card border border-border')}>
+                  {!isUser && message.model && (
+                    <span className="text-micro font-medium text-primary block mb-1">
+                      {message.providerId ?? 'model'} · {message.model}
+                    </span>
+                  )}
+                  <div className="text-sm whitespace-pre-wrap leading-relaxed">
+                    {thinking && (
+                      <details className="mb-2 rounded-md border border-border bg-surface-2 px-3 py-2" open={isStreaming}>
+                        <summary className="cursor-pointer text-xs font-mono text-muted-foreground select-none opacity-80 hover:opacity-100">
+                          Agent Reasoning
+                        </summary>
+                        <div className="mt-2 text-xs italic text-muted-foreground whitespace-pre-wrap border-l-2 border-primary/20 pl-3 ml-1 mb-1">
+                          {thinking}
+                          {isStreaming && !body && <span className="inline-block ml-0.5 animate-pulse">▊</span>}
+                        </div>
+                      </details>
+                    )}
+                    {body || (isStreaming && !thinking ? <span className="opacity-50">…</span> : null)}
+                    {isStreaming && body && <span className="inline-block ml-0.5 animate-pulse">▊</span>}
+                  </div>
                 <ToolCallList toolCalls={message.toolCalls ?? []} />
                 {code && <CodeBlock language={code.language} code={code.code} />}
                 {isUser && <MessageAttachments messageId={message.id} />}
@@ -704,6 +772,7 @@ export default function ChatCentral() {
               </button>
             )}
           </div>
+        </div>
         </div>
       </div>
     </div>

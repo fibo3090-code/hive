@@ -252,6 +252,7 @@ async fn ensure_agents(
 
         agents::update(
             db,
+            "demo",
             &created.id,
             UpdateAgent {
                 slug: None,
@@ -850,7 +851,7 @@ pub async fn seed_demo(db: &DatabaseConnection) -> Result<(), DbErr> {
         ProjectSpec {
             name: "HIVE Dashboard",
             description: "Internal agent management dashboard",
-            sovereignty_tier: "hybrid",
+            sovereignty_tier: "local",
             budget_total_cents: 20_000,
             health_score: 87,
             spec_completion: 73,

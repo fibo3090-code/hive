@@ -47,7 +47,7 @@ impl MigrationTrait for Migration {
                         ColumnDef::new(Projects::SovereigntyTier)
                             .string()
                             .not_null()
-                            .default("hybrid"),
+                            .default("local"),
                     )
                     .col(
                         ColumnDef::new(Projects::Status)

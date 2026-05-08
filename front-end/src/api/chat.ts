@@ -496,3 +496,14 @@ export function attachmentDownloadUrl(messageId: string, attachmentId: string): 
 
 // Re-exported for ad-hoc callers that want to build their own fetch.
 export { API_BASE_URL };
+
+export function useDeleteChatThread() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (threadId: string) =>
+      api<void>(`/v1/chat-threads/${threadId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['chat-threads'] });
+    },
+  });
+}

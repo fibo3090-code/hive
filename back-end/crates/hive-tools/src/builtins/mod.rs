@@ -12,6 +12,7 @@
 
 pub mod fs;
 pub mod shell;
+pub mod todo;
 pub mod web;
 
 use std::sync::Arc;
@@ -29,6 +30,7 @@ pub fn register_defaults(registry: &mut ToolRegistry) {
     registry.insert(Arc::new(fs::FsWriteTool));
     registry.insert(Arc::new(fs::FsListTool));
     registry.insert(Arc::new(shell::ShellExecTool));
+    registry.insert(Arc::new(todo::TodoTool));
     registry.insert(Arc::new(web::WebFetchTool::with_default_client()));
 }
 
@@ -47,6 +49,7 @@ pub fn default_names() -> Vec<String> {
         "fs_write".into(),
         "fs_list".into(),
         "shell_exec".into(),
+        "todo".into(),
         "web_fetch".into(),
     ]
 }

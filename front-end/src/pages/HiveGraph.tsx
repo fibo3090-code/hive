@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
 import { ReactFlow, Background, Controls, MiniMap, type Node, type Edge, Handle, Position, MarkerType } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import dagre from 'dagre';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { useWorkspace } from '@/context/WorkspaceContext';
@@ -36,29 +37,45 @@ function buildGraph(agents: Agent[]): { nodes: Node[]; edges: Edge[] } {
     return { nodes: [], edges: [] };
   }
 
-  const root = agents[0];
-  const children = agents.slice(1);
-  const spacing = 220;
-  const startX = -((children.length - 1) * spacing) / 2;
-  return {
-    nodes: [
-      { id: root.id, type: 'agentNode', position: { x: 0, y: 0 }, data: { agent: root, isRoot: true } },
-      ...children.map((agent, index) => ({
-        id: agent.id,
-        type: 'agentNode',
-        position: { x: startX + index * spacing, y: 180 },
-        data: { agent, isRoot: false },
-      })),
-    ],
-    edges: children.map((agent) => ({
-      id: `edge-${root.id}-${agent.id}`,
-      source: root.id,
-      target: agent.id,
-      animated: agent.status === 'working',
-      style: { stroke: 'hsl(var(--border))' },
-      markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--border))' },
-    })),
-  };
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
+  dagreGraph.setGraph({ rankdir: 'TB', nodesep: 100, ranksep: 180 });
+
+  agents.forEach((agent) => {
+    dagreGraph.setNode(agent.id, { width: 210, height: 160 });
+  });
+
+  const edges: Edge[] = [];
+  agents.forEach((agent) => {
+    if (agent.parentAgentId && agents.some((a) => a.id === agent.parentAgentId)) {
+      edges.push({
+        id: `edge-${agent.parentAgentId}-${agent.id}`,
+        source: agent.parentAgentId,
+        target: agent.id,
+        animated: agent.status === 'working',
+        style: { stroke: 'hsl(var(--border))' },
+        markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--border))' },
+      });
+      dagreGraph.setEdge(agent.parentAgentId, agent.id);
+    }
+  });
+
+  dagre.layout(dagreGraph);
+
+  const nodes: Node[] = agents.map((agent) => {
+    const nodePos = dagreGraph.node(agent.id);
+    return {
+      id: agent.id,
+      type: 'agentNode',
+      position: {
+        x: nodePos.x - 105,
+        y: nodePos.y - 80,
+      },
+      data: { agent, isRoot: !agent.parentAgentId },
+    };
+  });
+
+  return { nodes, edges };
 }
 
 function EmptyGraphState() {

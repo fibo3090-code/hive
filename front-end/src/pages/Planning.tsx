@@ -1,40 +1,34 @@
-/**
- * Planning — A→Z project planning surface.
- *
- * Phase 5b. Replaces the old SpecPlan and absorbs Tech Debt + Drift &
- * Delays from Insights.
- *
- *   - Spec Document: the markdown spec doc(s), versioned, with sections
- *     auto-derived (anchors slugified at write-time so tasks FK on them).
- *   - Skill Sprint: per-agent task lanes with `AgentStateChip`s and a
- *     clickable `SpecAnchorLink` back to the source section.
- *   - Tech Debt: lifted from Insights (Phase 5a).
- *   - Drift & Delays: unified drift events (3 kinds) + late-task list.
- *
- * The current implementation is intentionally compact: each tab embeds
- * its data hook from `@/api/*` and renders a list view sufficient for a
- * round-trip demo. Visual polish + drag-drop reorder land in follow-up
- * commits as the product feel firms up.
- */
 import { useMemo, useState } from 'react';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useSpecDocuments, useSpecDocumentSections } from '@/api/spec-documents';
 import { useDriftEvents, useUpdateDriftStatus } from '@/api/drift';
 import { useAssignments } from '@/api/assignments';
-import { useTechDebtData } from '@/api/queries/useServerData';
-import type { TechDebtItem } from '@/types/domain';
+import { useTechDebtData, useMoveTechDebt, useNotesData, useCreateNote } from '@/api/queries/useServerData';
+import type { TechDebtItem, NoteItem } from '@/types/domain';
 import { AgentStateChip } from '@/components/shared/AgentStateChip';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { Plus, Search } from 'lucide-react';
+import { toast } from 'sonner';
 
-type Tab = 'spec' | 'sprint' | 'techdebt' | 'drift';
+type Tab = 'spec' | 'sprint' | 'techdebt' | 'hivemind' | 'drift';
 
 const tabLabels: Record<Tab, string> = {
   spec: 'Spec Document',
   sprint: 'Skill Sprint',
   techdebt: 'Tech Debt',
+  hivemind: 'Hive Mind',
   drift: 'Drift & Delays',
 };
+
+function EmptyState({ title, message }: { readonly title: string; readonly message: string }) {
+  return (
+    <div className="rounded-lg border border-dashed border-border bg-card/60 p-8 text-center">
+      <h3 className="text-sm font-semibold mb-1">{title}</h3>
+      <p className="text-xs text-muted-foreground">{message}</p>
+    </div>
+  );
+}
 
 export default function Planning() {
   const [tab, setTab] = useState<Tab>('spec');
@@ -61,6 +55,7 @@ export default function Planning() {
       {tab === 'spec' && <SpecDocumentTab />}
       {tab === 'sprint' && <SkillSprintTab />}
       {tab === 'techdebt' && <TechDebtTab />}
+      {tab === 'hivemind' && <HiveMindTab />}
       {tab === 'drift' && <DriftAndDelaysTab />}
     </div>
   );
@@ -76,6 +71,10 @@ function SpecDocumentTab() {
   const effectiveId = selectedId ?? docs.data?.[0]?.id ?? null;
   const sections = useSpecDocumentSections(effectiveId);
 
+  const handleDecompose = () => {
+    toast.success('Spec decomposition started (Simulated). The planner agent will break this document down into tasks.');
+  };
+
   if (!docs.data?.length) {
     return (
       <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
@@ -87,7 +86,7 @@ function SpecDocumentTab() {
 
   return (
     <div className="grid grid-cols-12 gap-4">
-      <aside className="col-span-3 space-y-1">
+      <aside className="col-span-3 space-y-2">
         <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Documents</h3>
         {docs.data.map((doc) => (
           <button
@@ -107,6 +106,10 @@ function SpecDocumentTab() {
             </div>
           </button>
         ))}
+        
+        <Button variant="outline" className="w-full mt-4 text-xs h-8" onClick={handleDecompose}>
+          Decompose Spec
+        </Button>
       </aside>
 
       <main className="col-span-9 space-y-4">
@@ -142,6 +145,9 @@ function SkillSprintTab() {
   const { activeProject } = useHiveData();
   const activeProjectId = activeProject?.id ?? null;
   const assignments = useAssignments(activeProjectId);
+  const [creatingTask, setCreatingTask] = useState(false);
+  const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [newTaskAgent, setNewTaskAgent] = useState('');
 
   const grouped = useMemo(() => {
     const map = new Map<string, ReturnType<typeof useAssignments>['data']>();
@@ -153,38 +159,85 @@ function SkillSprintTab() {
     return Array.from(map.entries());
   }, [assignments.data]);
 
-  if (!grouped.length) {
-    return (
-      <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-        No agent task assignments yet. Run the doc→sprint decomposition to
-        populate this view.
-      </div>
-    );
-  }
+  const handleCreateTask = () => {
+    if (!newTaskTitle || !newTaskAgent) {
+      toast.error('Please enter a task title and an agent ID.');
+      return;
+    }
+    toast.success(`Task created and assigned to ${newTaskAgent} (Simulated).`);
+    setCreatingTask(false);
+    setNewTaskTitle('');
+    setNewTaskAgent('');
+  };
 
   return (
     <div className="space-y-4">
-      {grouped.map(([agentId, agentAssignments]) => (
-        <section key={agentId} className="rounded-lg border border-border bg-card">
-          <header className="border-b border-border bg-surface-2 px-4 py-2">
-            <code className="text-xs font-mono text-muted-foreground">{agentId}</code>
-          </header>
-          <ul className="divide-y divide-border">
-            {agentAssignments?.map((a) => (
-              <li key={a.id} className="flex items-center justify-between gap-3 px-4 py-2">
-                <div className="flex-1">
-                  <div className="text-xs font-medium">Task {a.taskId}</div>
-                  <div className="text-[10px] text-muted-foreground">
-                    drift: {(a.driftScore * 100).toFixed(0)}%
-                    {a.expectedCompletionAt && ` · due ${new Date(a.expectedCompletionAt).toLocaleDateString()}`}
-                  </div>
-                </div>
-                <AgentStateChip state={a.state} />
-              </li>
-            ))}
-          </ul>
-        </section>
-      ))}
+      <div className="flex justify-end">
+        <Button 
+          variant="outline" 
+          size="sm" 
+          onClick={() => setCreatingTask(!creatingTask)}
+          className="flex items-center gap-1"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add Manual Task
+        </Button>
+      </div>
+
+      {creatingTask && (
+        <div className="rounded-lg border border-border bg-card p-4 space-y-3 mb-4">
+          <h3 className="text-sm font-semibold">Assign a New Task</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <input
+              value={newTaskTitle}
+              onChange={(e) => setNewTaskTitle(e.target.value)}
+              placeholder="Task description or ID"
+              className="h-9 rounded-md border border-border bg-surface-2 px-3 text-sm"
+            />
+            <input
+              value={newTaskAgent}
+              onChange={(e) => setNewTaskAgent(e.target.value)}
+              placeholder="Agent ID (e.g. backend-engineer)"
+              className="h-9 rounded-md border border-border bg-surface-2 px-3 text-sm"
+            />
+          </div>
+          <div className="flex justify-end gap-2 mt-2">
+            <Button variant="ghost" size="sm" onClick={() => setCreatingTask(false)}>Cancel</Button>
+            <Button size="sm" onClick={handleCreateTask}>Create Task</Button>
+          </div>
+        </div>
+      )}
+
+      {!grouped.length ? (
+        <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+          No agent task assignments yet. Run the doc→sprint decomposition to
+          populate this view.
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {grouped.map(([agentId, agentAssignments]) => (
+            <section key={agentId} className="rounded-lg border border-border bg-card">
+              <header className="border-b border-border bg-surface-2 px-4 py-2">
+                <code className="text-xs font-mono text-muted-foreground">{agentId}</code>
+              </header>
+              <ul className="divide-y divide-border">
+                {agentAssignments?.map((a) => (
+                  <li key={a.id} className="flex items-center justify-between gap-3 px-4 py-2">
+                    <div className="flex-1">
+                      <div className="text-xs font-medium">Task {a.taskId}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        drift: {(a.driftScore * 100).toFixed(0)}%
+                        {a.expectedCompletionAt && ` · due ${new Date(a.expectedCompletionAt).toLocaleDateString()}`}
+                      </div>
+                    </div>
+                    <AgentStateChip state={a.state} />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -194,8 +247,11 @@ function SkillSprintTab() {
 function TechDebtTab() {
   const { activeProject } = useHiveData();
   const activeProjectId = activeProject?.id ?? null;
-  const techDebt = useTechDebtData(activeProjectId);
-  const items = (techDebt.data ?? []) as TechDebtItem[];
+  const techDebtQuery = useTechDebtData(activeProjectId);
+  const moveMutation = useMoveTechDebt(activeProjectId);
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  
+  const items = (techDebtQuery.data ?? []) as TechDebtItem[];
   const columns = ['high', 'medium', 'low'] as const;
   const colors: Record<typeof columns[number], string> = {
     high: 'text-destructive',
@@ -203,37 +259,188 @@ function TechDebtTab() {
     low: 'text-info',
   };
 
-  if (!items.length) {
-    return (
-      <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-        No tech debt recorded for this project.
-      </div>
-    );
-  }
+  const handleDrop = async (severity: string) => {
+    if (!draggedId) return;
+
+    try {
+      await moveMutation.mutateAsync({ itemId: draggedId, severity });
+      toast.success('Tech debt item moved');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to move tech debt item');
+    } finally {
+      setDraggedId(null);
+    }
+  };
 
   return (
-    <div className="grid grid-cols-3 gap-4">
-      {columns.map((col) => (
-        <div key={col}>
-          <h4 className={cn('mb-2 text-xs font-semibold uppercase', colors[col])}>
-            {col} severity
-          </h4>
-          <div className="space-y-2">
-            {items
-              .filter((i) => i.severity === col)
-              .map((i) => (
-                <div key={i.id} className="rounded-lg border border-border bg-card p-3">
-                  <div className="text-sm font-medium">{i.title}</div>
-                  <div className="text-[11px] text-muted-foreground">{i.description}</div>
-                  <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
-                    <code className="font-mono">{i.file}</code>
-                    {i.lines > 0 && <span>{i.lines} lines</span>}
-                  </div>
-                </div>
-              ))}
+    <div className="space-y-4">
+      {items.length === 0 ? (
+        <EmptyState title="No tech debt recorded" message="Tech debt items will appear here when the backend has findings for the active project." />
+      ) : (
+        <div className="grid grid-cols-3 gap-4">
+          {columns.map((column) => (
+            <div key={column} onDragOver={(event) => event.preventDefault()} onDrop={() => void handleDrop(column)}>
+              <h4 className={cn('text-xs font-semibold uppercase mb-3', colors[column])}>{column} Priority</h4>
+              <div className="space-y-2 min-h-[220px] rounded-lg border border-dashed border-border/60 p-2">
+                {items
+                  .filter((item: TechDebtItem) => item.severity === column)
+                  .map((item: TechDebtItem) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      draggable
+                      onDragStart={() => setDraggedId(item.id)}
+                      onDragEnd={() => setDraggedId(null)}
+                      className="rounded-lg border border-border bg-card p-3 hover:border-primary/30 cursor-grab active:cursor-grabbing transition-colors w-full text-left"
+                    >
+                      <h5 className="text-sm font-medium mb-1">{item.title}</h5>
+                      <p className="text-micro text-muted-foreground mb-1">{item.description}</p>
+                      <p className="text-micro text-muted-foreground italic mb-1">Impact: {item.impact}</p>
+                      <div className="flex items-center gap-2">
+                        <span className="text-micro font-mono text-muted-foreground">{item.file}</span>
+                        {item.lines > 0 && <span className="text-micro text-muted-foreground">{item.lines} lines</span>}
+                      </div>
+                    </button>
+                  ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Hive Mind tab ──────────────────────────────────────────────────────
+
+function HiveMindTab() {
+  const { activeProject } = useHiveData();
+  const activeProjectId = activeProject?.id ?? null;
+  const notesQuery = useNotesData(activeProjectId);
+  const createNote = useCreateNote(activeProjectId);
+  const [category, setCategory] = useState('all');
+  const [search, setSearch] = useState('');
+  const [newTitle, setNewTitle] = useState('');
+  const [newContent, setNewContent] = useState('');
+  const [creating, setCreating] = useState(false);
+  const categories = ['all', 'Architecture', 'Decisions', 'Patterns', 'Issues', 'Auto-generated'];
+
+  const notes = notesQuery.data ?? [];
+  const filtered = notes.filter((note: NoteItem) => {
+    const categoryMatch = category === 'all' || note.category === category;
+    const searchMatch =
+      search === '' ||
+      note.title?.toLowerCase().includes(search.toLowerCase()) ||
+      note.content?.toLowerCase().includes(search.toLowerCase());
+    return categoryMatch && searchMatch;
+  });
+
+  const submitNote = async () => {
+    if (!newTitle.trim() || !newContent.trim()) return;
+
+    try {
+      await createNote.mutateAsync({
+        category: 'Decisions',
+        title: newTitle.trim(),
+        content: newContent.trim(),
+      });
+      toast.success('Hive Mind note added');
+      setNewTitle('');
+      setNewContent('');
+      setCreating(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to create note');
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3 flex-1 max-w-xl">
+          <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              className="w-full h-8 rounded-md border border-border bg-surface-2 pl-8 pr-3 text-xs placeholder:text-muted-foreground"
+              placeholder="Search notes..."
+            />
+          </div>
+          <div className="flex gap-1 flex-wrap">
+            {categories.map((item) => (
+              <button
+                key={item}
+                onClick={() => setCategory(item)}
+                className={cn(
+                  'rounded-full px-2.5 py-1 text-[10px] uppercase font-semibold tracking-wider transition-colors',
+                  category === item ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-surface-2 hover:text-foreground'
+                )}
+              >
+                {item}
+              </button>
+            ))}
           </div>
         </div>
-      ))}
+        <button
+          onClick={() => setCreating((value) => !value)}
+          className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-1.5 text-xs text-primary hover:bg-primary/20"
+        >
+          <Plus className="h-3.5 w-3.5" /> Post Memo
+        </button>
+      </div>
+
+      {creating && (
+        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+          <input
+            value={newTitle}
+            onChange={(event) => setNewTitle(event.target.value)}
+            placeholder="Note title"
+            className="w-full h-9 rounded-md border border-border bg-surface-2 px-3 text-sm"
+          />
+          <textarea
+            value={newContent}
+            onChange={(event) => setNewContent(event.target.value)}
+            placeholder="Add the key insight or decision..."
+            className="w-full rounded-md border border-border bg-surface-2 p-3 text-sm h-24 resize-none"
+          />
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setCreating(false)} className="rounded-md border border-border px-3 py-2 text-xs">
+              Cancel
+            </button>
+            <button
+              onClick={submitNote}
+              className="rounded-md bg-primary px-3 py-2 text-xs text-primary-foreground"
+            >
+              Add Note
+            </button>
+          </div>
+        </div>
+      )}
+
+      {filtered.length === 0 ? (
+        <EmptyState title="No matching notes" message="Create a note or adjust the filters to see saved Hive Mind entries." />
+      ) : (
+        <div className="grid grid-cols-2 gap-4">
+          {filtered.map((note: NoteItem) => (
+            <div
+              key={note.id}
+              className={cn(
+                'rounded-lg border bg-card p-4 hover:border-primary/30 transition-colors flex flex-col',
+                note.auto ? 'border-primary/20' : 'border-border'
+              )}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                {note.auto && <span className="text-micro bg-primary/10 text-primary px-1.5 py-0.5 rounded">auto</span>}
+                <span className="text-micro bg-surface-2 px-1.5 py-0.5 rounded text-muted-foreground">{note.category}</span>
+                <span className="text-micro text-muted-foreground ml-auto">{note.time}</span>
+              </div>
+              <h4 className="text-sm font-semibold mb-2">{note.title}</h4>
+              <div className="text-xs text-muted-foreground whitespace-pre-wrap line-clamp-4 flex-1">{note.content}</div>
+              <div className="mt-3 text-[10px] font-medium text-muted-foreground border-t border-border/50 pt-2">— {note.author}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

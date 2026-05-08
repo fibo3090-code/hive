@@ -669,7 +669,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             get(list_github_pulls).post(create_github_pull),
         )
         .route("/v1/chat-threads", post(create_chat_thread))
-        .route("/v1/chat-threads/:thread_id", get(get_chat_thread))
+        .route("/v1/chat-threads/:thread_id", get(get_chat_thread).delete(delete_chat_thread))
         .route(
             "/v1/chat-threads/:thread_id/messages",
             get(list_chat_messages).post(send_chat_message),
@@ -1238,6 +1238,19 @@ async fn build_tooling(
     context = context
         .with_thread(thread_id.to_owned())
         .with_message(message_id.to_owned());
+
+    let file_protection = settings::get_value(db(state).await.conn(), "global", "fileProtection").await?;
+    let mut protected_files = Vec::new();
+    if let Some(fp) = file_protection {
+        if let Some(files) = fp.get("files").and_then(|f| f.as_array()) {
+            for f in files {
+                if let Some(s) = f.as_str() {
+                    protected_files.push(s.to_string());
+                }
+            }
+        }
+    }
+    context = context.with_protected_files(protected_files);
 
     Ok(Some((registry, context)))
 }
@@ -1925,7 +1938,7 @@ async fn pause_agent(
         .pause(&agent_id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let _ = agents::set_status(database.conn(), &agent_id, "paused").await?;
+    let _ = agents::set_status(database.conn(), &agent.project_id, &agent_id, "paused").await?;
     emit(
         &state,
         "agent.status",
@@ -1949,7 +1962,7 @@ async fn resume_agent(
         .resume(&agent_id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let _ = agents::set_status(database.conn(), &agent_id, "working").await?;
+    let _ = agents::set_status(database.conn(), &agent.project_id, &agent_id, "working").await?;
     emit(
         &state,
         "agent.status",
@@ -1964,6 +1977,10 @@ async fn terminate_agent(
     Path(agent_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    let agent = agents::get(database.conn(), &agent_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
+    
     // Cascade cancel to every descendant first so child agents stop
     // mid-turn rather than completing work that's about to be discarded.
     state.executors.cancel_subtree(&agent_id).await;
@@ -1972,7 +1989,7 @@ async fn terminate_agent(
         .terminate(&agent_id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()));
-    let _ = agents::set_status(database.conn(), &agent_id, "deprecated").await;
+    let _ = agents::set_status(database.conn(), &agent.project_id, &agent_id, "deprecated").await;
     emit(
         &state,
         "agent.status",
@@ -2069,6 +2086,7 @@ async fn ensure_coordinator(
         if team_mode.is_some() {
             let _ = agents::update(
                 database.conn(),
+                &project_id,
                 &coord.id,
                 agents::UpdateAgent {
                     enabled_tools: Some(coordinator_tools(team_mode)),
@@ -2084,6 +2102,7 @@ async fn ensure_coordinator(
         if coord.system_prompt.as_deref() == Some(legacy_prompt) {
             let updated = agents::update(
                 database.conn(),
+                &project_id,
                 &coord.id,
                 agents::UpdateAgent {
                     slug: None,
@@ -2189,7 +2208,7 @@ async fn set_agent_status(
     let before = agents::get(database.conn(), &agent_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
-    let updated = agents::set_status(database.conn(), &agent_id, &body.status).await?;
+    let updated = agents::set_status(database.conn(), &before.project_id, &agent_id, &body.status).await?;
     audit::append(
         database.conn(),
         "local_operator",
@@ -2280,7 +2299,7 @@ async fn update_agent(
         model_provider_id: body.model_provider_id,
         model_id: body.model_id,
     };
-    let updated = agents::update(database.conn(), &agent_id, patch).await?;
+    let updated = agents::update(database.conn(), &before.project_id, &agent_id, patch).await?;
 
     audit::append(
         database.conn(),
@@ -2351,7 +2370,7 @@ async fn set_task_status(
     let before = tasks::get(database.conn(), &task_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("task {task_id} not found")))?;
-    let updated = tasks::set_status(database.conn(), &task_id, &body.status).await?;
+    let updated = tasks::set_status(database.conn(), &before.project_id, &task_id, &body.status).await?;
     audit::append(
         database.conn(),
         "local_operator",
@@ -2576,7 +2595,7 @@ async fn toggle_project_session(
         };
 
         if let Some(status) = next_status {
-            let _ = agents::set_status(database.conn(), &agent.id, status).await?;
+            let _ = agents::set_status(database.conn(), &project_id, &agent.id, status).await?;
         }
     }
 
@@ -2860,14 +2879,10 @@ struct GenesisPreviewBody {
 }
 
 /// Generate a project plan preview from a free-text description.
-///
-/// Today this is deterministic and grounded in the input — the LLM-driven
-/// path described in the original plan (call the configured provider with a
-/// structured-output prompt) lands in a follow-up. The deterministic output
-/// is shaped exactly like the LLM output will be, so the frontend doesn't
-/// need to change when the upgrade ships.
+/// Uses the configured LLM to generate logical phases and requirements,
+/// falling back to a deterministic projection if no LLM is configured.
 async fn post_project_genesis_preview(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<GenesisPreviewBody>,
 ) -> Result<Json<Value>, AppError> {
     if body.description.trim().is_empty() && body.spec_text.is_none() {
@@ -2883,6 +2898,48 @@ async fn post_project_genesis_preview(
         .unwrap_or(&body.description);
     let agent_count = body.agent_count.unwrap_or(3).clamp(1, 12) as usize;
 
+    let database = db(&state).await;
+    if let Ok((provider_id, model_id)) = resolve_chat_target(&state, None).await {
+        if let Ok(Some(provider_row)) = llm_providers::get(database.conn(), &provider_id).await {
+            if let Ok(config) = build_provider_config(&state, &provider_row).await {
+                let client = hive_llm::client_for(config);
+                let prompt = format!(
+                    "You are the Hive Project Genesis Planner.\n\
+                     You are given a description of a project to build and an agent count ({} agents).\n\
+                     Break this down into 3-5 logical phases.\n\
+                     Each phase must have a name (\"Phase X · <name>\") and an array of 3-5 string tasks.\n\
+                     Also return an array of 3-5 high-level requirements.\n\
+                     Respond ONLY with a JSON object in this format, and no markdown formatting or prose:\n\
+                     {{\n\
+                       \"phases\": [\n\
+                         {{ \"phase\": \"...\", \"tasks\": [\"...\", \"...\"] }}\n\
+                       ],\n\
+                       \"requirements\": [\n\
+                         {{ \"title\": \"...\", \"priority\": \"must|should|could\" }}\n\
+                       ]\n\
+                     }}",
+                    agent_count
+                );
+
+                let messages = vec![
+                    hive_llm::chat::ChatMessage::system(prompt),
+                    hive_llm::chat::ChatMessage::user(source_text.to_string()),
+                ];
+
+                let request = hive_llm::chat::ChatRequest::new(model_id, messages);
+                if let Ok(response) = client.chat(request).await {
+                    let cleaned_text = response.text.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+                    if let Ok(json) = serde_json::from_str::<Value>(cleaned_text) {
+                        if json.get("phases").is_some() {
+                            return Ok(Json(json));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: Deterministic generation
     // Lift the first few interesting words out of the input so the
     // preview reads as grounded rather than generic.
     let lead_words: Vec<&str> = source_text
@@ -4220,6 +4277,15 @@ async fn get_chat_thread(
     Ok(Json(chat_thread_json(&thread)))
 }
 
+async fn delete_chat_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    chat_threads::delete(database.conn(), &thread_id).await?;
+    Ok(Json(json!({ "success": true })))
+}
+
 async fn list_chat_messages(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -5029,7 +5095,7 @@ Always pass complete JSON arguments matching the tool schema shown to you; missi
 <workflow>
 1) Understand the goal and constraints.
 2) Inspect with `fs_list` / `fs_read` before writes.
-3) Keep an internal short checklist for multi-step work (a native todo tool may be added later).
+3) Keep an internal short checklist for multi-step work using the `todo` tool.
 4) Execute with small, reversible edits.
 5) Verify with the narrowest meaningful test, build, lint, or command.
 6) Report outcome, evidence, and remaining risks.

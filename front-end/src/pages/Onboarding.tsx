@@ -1,16 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
 import { Hexagon, FileCode, Layout, Upload, ChevronRight, Check, Loader2, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
-import { Progress } from '@/components/ui/progress';
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { api } from '@/api/client';
 import { toast } from 'sonner';
 import { StepConnectLlms } from './onboarding/StepConnectLlms';
+import type { SovereigntyTier } from '@/types/domain';
 
 interface GenesisPlanPhase {
   phase: string;
@@ -28,10 +28,9 @@ interface GenesisPlanPreview {
 // Budget and the CEO Describe chat. The total length stays in lockstep
 // with the `nextStep`/`prevStep` clamps below — keep them in sync if
 // you ever add or remove a step.
-const steps = ['Source', 'Budget', 'Connect LLMs', 'Describe', 'Plan Review', 'Launch'];
+const steps = ['Source', 'Budget', 'Connect LLMs', 'Describe', 'Plan Review'];
 const LAST_STEP_INDEX = steps.length - 1;
-const LAUNCH_INDEX = LAST_STEP_INDEX;
-const PLAN_REVIEW_INDEX = LAST_STEP_INDEX - 1;
+const PLAN_REVIEW_INDEX = LAST_STEP_INDEX;
 
 export default function Onboarding() {
   const navigate = useNavigate();
@@ -53,8 +52,7 @@ export default function Onboarding() {
   }, [step, onboardingDraft.connectedProviderIds]);
 
   const estimatedCost = useMemo(() => {
-    const factorIfHybrid = onboardingDraft.tier === 'hybrid' ? 1 : 1.4;
-    const factor = onboardingDraft.tier === 'local' ? 0.6 : factorIfHybrid;
+    const factor = onboardingDraft.tier === 'local' ? 0.6 : 1.4;
     return Math.round(onboardingDraft.agents * 8.5 * factor);
   }, [onboardingDraft.agents, onboardingDraft.tier]);
 
@@ -113,7 +111,7 @@ export default function Onboarding() {
             budget={onboardingDraft.budget}
             agents={onboardingDraft.agents}
             tier={onboardingDraft.tier}
-            estimatedCost={estimatedCost}
+            _estimatedCost={estimatedCost}
             onBudgetChange={(budget) => updateOnboardingDraft({ budget })}
             onAgentsChange={(agents) => updateOnboardingDraft({ agents })}
             onTierChange={(tier) => updateOnboardingDraft({ tier })}
@@ -130,10 +128,10 @@ export default function Onboarding() {
         {step === 3 && (
           <>
             <StepDescribe
-              mode={onboardingDraft.describeMode}
+              _mode={onboardingDraft.describeMode}
               description={onboardingDraft.description}
               uploadedSpecName={onboardingDraft.uploadedSpecName}
-              onModeChange={(describeMode) => updateOnboardingDraft({ describeMode })}
+              _onModeChange={(describeMode: 'interview' | 'import') => updateOnboardingDraft({ describeMode })}
               onDescriptionChange={(description) => updateOnboardingDraft({ description })}
               onSpecUpload={(file) =>
                 updateOnboardingDraft({
@@ -157,26 +155,24 @@ export default function Onboarding() {
             budget={onboardingDraft.budget}
             agents={onboardingDraft.agents}
             tier={onboardingDraft.tier}
-            estimatedCost={estimatedCost}
+            _estimatedCost={estimatedCost}
             description={onboardingDraft.description}
           />
         )}
-        {step === LAUNCH_INDEX && <StepLaunch onComplete={launchProject} />}
+
       </div>
 
-      {step < LAUNCH_INDEX && (
-        <div className="flex gap-3 mt-8">
-          {step > 0 && <Button variant="outline" onClick={prevStep}>Back</Button>}
-          <Button
-            onClick={nextStep}
-            className="gap-1.5"
-            disabled={!canAdvance}
-            title={canAdvance ? undefined : 'Connect at least one provider to continue'}
-          >
-            {step === PLAN_REVIEW_INDEX ? 'Launch' : 'Next'} <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-      )}
+      <div className="flex gap-3 mt-8">
+        {step > 0 && <Button variant="outline" onClick={prevStep}>Back</Button>}
+        <Button
+          onClick={step === PLAN_REVIEW_INDEX ? launchProject : nextStep}
+          className="gap-1.5"
+          disabled={!canAdvance}
+          title={canAdvance ? undefined : 'Connect at least one provider to continue'}
+        >
+          {step === PLAN_REVIEW_INDEX ? 'Launch' : 'Next'} <ChevronRight className="h-4 w-4" />
+        </Button>
+      </div>
     </div>
   );
 }
@@ -200,9 +196,11 @@ function StepSource({
         ].map((option) => (
           <button
             key={option.id}
-            onClick={() => onSelect(option.id)}
-            className={cn('rounded-xl border p-6 text-center transition-all hover:border-primary/40', source === option.id ? 'border-primary bg-primary/5 glow-amber' : 'border-border bg-card')}
+            onClick={() => option.id === 'scratch' ? onSelect(option.id) : undefined}
+            title={option.id !== 'scratch' ? 'Coming Soon' : undefined}
+            className={cn('relative rounded-xl border p-6 text-center transition-all', source === option.id ? 'border-primary bg-primary/5 glow-amber' : 'border-border bg-card', option.id === 'scratch' ? 'hover:border-primary/40 cursor-pointer' : 'opacity-50 cursor-not-allowed')}
           >
+            {option.id !== 'scratch' && <div className="absolute top-2 right-2 text-[9px] uppercase tracking-wider text-muted-foreground/70 font-semibold">Coming Soon</div>}
             <option.icon className={cn('h-8 w-8 mx-auto mb-3', source === option.id ? 'text-primary' : 'text-muted-foreground')} />
             <h3 className="text-sm font-semibold mb-1">{option.title}</h3>
             <p className="text-micro text-muted-foreground">{option.desc}</p>
@@ -213,13 +211,11 @@ function StepSource({
   );
 }
 
-type SovereigntyTier = 'local' | 'hybrid' | 'cloud';
-
 function StepBudget({
   budget,
   agents,
   tier,
-  estimatedCost,
+  _estimatedCost,
   onBudgetChange,
   onAgentsChange,
   onTierChange,
@@ -227,7 +223,7 @@ function StepBudget({
   readonly budget: number;
   readonly agents: number;
   readonly tier: SovereigntyTier;
-  readonly estimatedCost: number;
+  readonly _estimatedCost: number;
   readonly onBudgetChange: (budget: number) => void;
   readonly onAgentsChange: (agents: number) => void;
   readonly onTierChange: (tier: SovereigntyTier) => void;
@@ -250,7 +246,7 @@ function StepBudget({
         </div>
 
         <div>
-          <label htmlFor="onboarding-agents" className="text-sm font-medium">Max Agents</label>
+          <label htmlFor="onboarding-agents" className="text-sm font-medium">Max Parallel Running Agents</label>
           <p className="text-xs text-muted-foreground mb-3">Number of concurrent agents</p>
           <div className="flex items-center gap-3">
             <button onClick={() => onAgentsChange(Math.max(1, agents - 1))} className="h-8 w-8 rounded border border-border text-sm hover:bg-surface-2">-</button>
@@ -263,36 +259,32 @@ function StepBudget({
           <label htmlFor="onboarding-tier" className="text-sm font-medium">Sovereignty Tier</label>
           <p className="text-xs text-muted-foreground mb-3">Data processing location</p>
           <div id="onboarding-tier" className="flex gap-2">
-            {(['local', 'hybrid', 'cloud'] as const).map((option) => (
-              <button key={option} onClick={() => onTierChange(option)} className={cn('rounded-lg border px-4 py-2 text-xs capitalize transition-all', tier === option ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground')}>
-                {option}
-              </button>
-            ))}
+            <button onClick={() => onTierChange('local')} className={cn('rounded-lg border px-4 py-2 text-xs capitalize transition-all', tier === 'local' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground')}>
+              Local
+            </button>
+            <button disabled className="rounded-lg border px-4 py-2 text-xs capitalize transition-all border-border text-muted-foreground opacity-50 cursor-not-allowed" title="Coming Soon (Enterprise)">
+              Cloud <span className="ml-1 text-[10px] uppercase text-muted-foreground/70 tracking-wider">Coming Soon</span>
+            </button>
           </div>
         </div>
 
-        <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
-          <span className="text-xs text-muted-foreground">Estimated session cost</span>
-          <span className="block text-xl font-mono font-bold text-primary mt-1">${estimatedCost}</span>
-          <span className="text-micro text-muted-foreground">{agents} agents × ~$8.50/agent ({tier} tier)</span>
-        </div>
       </div>
     </div>
   );
 }
 
 function StepDescribe({
-  mode,
+  _mode,
   description,
   uploadedSpecName,
-  onModeChange,
+  _onModeChange,
   onDescriptionChange,
   onSpecUpload,
 }: {
-  readonly mode: 'interview' | 'import';
+  readonly _mode: 'interview' | 'import';
   readonly description: string;
   readonly uploadedSpecName: string | null;
-  readonly onModeChange: (mode: 'interview' | 'import') => void;
+  readonly _onModeChange: (mode: 'interview' | 'import') => void;
   readonly onDescriptionChange: (description: string) => void;
   readonly onSpecUpload: (file: { name: string; text: string }) => void;
 }) {
@@ -319,54 +311,49 @@ function StepDescribe({
         <p className="text-sm text-muted-foreground mt-1">Tell us what you want to build</p>
       </div>
 
-      <div className="flex gap-2 justify-center">
-        <button onClick={() => onModeChange('interview')} className={cn('rounded-lg border px-4 py-2 text-xs', mode === 'interview' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground')}>
-          Interview Mode
-        </button>
-        <button onClick={() => onModeChange('import')} className={cn('rounded-lg border px-4 py-2 text-xs', mode === 'import' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground')}>
-          Import Spec
-        </button>
-      </div>
-
-      {mode === 'interview' ? (
-        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
-          <div className="flex gap-3">
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
-              <Hexagon className="h-4 w-4 text-primary" />
-            </div>
-            <div className="rounded-lg bg-surface-2 px-4 py-2.5 text-sm">
-              What type of application are you building? (e.g., web app, API, mobile backend, data pipeline)
-            </div>
+      <div className="rounded-lg border border-border bg-card p-4 space-y-3 relative">
+        <div className="flex gap-3">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10">
+            <Hexagon className="h-4 w-4 text-primary" />
           </div>
+          <div className="rounded-lg bg-surface-2 px-4 py-2.5 text-sm">
+            What type of application are you building? (e.g., web app, API, mobile backend, data pipeline)
+          </div>
+        </div>
+        
+        <div className="relative">
           <textarea
             value={description}
             onChange={(event) => onDescriptionChange(event.target.value)}
-            className="w-full rounded-lg border border-border bg-surface-2 p-3 text-sm placeholder:text-muted-foreground resize-none h-24"
-            placeholder="Type your answer..."
+            className="w-full rounded-lg border border-border bg-surface-2 p-3 pb-12 text-sm placeholder:text-muted-foreground resize-none h-40"
+            placeholder="Type your answer, or upload a spec document..."
           />
+          
+          <div className="absolute bottom-3 left-3 flex items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".md,.txt,.markdown,.text"
+              onChange={(event) => void handleFileChange(event)}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-surface-2 hover:text-foreground transition-colors"
+              title="Upload spec (.md, .txt)"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Upload Spec
+            </button>
+            {uploadedSpecName && (
+              <span className="text-xs text-muted-foreground bg-background px-2 py-1 rounded border border-border">
+                {uploadedSpecName}
+              </span>
+            )}
+          </div>
         </div>
-      ) : (
-        <>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".md,.txt,.markdown,.text"
-            onChange={(event) => void handleFileChange(event)}
-            className="hidden"
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="w-full rounded-xl border-2 border-dashed border-border bg-card/50 p-12 text-center hover:border-primary/40 transition-colors"
-          >
-            <Upload className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">
-              {uploadedSpecName ? `Loaded ${uploadedSpecName}` : 'Click to choose a spec document'}
-            </p>
-            <p className="text-micro text-muted-foreground mt-1">.md, .txt (PDF/DOCX support deferred)</p>
-          </button>
-        </>
-      )}
+      </div>
     </div>
   );
 }
@@ -376,14 +363,14 @@ function StepPlanReview({
   budget,
   agents,
   tier,
-  estimatedCost,
+  _estimatedCost,
   description,
 }: {
   readonly source: 'scratch' | 'template' | 'import' | null;
   readonly budget: number;
   readonly agents: number;
-  readonly tier: 'local' | 'hybrid' | 'cloud';
-  readonly estimatedCost: number;
+  readonly tier: SovereigntyTier;
+  readonly _estimatedCost: number;
   readonly description: string;
 }) {
   // Real preview from the backend, grounded in the user's description.
@@ -467,75 +454,14 @@ function StepPlanReview({
 
       <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 text-center">
         <span className="text-sm font-medium">
-          Estimated: {agents} agents • ~${estimatedCost} •{' '}
-          {generatedPlan.length || 3} phases
+          {agents} agents • {generatedPlan.length || 3} phases
         </span>
       </div>
     </div>
   );
 }
 
-function StepLaunch({ onComplete }: { readonly onComplete: () => void }) {
-  const [progress, setProgress] = useState(0);
-  const [countdown, setCountdown] = useState(3);
-  const items = ['Initializing workspace...', 'Spawning agents...', 'Loading modules...', 'Starting session...', 'Ready!'];
 
-  useEffect(() => {
-    const countdownTimer = globalThis.setInterval(() => {
-      setCountdown((value) => {
-        if (value <= 1) {
-          globalThis.clearInterval(countdownTimer);
-          return 0;
-        }
-        return value - 1;
-      });
-    }, 700);
-
-    return () => globalThis.clearInterval(countdownTimer);
-  }, []);
-
-  useEffect(() => {
-    if (countdown > 0) {
-      return;
-    }
-
-    let stepIndex = 0;
-    const progressTimer = globalThis.setInterval(() => {
-      stepIndex += 1;
-      setProgress(Math.min(stepIndex * 25, 100));
-      if (stepIndex >= 5) {
-        globalThis.clearInterval(progressTimer);
-        globalThis.setTimeout(onComplete, 600);
-      }
-    }, 500);
-
-    return () => globalThis.clearInterval(progressTimer);
-  }, [countdown, onComplete]);
-
-  return (
-    <div className="space-y-8 text-center">
-      <div>
-        <h2 className="text-display-sm">Launching Your Hive</h2>
-        <p className="text-sm text-muted-foreground mt-2">
-          {countdown > 0 ? `Launch begins in ${countdown}…` : 'Finalizing workspace startup…'}
-        </p>
-      </div>
-      <Progress value={progress} className="h-2 max-w-md mx-auto" />
-      <div className="space-y-2">
-        {items.map((item, index) => {
-          const isComplete = progress >= (index + 1) * 20;
-          const isCurrent = !isComplete && progress >= index * 20;
-          return (
-            <div key={item} className={cn('flex items-center gap-3 justify-center transition-all', isComplete ? 'text-success' : isCurrent ? 'text-foreground' : 'text-muted-foreground/40')}>
-              {isComplete ? <Check className="h-4 w-4" /> : isCurrent ? <Loader2 className="h-4 w-4 animate-spin" /> : <div className="h-4 w-4" />}
-              <span className="text-sm">{item}</span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // Phase 2: Team-mode toggle for the CEO chat. When ON, the CEO is
 // allowed to delegate to its base team (research / architect / product

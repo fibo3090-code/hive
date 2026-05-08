@@ -382,14 +382,6 @@ fn validate_tool_invocation(
     validate_against_schema(&invocation.arguments, &manifest.input_schema)
 }
 
-fn tool_result_json(tool: &str, error: impl Into<String>) -> Value {
-    json!({
-        "ok": false,
-        "tool": tool,
-        "error": error.into(),
-    })
-}
-
 /// Build a structured tool-result for a validation failure that
 /// includes the offending arguments **and** the tool's input schema, so
 /// the next LLM round has everything it needs to self-correct without

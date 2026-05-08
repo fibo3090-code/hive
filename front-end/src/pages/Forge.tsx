@@ -169,10 +169,11 @@ function ConnectorsTab() {
   const connectors = useConnectors(activeProject?.id);
   const items = connectors.data ?? [];
   const grouped = useMemo(() => {
-    const apis = items.filter((c) => c.kind === 'api');
-    const mcps = items.filter((c) => c.kind === 'mcp');
+    const data = connectors.data ?? [];
+    const apis = data.filter((c) => c.kind === 'api');
+    const mcps = data.filter((c) => c.kind === 'mcp');
     return { apis, mcps };
-  }, [items]);
+  }, [connectors.data]);
 
   if (!items.length) {
     return (

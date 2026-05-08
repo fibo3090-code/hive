@@ -15,7 +15,7 @@ import Dashboard from "./pages/Dashboard";
 import HiveGraph from "./pages/HiveGraph";
 import ChatCentral from "./pages/ChatCentral";
 import CodeVersioning from "./pages/CodeVersioning";
-import Insights from "./pages/Insights";
+
 import SpecPlan from "./pages/SpecPlan";
 import Modules from "./pages/Modules";
 import ModuleDetail from "./pages/ModuleDetail";
@@ -74,7 +74,7 @@ const App = () => (
                       tabs to lazy-load (Stats wraps Insights, Forge wraps
                       Modules + AgentForge). Kept as direct routes too so
                       detail pages and existing tests still resolve. */}
-                  <Route path="/insights-legacy" element={<Insights />} />
+
                   <Route path="/spec-legacy" element={<SpecPlan />} />
                   <Route path="/modules-legacy" element={<Modules />} />
                   <Route path="/modules/:moduleId" element={<ModuleDetail />} />

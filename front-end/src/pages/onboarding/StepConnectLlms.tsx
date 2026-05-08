@@ -36,7 +36,8 @@ export function StepConnectLlms({ connectedProviderIds, onChange }: StepConnectL
   // `configured`, surface it as connected without requiring a user
   // click. (Settings page may have already set the key.)
   useEffect(() => {
-    const fresh = items
+    const data = providers.data ?? [];
+    const fresh = data
       .filter((p) => p.connected)
       .map((p) => p.id)
       .sort();
@@ -44,7 +45,7 @@ export function StepConnectLlms({ connectedProviderIds, onChange }: StepConnectL
     if (fresh.join('|') !== current.join('|')) {
       onChange(fresh);
     }
-  }, [items, connectedProviderIds, onChange]);
+  }, [providers.data, connectedProviderIds, onChange]);
 
   const noneConnected = items.filter((p) => p.connected).length === 0;
 
