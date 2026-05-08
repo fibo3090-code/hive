@@ -382,6 +382,7 @@ fn validate_tool_invocation(
     validate_against_schema(&invocation.arguments, &manifest.input_schema)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn tool_result_json(tool: &str, error: impl Into<String>) -> Value {
     json!({
         "ok": false,
