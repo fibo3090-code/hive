@@ -382,6 +382,7 @@ fn validate_tool_invocation(
     validate_against_schema(&invocation.arguments, &manifest.input_schema)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn tool_result_json(tool: &str, error: impl Into<String>) -> Value {
     json!({
         "ok": false,
@@ -682,6 +683,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     /// each individual call is unique (no fingerprint collision).
     const MAX_TOTAL_TOOL_CALLS: usize = 60;
     let mut total_tool_calls: usize = 0;
+    let mut rounds_used: usize = 0;
     // When the model never emits a tool-free round, surface the last non-empty
     // assistant `response.text` instead of only the generic exhaustion line.
     let mut last_non_empty_assistant_text: Option<String> = None;
@@ -692,6 +694,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         && tool_context.is_some();
 
     for _ in 0..MAX_TOOL_ROUNDS {
+        rounds_used += 1;
         if *cancel.lock().await {
             finalize_cancelled(
                 &db,
@@ -966,7 +969,13 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
 
     if final_answer.is_empty() {
         final_answer = last_non_empty_assistant_text.unwrap_or_else(|| {
-            "I exhausted the available tool rounds without producing a final answer.".to_owned()
+            if rounds_used >= MAX_TOOL_ROUNDS {
+                format!(
+                    "I exhausted the available tool rounds ({MAX_TOOL_ROUNDS}) without producing a final answer."
+                )
+            } else {
+                "The model returned an empty response. This often means the model produced no text and no tool calls — try rephrasing the request, switching models, or checking the provider logs.".to_owned()
+            }
         });
     }
 
