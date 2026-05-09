@@ -358,8 +358,57 @@ export default function ChatCentral() {
     setShowNewPill(el.scrollHeight - el.scrollTop - el.clientHeight > 100);
   };
 
+  const handleSlashCommand = (raw: string): boolean => {
+    const trimmed = raw.trim();
+    if (!trimmed.startsWith('/')) return false;
+    const [cmd, ...rest] = trimmed.slice(1).split(/\s+/);
+    const arg = rest.join(' ');
+    switch (cmd) {
+      case 'help': {
+        toast.info(
+          'Slash commands: /help · /clear (delete current thread) · /new [title] · /compact (planned: summarize history) · /model (open picker)',
+          { duration: 8000 },
+        );
+        setInput('');
+        return true;
+      }
+      case 'clear': {
+        if (activeThreadId) {
+          deleteThreadMutation.mutate(activeThreadId);
+          setActiveThreadId(null);
+        }
+        setInput('');
+        return true;
+      }
+      case 'new': {
+        if (!projectId) return true;
+        createThreadMutation.mutate(
+          { projectId, title: arg || `Thread ${threads.length + 1}` },
+          { onSuccess: (t) => setActiveThreadId(t.id) },
+        );
+        setInput('');
+        return true;
+      }
+      case 'model': {
+        setShowModelPicker(true);
+        setInput('');
+        return true;
+      }
+      case 'compact': {
+        toast.warning('/compact will summarize older messages — backend support is not yet wired. Tracked in FEATURE_STATUS.md.');
+        setInput('');
+        return true;
+      }
+      default: {
+        toast.error(`Unknown command: /${cmd}. Type /help for a list.`);
+        return true;
+      }
+    }
+  };
+
   const handleSend = async () => {
     if (!input.trim() || !activeThreadId || sendMutation.isPending || createThreadMutation.isPending) return;
+    if (handleSlashCommand(input)) return;
     const route = extractMentionTarget(input.trim(), state.agents);
     const content = route?.content || input.trim();
     if (!content) return;
