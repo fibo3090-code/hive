@@ -270,42 +270,7 @@ function AgentDetailDrawer({
   );
 }
 
-function OrgChartView({ agents, onSelect }: { readonly agents: Agent[]; readonly onSelect: (id: string) => void }) {
-  if (agents.length === 0) {
-    return <EmptyGraphState />;
-  }
-
-  const root = agents[0];
-  const children = agents.slice(1);
-  return (
-    <div className="flex flex-col items-center pt-12 gap-8 animate-fade-in">
-      {root && (
-        <button
-          type="button"
-          onClick={() => onSelect(root.id)}
-          aria-label={`Open ${root.name} details`}
-        >
-          <Card agent={root} isRoot />
-        </button>
-      )}
-      <div className="h-8 w-px bg-border" />
-      <div className="flex gap-6 flex-wrap justify-center">
-        {children.map((agent) => (
-          <div key={agent.id} className="flex flex-col items-center gap-2">
-            <div className="h-6 w-px bg-border" />
-            <button
-              type="button"
-              onClick={() => onSelect(agent.id)}
-              aria-label={`Open ${agent.name} details`}
-            >
-              <Card agent={agent} />
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+// OrgChartView removed in Phase 1: node graph is the single canonical view.
 
 function Card({ agent, isRoot }: { readonly agent: Agent; readonly isRoot?: boolean }) {
   const qualityScore = agent.qualityScore ?? 0;
