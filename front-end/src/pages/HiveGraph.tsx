@@ -4,7 +4,7 @@ import { useAgentLineage, useAgentMessages, useDispatchAgentTask, usePauseAgent,
 import type { Agent } from '@/types/domain';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ConfidenceBar } from '@/components/shared/ConfidenceBar';
-import { Network, Search, Lock, Plus, LayoutGrid, X, MessageSquare, Pause, Play, Settings, Trash2, SendHorizontal } from 'lucide-react';
+import { Network, Search, Lock, Plus, X, MessageSquare, Pause, Play, Settings, Trash2, SendHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
 import { ReactFlow, Background, Controls, MiniMap, type Node, type Edge, Handle, Position, MarkerType } from '@xyflow/react';
@@ -257,63 +257,22 @@ function AgentDetailDrawer({
         >
           <Settings className="h-3.5 w-3.5" /> Config
         </button>
-        <button onClick={() => onTerminate(agent.id)} className="flex items-center gap-1 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 ml-auto"><Trash2 className="h-3.5 w-3.5" /> Terminate</button>
+        <button
+          onClick={() => {
+            if (window.confirm(`Delete agent "${agent.name}"? This permanently removes the agent and its history.`)) {
+              onTerminate(agent.id);
+            }
+          }}
+          className="flex items-center gap-1 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 ml-auto"
+        ><Trash2 className="h-3.5 w-3.5" /> Delete</button>
       </div>
     </motion.div>
   );
 }
 
-function OrgChartView({ agents, onSelect }: { readonly agents: Agent[]; readonly onSelect: (id: string) => void }) {
-  if (agents.length === 0) {
-    return <EmptyGraphState />;
-  }
+// OrgChartView removed in Phase 1: node graph is the single canonical view.
 
-  const root = agents[0];
-  const children = agents.slice(1);
-  return (
-    <div className="flex flex-col items-center pt-12 gap-8 animate-fade-in">
-      {root && (
-        <button
-          type="button"
-          onClick={() => onSelect(root.id)}
-          aria-label={`Open ${root.name} details`}
-        >
-          <Card agent={root} isRoot />
-        </button>
-      )}
-      <div className="h-8 w-px bg-border" />
-      <div className="flex gap-6 flex-wrap justify-center">
-        {children.map((agent) => (
-          <div key={agent.id} className="flex flex-col items-center gap-2">
-            <div className="h-6 w-px bg-border" />
-            <button
-              type="button"
-              onClick={() => onSelect(agent.id)}
-              aria-label={`Open ${agent.name} details`}
-            >
-              <Card agent={agent} />
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Card({ agent, isRoot }: { readonly agent: Agent; readonly isRoot?: boolean }) {
-  const qualityScore = agent.qualityScore ?? 0;
-  return (
-    <div className={cn('rounded-lg border bg-card px-4 py-3 hover:border-primary/40 transition-all min-w-[160px]', isRoot ? 'border-primary/30 glow-amber' : 'border-border')}>
-      <div className="flex items-center gap-2 mb-1">
-        <StatusDot status={agent.status} size="sm" />
-        <span className="text-xs font-semibold truncate">{agent.name}</span>
-      </div>
-      <span className="text-micro text-muted-foreground font-mono block mb-1">{agent.model}</span>
-      <p className="text-micro text-muted-foreground truncate mb-1.5">{agent.currentTask}</p>
-      <ConfidenceBar value={qualityScore} bars={5} />
-    </div>
-  );
-}
+// Card component removed alongside OrgChartView (no consumers remain).
 
 export default function HiveGraph() {
   const navigate = useNavigate();
@@ -322,7 +281,7 @@ export default function HiveGraph() {
   const pauseMutation = usePauseAgent();
   const resumeMutation = useResumeAgent();
   const terminateMutation = useTerminateAgent();
-  const [view, setView] = useState<'org' | 'graph'>('graph');
+  // Org chart view removed in Phase 1; node graph is now the single canonical view.
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -359,10 +318,10 @@ export default function HiveGraph() {
   const terminateAgent = useCallback(async (agentId: string) => {
     try {
       await terminateMutation.mutateAsync(agentId);
-      toast.success('Agent terminated');
+      toast.success('Agent deleted');
       setSelectedAgentId((current) => (current === agentId ? null : current));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to terminate agent');
+      toast.error(error instanceof Error ? error.message : 'Failed to delete agent');
     }
   }, [terminateMutation]);
 
@@ -399,13 +358,8 @@ export default function HiveGraph() {
 
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <div className="flex items-center gap-2">
-          <div className="flex rounded-md border border-border bg-surface-2">
-            <button onClick={() => setView('org')} className={cn('px-3 py-1 text-xs rounded-l-md transition-colors', view === 'org' ? 'bg-primary/10 text-primary' : 'text-muted-foreground')}>
-              <LayoutGrid className="h-3.5 w-3.5 inline mr-1" /> Org Chart
-            </button>
-            <button onClick={() => setView('graph')} className={cn('px-3 py-1 text-xs rounded-r-md transition-colors', view === 'graph' ? 'bg-primary/10 text-primary' : 'text-muted-foreground')}>
-              <Network className="h-3.5 w-3.5 inline mr-1" /> Node Graph
-            </button>
+          <div className="flex items-center gap-1 rounded-md border border-border bg-surface-2 px-3 py-1 text-xs text-muted-foreground">
+            <Network className="h-3.5 w-3.5" /> Node Graph
           </div>
           <div className="relative ml-4">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
@@ -436,10 +390,6 @@ export default function HiveGraph() {
       <div className="flex-1 relative overflow-hidden">
         {(() => {
           if (state.agents.length === 0) return <EmptyGraphState />;
-          if (view === 'org') {
-            const orgAgents = visibleAgents.length > 0 ? visibleAgents : state.agents;
-            return <OrgChartView agents={orgAgents} onSelect={setSelectedAgentId} />;
-          }
           return (
             <ReactFlow nodes={nodes} edges={graph.edges} nodeTypes={nodeTypes} fitView
               onNodeClick={(_, node) => setSelectedAgentId(node.id)}
