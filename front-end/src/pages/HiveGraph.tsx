@@ -4,7 +4,7 @@ import { useAgentLineage, useAgentMessages, useDispatchAgentTask, usePauseAgent,
 import type { Agent } from '@/types/domain';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ConfidenceBar } from '@/components/shared/ConfidenceBar';
-import { Network, Search, Lock, Plus, LayoutGrid, X, MessageSquare, Pause, Play, Settings, Trash2, SendHorizontal } from 'lucide-react';
+import { Network, Search, Lock, Plus, X, MessageSquare, Pause, Play, Settings, Trash2, SendHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
 import { ReactFlow, Background, Controls, MiniMap, type Node, type Edge, Handle, Position, MarkerType } from '@xyflow/react';
@@ -329,7 +329,7 @@ export default function HiveGraph() {
   const pauseMutation = usePauseAgent();
   const resumeMutation = useResumeAgent();
   const terminateMutation = useTerminateAgent();
-  const [view, setView] = useState<'org' | 'graph'>('graph');
+  // Org chart view removed in Phase 1; node graph is now the single canonical view.
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -438,10 +438,6 @@ export default function HiveGraph() {
       <div className="flex-1 relative overflow-hidden">
         {(() => {
           if (state.agents.length === 0) return <EmptyGraphState />;
-          if (view === 'org') {
-            const orgAgents = visibleAgents.length > 0 ? visibleAgents : state.agents;
-            return <OrgChartView agents={orgAgents} onSelect={setSelectedAgentId} />;
-          }
           return (
             <ReactFlow nodes={nodes} edges={graph.edges} nodeTypes={nodeTypes} fitView
               onNodeClick={(_, node) => setSelectedAgentId(node.id)}
