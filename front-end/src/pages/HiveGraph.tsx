@@ -379,6 +379,7 @@ export default function HiveGraph() {
             onClick={() => setShowLocks((value) => !value)}
             aria-label={showLocks ? 'Hide locked agent overlay' : 'Show locked agent overlay'}
             aria-pressed={showLocks}
+            title="Toggle file-lock overlay (highlights agents currently holding sandbox file locks)"
             className={cn('rounded-md border p-1 text-muted-foreground hover:text-foreground', showLocks && 'border-primary bg-primary/10 text-primary')}
           >
             <Lock className="h-3.5 w-3.5" />
