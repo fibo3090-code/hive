@@ -1,122 +1,87 @@
+# Hive Fix Plan
 
+Your request covers ~40 distinct issues spanning UI, navigation, onboarding, chat behavior, graph semantics, agent tools, and local-vs-server scoping. Tackling all in one shot would be unsafe (high regression risk, no way to verify each change). I'll batch them into 5 phases. After each phase you confirm before I move on.
 
-# HIVE v6 — Gap Analysis & Polish Plan
+I'll apply the following defaults (override now if wrong):
 
-## What's Missing
+- **Edges in HiveGraph** = both authority + communication (one-way wire = parent→child).
+- **Threads** belong to `(project, agent)` with title = first user task.
+- **Server-only features** stay visible but disabled with a tooltip "Requires Hive central server (not yet available)".
+- **Stats vs Insights** = merge stale Stats sub-tabs into Planning/Insights; delete duplicates.
+- **Imported specs** → roadmap → per-agent task tree (sprint plan in V2).
+- **Unimplemented features**: visible+disabled with badge ("planned" / "server-only"); fully removed only if obsolete.
+- **Terminate agent** → renamed to **Delete agent** (hard delete + confirm).
 
-### 1. Global State — Nothing is Connected
-Every page manages its own isolated `useState`. The TopBar session state (pause/resume), budget, health score, and agent statuses don't sync across pages. Changing something on Dashboard has zero effect on TopBar or Hive Graph.
+## Phase 1 — Cleanup & truthful UI (no new logic)
 
-**Fix**: Create a React Context provider (`HiveContext`) that holds session state, agents, tasks, alerts, and budget. All pages read/write from this shared store. Pausing a session in TopBar pauses agents everywhere. Dismissing an alert on Dashboard removes it from notifications.
+Goal: stop the app from lying. Every button either works or is clearly labeled disabled.
 
-### 2. Missing Modals & Overlays (Spec'd but Not Built)
-- **Wake Report Modal** — "View Wake Report" button on Dashboard `BackgroundSessionCard` just navigates to `/dashboard` (does nothing)
-- **Pre-Session Cost Forecast Modal** — no way to see estimated costs before starting a session
-- **Budget Extension Dialog** — "Extend Budget" alert action just shows a toast, no actual dialog with amount input
-- **Loop Detection Alert Modal** — "Intervene" action just toasts, no modal showing the loop details
-- **Outbound Prompt Warning** — referenced in Settings but no actual modal exists
-- **API Risk Approval Drawer** — referenced in Settings but never built
-- **Blocked Agent Alert** — no detailed view when clicking a blocked agent
-- **Agent Spawn Dialog** — "Spawn Agent" button in Hive Graph has no dialog for configuring the new agent
-- **Delete/Dangerous Action Confirmations** — "Delete All Data" in Settings has no confirmation dialog
+1. Remove orphan Stats sub-tabs (HiveMind, TechDebt, SessionWeekly) now duplicated in Planning. Keep the richer TechDebt editor; move it to Planning.
+2. Move GitHub Connect from Code & Versioning → Settings.
+3. Delete "Org Chart View" toggle in HiveGraph (keep node graph only).
+4. Delete "Lock overlay" button (or wire it — confirm).
+5. Replace fake 3s onboarding launch animation with real init steps (DB migrate ping, search engine probe, sandbox check) or remove it.
+6. Add `<DisabledFeature reason="…">` wrapper component; apply to: template onboarding, import-project onboarding, marketplace agent download, hybrid tier, estimated cost, etc.
+7. Remove hybrid tier from onboarding; force local; add disabled "Cloud" tier card.
+8. Polish Forge buttons (consistent variants, spacing).
+9. Rename "Terminate agent" → "Delete agent".
 
-### 3. Broken or Non-Functional Buttons
-- **Projects page**: clicking any project always goes to `/dashboard` — no project selection/context
-- **Onboarding wizard**: Step selections (scratch/template/import) don't persist across steps; budget slider values don't carry forward; "Interview Mode" chat in Step 3 is static; Plan Review step has no actual launch countdown
-- **Settings**: Every toggle/switch/slider uses `defaultChecked`/`defaultValue` — changes aren't saved anywhere, refreshing loses everything
-- **Settings > Appearance**: Theme toggle (Dark/Light/System) does nothing; accent color picker does nothing
-- **Settings > File Protection**: "Add protected file" button does nothing; delete buttons have no confirmation
-- **Settings > Integrations**: "Connect" buttons do nothing
-- **Settings > Data & Privacy**: "Export" and "Delete" buttons do nothing
-- **Code & Versioning**: File tree clicks don't load file content; PR list items aren't clickable; diff accept/reject buttons are missing
-- **Insights > Session Replay**: Play/pause/speed controls are non-functional; scrubber doesn't work
-- **Insights > Tech Debt**: Kanban cards aren't draggable
-- **Insights > Hive Mind**: No way to add new notes
-- **Spec & Plan > Sprint Plan**: No drag-to-reorder
-- **Spec & Plan > Implementation Status**: No kanban view toggle (only table)
-- **Chat Central**: File attachment button does nothing; @-mention doesn't actually filter agents; no real message sending feedback
-- **Hive Graph**: Right-click context menu not implemented; double-click to message not implemented; "Lock Overlay" toggle shows nothing; agent search doesn't highlight/focus matched nodes
-- **Command Palette**: No preview pane for selected items; selecting an agent doesn't open their detail drawer
+## Phase 2 — Onboarding & Spec→Plan pipeline
 
-### 4. Missing Pages & Features
-- **Agent Forge** — referenced in spec, not built at all (conversation-based agent creation, Blueprint widget cards, DNA Viewer/Editor modal)
-- **Module Marketplace** — Modules page has basic cards but no detail page, no publishing flow, no install confirmation dialog
-- **LLM Router Dashboard** — Settings has a basic routing table but no bandit learning charts, reward/penalty feed, or interactive router visualization
-- **User Profile / Account page** — no way to manage user info
-- **Session History page** — no way to view past sessions (only current)
+10. Merge "Import spec" + "Interview mode" into single chat-style capture step; allow N documents + freeform messages.
+11. Wire describe step → backend spec ingestion → roadmap generation → per-agent task tree.
+12. Connect LLM step: add model picker per provider (list models from provider API).
+13. Configure-resources step: replace "max agents" with "max parallel agents" (queue overflow). Remove cap on total agents. Remove fake estimated cost.
+14. Real launch sequence: provision sandbox dir per project (UUID-scoped to fix shared-folder bug), run migrations, probe search, seed.
 
-### 5. Visual Polish Issues
-- **No loading states** — pages render instantly with no shimmer skeletons or loading indicators
-- **No empty states** — if data were removed, pages would show blank space with no guidance
-- **No error states** — no error boundaries or friendly error messages
-- **No page transitions** — navigating between pages has no animation (just instant swap)
-- **Notification dropdown**: clicking action buttons (Extend Budget, Intervene, Review) just toasts — doesn't navigate or open relevant modals
-- **TopBar health ring and budget bar** are hardcoded values that never update
-- **Sidebar has no collapse/expand** — it's always 48px with no way to see labels
-- **No mobile/responsive layout** — sidebar and 5-column grid break on small screens
-- **Dashboard summary tiles**: sub-text is hardcoded strings, not computed from actual data
-- **Fonts**: Inter and JetBrains Mono may not be loading (not imported in index.html or CSS)
+## Phase 3 — Chat Central rework
 
-### 6. Mock Data Gaps
-- No mock data for: session history, past wake reports, Langfuse trace details, Hive Mind notes content, PR diff content, file contents for code viewer, module detail pages, agent creation templates
-- Activity feed items aren't tied to actual agent/task state
-- Notification actions don't correlate with dashboard alerts
+15. Move thread tabs from top bar → left sidebar grouped by agent (ChatGPT-style: agent name = section header, threads underneath, "+" to start new thread per agent).
+16. Scope threads to `(project_id, agent_id)` — fix cross-project leakage (DB query + index).
+17. Thread title = first user message (truncated), not agent name.
+18. Add delete thread + slash commands (`/compact`, `/clear`, `/help`).
+19. **Streaming behavior**: switch chat runner to interleaved mode — assistant emits text chunks between tool calls, not a single final block. (Requires backend `chat.rs` change: stream `response.text` deltas live via SSE between tool rounds; frontend renders them in order.)
+20. Implement `/compact` (summarize history, replace older messages with summary).
 
----
+## Phase 4 — HiveGraph interactivity & agent comms
 
-## Implementation Plan
+21. Spawn-agent button → opens same modal as Forge create-agent; result is added to graph + Chat Central sidebar.
+22. Wire creation: drag from one agent to another = parent→child authority + comm channel.
+23. Wire deletion: left-click on edge.
+24. Cycle prevention: reject wires that create loops in the directed graph.
+25. Agent visibility rule: parents can message any descendant; children can only message direct parent + their own descendants. Each agent gets a `list_agents` tool returning visible peers.
+26. Wire pause/resume to actual executor state (or disable + tooltip if executor doesn't support yet).
+27. Backend tools: `send_message_to_agent`, `list_visible_agents`, `request_relay` (for child→non-ancestor messages).
 
-### Phase A: Shared State Foundation
-- Create `HiveContext` with providers for: session, agents, tasks, alerts, budget, notifications
-- Migrate TopBar, Dashboard, HiveGraph, ChatCentral, Notifications to use shared context
-- Session pause/resume syncs everywhere; alert dismissals sync; budget updates sync
+## Phase 5 — Hive Mind, missing tools, metrics live updates
 
-### Phase B: Wire Up All Broken Buttons
-- **Projects**: Add project selection context; clicking a project sets active project in context
-- **Onboarding**: Wire step state forwarding; make budget/model selections persist; add launch countdown animation
-- **Settings**: Convert all controls to controlled components with state; add toast confirmations for saves; make theme/accent toggles actually work (CSS variable swaps)
-- **Code & Versioning**: Make file tree clicks show file content; make PRs clickable with detail view; add accept/reject to diff chunks
-- **Chat Central**: Wire file attachment with a mock file picker; implement @-mention autocomplete dropdown; add typing indicator after sending
-- **Hive Graph**: Implement right-click context menu; double-click opens chat with agent; search highlights/focuses nodes; lock overlay renders DLM lock indicators on nodes
-- **Insights**: Wire replay controls; make tech debt cards draggable; add "New Note" to Hive Mind
+28. Hive Mind: add `hive_mind_read`, `hive_mind_write`, `hive_mind_list`, `hive_mind_delete` tools backed by a `hive_notes` table, scoped per project.
+29. Agent management tools: `spawn_agent`, `delete_agent`, `monitor_agent`, `delegate_task`.
+30. Spec/tech-debt/drift tools: `list_spec_docs`, `add_task`, `add_tech_debt`, `update_tech_debt`, `record_drift`.
+31. Git tools for agents: `git_status`, `git_diff`, `git_commit`, `git_pull`, `git_push` (gated by sovereignty tier).
+32. Stats live updates: switch dashboards from polled snapshot to SSE subscription on `cost_event`, `task_event`, `agent_state` channels.
+33. Code & Versioning: real branch list (gitoxide), real working tree from `git status`, real file viewer from `git show :path`, working restore.
 
-### Phase C: Build Missing Modals
-- Wake Report Modal (gate status, cost summary, tasks completed, approve/reject/rollback)
-- Budget Extension Dialog (amount input, new limit preview)
-- Agent Spawn Dialog (name, role, model selection, sovereignty tier)
-- Confirmation dialogs for dangerous actions (delete data, deprecate agent, disconnect integration)
-- Pre-Session Cost Forecast Modal
+## Phase 6 — Cleanup of dead/promised settings & docs
 
-### Phase D: Missing Pages
-- Agent Forge page (or section in Chat Central) with Blueprint cards and DNA Viewer modal
-- Module detail page with install flow, dependency list, layer viewer
-- Session History page accessible from Dashboard
+34. Audit Settings page — remove options with no effect; mark "planned" ones explicitly.
+35. Update `back-end/docs/` and `docs/architecture.md` to reflect: which features are local-only, which need central server, which are pending.
+36. Add a `FEATURE_STATUS.md` table (feature × status × dependency) so this never drifts again.
+37. Command palette: make modular, auto-register routes/commands, add fuzzy search.
 
-### Phase E: Visual Polish
-- Add Google Fonts import for Inter + JetBrains Mono to `index.html`
-- Shimmer loading skeletons for each page section
-- Empty state illustrations with CTAs for every list/grid
-- Error boundary component with friendly messaging
-- Page transition animations (fade + slide)
-- Responsive breakpoints: stack sidebar on mobile, 2-col grid on tablet, 1-col on phone
-- Sidebar collapse/expand with labels on hover or expanded state
-- Compute summary tile values from actual mock data instead of hardcoded strings
+## Risk notes
 
-### Phase F: Expanded Mock Data
-- Session history (3-5 past sessions with timestamps, costs, agent counts)
-- File contents for code viewer (realistic code snippets)
-- PR diff content (actual diff hunks)
-- Hive Mind notes with markdown content
-- Module detail data (dependencies, changelogs, screenshots)
-- Agent templates for Agent Forge
+- Phase 3 #19 (streaming interleave) is the deepest change — touches `hive-runtime/src/chat.rs`, SSE schema, and frontend renderer. I'll do it last in its phase and behind a feature flag first.
+- Phases 4–5 introduce new DB columns/tables → migrations.
+- Backend changes can't be tested in the Lovable preview (Rust runs locally), so I'll rely on `cargo check`/`cargo test` + your manual run.
 
----
+## What I need from you before starting
 
-## Technical Approach
-- `HiveContext` as a single React Context with `useReducer` for predictable state updates
-- All modals built with shadcn `Dialog` / `Drawer` components
-- Page transitions via `framer-motion` `AnimatePresence` wrapping `<Outlet />`
-- Loading skeletons using shadcn `Skeleton` component
-- Responsive layout using Tailwind breakpoints (`sm:`, `md:`, `lg:`)
-- Controlled form components in Settings with local state + toast on change
+Confirm or override:
 
+a) The 7 defaults at the top.
+b) Phase order (1→6) — or reshuffle.
+c) Whether to start Phase 1 immediately and you'll review after each phase, or you want me to draft Phase 1 in more detail first.
+d) Any feature in the list you actually want **deleted entirely** (not disabled): name them.
+
+Once you say "go", I start Phase 1 in the next turn.
