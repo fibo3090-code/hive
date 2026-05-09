@@ -257,7 +257,14 @@ function AgentDetailDrawer({
         >
           <Settings className="h-3.5 w-3.5" /> Config
         </button>
-        <button onClick={() => onTerminate(agent.id)} className="flex items-center gap-1 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 ml-auto"><Trash2 className="h-3.5 w-3.5" /> Terminate</button>
+        <button
+          onClick={() => {
+            if (window.confirm(`Delete agent "${agent.name}"? This permanently removes the agent and its history.`)) {
+              onTerminate(agent.id);
+            }
+          }}
+          className="flex items-center gap-1 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 ml-auto"
+        ><Trash2 className="h-3.5 w-3.5" /> Delete</button>
       </div>
     </motion.div>
   );
@@ -359,10 +366,10 @@ export default function HiveGraph() {
   const terminateAgent = useCallback(async (agentId: string) => {
     try {
       await terminateMutation.mutateAsync(agentId);
-      toast.success('Agent terminated');
+      toast.success('Agent deleted');
       setSelectedAgentId((current) => (current === agentId ? null : current));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to terminate agent');
+      toast.error(error instanceof Error ? error.message : 'Failed to delete agent');
     }
   }, [terminateMutation]);
 
@@ -399,13 +406,8 @@ export default function HiveGraph() {
 
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <div className="flex items-center gap-2">
-          <div className="flex rounded-md border border-border bg-surface-2">
-            <button onClick={() => setView('org')} className={cn('px-3 py-1 text-xs rounded-l-md transition-colors', view === 'org' ? 'bg-primary/10 text-primary' : 'text-muted-foreground')}>
-              <LayoutGrid className="h-3.5 w-3.5 inline mr-1" /> Org Chart
-            </button>
-            <button onClick={() => setView('graph')} className={cn('px-3 py-1 text-xs rounded-r-md transition-colors', view === 'graph' ? 'bg-primary/10 text-primary' : 'text-muted-foreground')}>
-              <Network className="h-3.5 w-3.5 inline mr-1" /> Node Graph
-            </button>
+          <div className="flex items-center gap-1 rounded-md border border-border bg-surface-2 px-3 py-1 text-xs text-muted-foreground">
+            <Network className="h-3.5 w-3.5" /> Node Graph
           </div>
           <div className="relative ml-4">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
