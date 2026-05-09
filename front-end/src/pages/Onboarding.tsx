@@ -190,17 +190,26 @@ function StepSource({
       <p className="text-sm text-muted-foreground">Choose how to initialize your project</p>
       <div className="grid grid-cols-3 gap-4">
         {[
-          { id: 'scratch' as const, icon: FileCode, title: 'From Scratch', desc: 'Start with an empty project' },
-          { id: 'template' as const, icon: Layout, title: 'Template', desc: 'Use a pre-built template' },
-          { id: 'import' as const, icon: Upload, title: 'Import', desc: 'Import existing codebase' },
+          { id: 'scratch' as const, icon: FileCode, title: 'From Scratch', desc: 'Start with an empty project', disabledReason: null },
+          { id: 'template' as const, icon: Layout, title: 'Template', desc: 'Use a pre-built template', disabledReason: 'Requires the Hive central server (not yet available). Coming in a later release.' },
+          { id: 'import' as const, icon: Upload, title: 'Import', desc: 'Import existing codebase', disabledReason: 'Local-only feature, but not yet implemented. Planned for a future release.' },
         ].map((option) => (
           <button
             key={option.id}
-            onClick={() => option.id === 'scratch' ? onSelect(option.id) : undefined}
-            title={option.id !== 'scratch' ? 'Coming Soon' : undefined}
-            className={cn('relative rounded-xl border p-6 text-center transition-all', source === option.id ? 'border-primary bg-primary/5 glow-amber' : 'border-border bg-card', option.id === 'scratch' ? 'hover:border-primary/40 cursor-pointer' : 'opacity-50 cursor-not-allowed')}
+            onClick={() => option.disabledReason ? undefined : onSelect(option.id)}
+            title={option.disabledReason ?? undefined}
+            disabled={option.disabledReason !== null}
+            className={cn(
+              'relative rounded-xl border p-6 text-center transition-all',
+              source === option.id ? 'border-primary bg-primary/5 glow-amber' : 'border-border bg-card',
+              option.disabledReason ? 'opacity-50 cursor-not-allowed' : 'hover:border-primary/40 cursor-pointer',
+            )}
           >
-            {option.id !== 'scratch' && <div className="absolute top-2 right-2 text-[9px] uppercase tracking-wider text-muted-foreground/70 font-semibold">Coming Soon</div>}
+            {option.disabledReason && (
+              <div className="absolute top-2 right-2 text-[9px] uppercase tracking-wider text-muted-foreground/70 font-semibold">
+                {option.id === 'template' ? 'Server-only' : 'Planned'}
+              </div>
+            )}
             <option.icon className={cn('h-8 w-8 mx-auto mb-3', source === option.id ? 'text-primary' : 'text-muted-foreground')} />
             <h3 className="text-sm font-semibold mb-1">{option.title}</h3>
             <p className="text-micro text-muted-foreground">{option.desc}</p>
