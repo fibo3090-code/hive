@@ -272,20 +272,7 @@ function AgentDetailDrawer({
 
 // OrgChartView removed in Phase 1: node graph is the single canonical view.
 
-function Card({ agent, isRoot }: { readonly agent: Agent; readonly isRoot?: boolean }) {
-  const qualityScore = agent.qualityScore ?? 0;
-  return (
-    <div className={cn('rounded-lg border bg-card px-4 py-3 hover:border-primary/40 transition-all min-w-[160px]', isRoot ? 'border-primary/30 glow-amber' : 'border-border')}>
-      <div className="flex items-center gap-2 mb-1">
-        <StatusDot status={agent.status} size="sm" />
-        <span className="text-xs font-semibold truncate">{agent.name}</span>
-      </div>
-      <span className="text-micro text-muted-foreground font-mono block mb-1">{agent.model}</span>
-      <p className="text-micro text-muted-foreground truncate mb-1.5">{agent.currentTask}</p>
-      <ConfidenceBar value={qualityScore} bars={5} />
-    </div>
-  );
-}
+// Card component removed alongside OrgChartView (no consumers remain).
 
 export default function HiveGraph() {
   const navigate = useNavigate();
