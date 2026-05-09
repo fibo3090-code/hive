@@ -796,7 +796,7 @@ export default function ChatCentral() {
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={`Message ${activeThread?.title ?? 'the hive'}… (⌘Enter to send)`}
+            placeholder={`Message ${activeThread?.title ?? 'the hive'}… (⌘Enter to send · /help for commands)`}
             className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none min-h-[36px] max-h-[120px]"
             rows={1}
           />
