@@ -2,10 +2,10 @@ import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ConfidenceBar } from '@/components/shared/ConfidenceBar';
-import type { AgentItem } from '@/types/domain';
+import type { Agent } from '@/types/domain';
 
 interface AgentCardsProps {
-  readonly agents: AgentItem[];
+  readonly agents: Agent[];
   readonly onNavigate: (path: string) => void;
 }
 

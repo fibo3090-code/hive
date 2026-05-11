@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { Bot } from 'lucide-react';
+import { Bot, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { api } from '@/api/client';
 import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
 import { useWorkspace } from '@/context/WorkspaceContext';
-import { estimateAgentCost, type SovereigntyTier } from '@/lib/cost-estimate';
+import { useHiveData } from '@/api/queries/useHiveData';
 
 interface AgentSpawnModalProps {
   readonly open: boolean;
@@ -13,14 +15,18 @@ interface AgentSpawnModalProps {
 }
 
 const roles = ['Frontend', 'Backend', 'Testing', 'Security', 'Documentation', 'DevOps', 'Data'] as const;
-const tiers = ['local', 'hybrid', 'cloud'] as const;
+// Cloud sovereignty tier requires the (not-yet-built) Hive central server; only Local is selectable today.
+const tiers = ['local', 'cloud'] as const;
 
 export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
   const { defaultModel } = useWorkspace();
+  const { activeProject } = useHiveData();
+  const queryClient = useQueryClient();
   const [name, setName] = useState('');
   const [role, setRole] = useState<string>(roles[0]);
   const [model, setModel] = useState<ModelSelection | null>(defaultModel);
-  const [tier, setTier] = useState<string>(tiers[1]);
+  const [tier, setTier] = useState<string>(tiers[0]);
+  const [systemPrompt, setSystemPrompt] = useState('');
 
   useEffect(() => {
     if (open && !model?.modelId && defaultModel?.modelId) {
@@ -28,13 +34,34 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
     }
   }, [defaultModel, model, open]);
 
-  const handleSpawn = () => {
+  const createAgent = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api(`/v1/projects/${activeProject?.id}/agents`, { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agents', activeProject?.id] }),
+  });
+
+  const handleSpawn = async () => {
+    if (!activeProject) { toast.error('No active project'); return; }
     if (!name.trim()) { toast.error('Agent name required'); return; }
     if (!model?.modelId) { toast.error('Select a model'); return; }
-    toast.success(`Agent "${name}" spawned as ${role} on ${model.modelId}`);
-    setName('');
-    setModel(defaultModel);
-    onOpenChange(false);
+    try {
+      await createAgent.mutateAsync({
+        name: name.trim(),
+        role,
+        model: model.modelId,
+        status: 'idle',
+        modelProviderId: model.providerId,
+        modelId: model.modelId,
+        systemPrompt: systemPrompt.trim() || undefined,
+      });
+      toast.success(`Agent "${name.trim()}" spawned as ${role}`);
+      setName('');
+      setSystemPrompt('');
+      setModel(defaultModel);
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to spawn agent');
+    }
   };
 
   return (
@@ -68,37 +95,35 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
           <div>
             <span className="text-xs font-medium mb-1.5 block">Sovereignty Tier</span>
             <div id="agent-tier" className="flex gap-1.5">
-              {tiers.map(t => (
-                <button key={t} onClick={() => setTier(t)} className={cn('rounded-md px-3 py-1.5 text-xs border capitalize transition-colors', tier === t ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground')}>{t}</button>
-              ))}
+              {tiers.map(t => {
+                const disabled = t === 'cloud';
+                return (
+                  <button
+                    key={t}
+                    disabled={disabled}
+                    title={disabled ? 'Requires Hive central server (not yet available)' : undefined}
+                    onClick={() => !disabled && setTier(t)}
+                    className={cn('rounded-md px-3 py-1.5 text-xs border capitalize transition-colors', tier === t ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground', disabled && 'opacity-40 cursor-not-allowed')}
+                  >
+                    {t}{disabled && ' (server-only)'}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
-          {/* Cost estimate — recomputed when the user changes the tier
-              so the numbers actually reflect their choice. */}
-          {(() => {
-            const { usdPerHour, tokensPerHour } = estimateAgentCost(
-              1,
-              tier as SovereigntyTier,
-            );
-            return (
-              <div className="rounded-md border border-border bg-surface-2 p-3 text-xs">
-                <div className="flex justify-between text-muted-foreground mb-1">
-                  <span>Estimated cost/hr</span>
-                  <span className="font-mono">~${usdPerHour.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between text-muted-foreground">
-                  <span>Estimated tokens/hr</span>
-                  <span className="font-mono">~{Math.round(tokensPerHour / 1000)}K</span>
-                </div>
-              </div>
-            );
-          })()}
+          <div>
+            <label htmlFor="agent-system-prompt" className="text-xs font-medium mb-1.5 block">System Prompt <span className="text-muted-foreground font-normal">(optional)</span></label>
+            <textarea id="agent-system-prompt" value={systemPrompt} onChange={e => setSystemPrompt(e.target.value)} placeholder="Extra instructions applied at the start of every turn…" className="w-full h-20 rounded-md border border-border bg-surface-2 p-3 text-xs resize-none scrollbar-thin" />
+          </div>
         </div>
 
         <DialogFooter>
           <button onClick={() => onOpenChange(false)} className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground hover:text-foreground">Cancel</button>
-          <button onClick={handleSpawn} className="rounded-md bg-primary px-4 py-2 text-xs text-primary-foreground hover:bg-primary/90">Spawn Agent</button>
+          <button onClick={handleSpawn} disabled={createAgent.isPending} className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
+            {createAgent.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            Spawn Agent
+          </button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

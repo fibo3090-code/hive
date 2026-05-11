@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useHiveData } from '@/api/queries/useHiveData';
+import type { AlertItem } from '@/types/domain';
 import {
   useActivityFeedData,
   useAgentTokenUsageData,
@@ -43,9 +44,21 @@ export default function Dashboard() {
   const { data: taskDistribution = [] } = useTaskDistributionData(activeProject?.id);
   const { data: agentTokenUsage = [] } = useAgentTokenUsageData(activeProject?.id);
 
-  const budgetTotal = 250;
+  const budgetTotal = state.session.budgetTotal || 250;
   const budgetUsed = state.session.budgetUsed;
-  const healthScore = state.session.healthScore;
+  const healthScore = activeProject?.healthScore ?? 0;
+
+  const TASK_STATUS_COLORS: Record<string, string> = {
+    completed: 'var(--success)',
+    done: 'var(--success)',
+    in_progress: 'var(--primary)',
+    active: 'var(--primary)',
+    pending: 'var(--warning)',
+    queued: 'var(--warning)',
+    blocked: 'var(--destructive)',
+    failed: 'var(--destructive)',
+  };
+  const taskStatusColor = (status: string) => TASK_STATUS_COLORS[status.toLowerCase()] ?? 'var(--muted-foreground)';
 
   const handleToggleTaskStatus = (_id: string, _status: string) => {
     // In a real app, this would be a mutation call
@@ -55,8 +68,14 @@ export default function Dashboard() {
     toast.info(`Alert ${id} dismissed`);
   };
 
-  const handleAlertAction = (alert: any) => {
-    if (alert.actionPath) navigate(alert.actionPath);
+  const handleAlertAction = (alert: AlertItem) => {
+    switch (alert.actionKind) {
+      case 'open_chat': navigate('/chat'); break;
+      case 'open_graph': navigate('/hive-graph'); break;
+      case 'open_settings': navigate('/settings'); break;
+      case 'open_planning': navigate('/planning'); break;
+      default: handleDismissAlert(alert.id);
+    }
   };
 
   return (
@@ -116,9 +135,9 @@ export default function Dashboard() {
               <h3 className="text-sm font-semibold mb-4">Task Distribution</h3>
               <div className="h-[200px] w-full">
                 <PieChart width={200} height={200}>
-                  <Pie data={taskDistribution} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                    {taskDistribution.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
+                  <Pie data={taskDistribution} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="count" nameKey="status">
+                    {taskDistribution.map((entry) => (
+                      <Cell key={`cell-${entry.status}`} fill={taskStatusColor(entry.status)} />
                     ))}
                   </Pie>
                   <Tooltip />

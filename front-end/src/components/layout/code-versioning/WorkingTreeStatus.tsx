@@ -1,5 +1,4 @@
-import { cn } from '@/lib/utils';
-import { FileCode, Plus, Minus, Edit3, Trash2 } from 'lucide-react';
+import { FileCode, Plus, Minus } from 'lucide-react';
 
 interface WorkingTreeStatusProps {
   readonly stagedFiles: number;

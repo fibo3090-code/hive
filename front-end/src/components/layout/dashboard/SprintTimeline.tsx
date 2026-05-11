@@ -1,8 +1,7 @@
-import { useMemo } from 'react';
 import { useSprintsData } from '@/api/queries/useServerData';
 import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
-import { CheckCircle2, Play, Pause, Circle } from 'lucide-react';
+import { CheckCircle2, Play, Pause, Circle, type LucideIcon } from 'lucide-react';
 import type { TaskItem } from '@/types/domain';
 
 type GanttStatus = 'completed' | 'in-progress' | 'blocked' | 'queued';
@@ -53,7 +52,7 @@ export function SprintTimeline({ projectId, tasks: allTasks }: SprintTimelinePro
     blocked: 'bg-destructive/50 border-destructive/40',
     queued: 'bg-muted/40 border-border',
   };
-  const statusIcons: Record<GanttStatus, any> = {
+  const statusIcons: Record<GanttStatus, LucideIcon> = {
     completed: CheckCircle2,
     'in-progress': Play,
     blocked: Pause,

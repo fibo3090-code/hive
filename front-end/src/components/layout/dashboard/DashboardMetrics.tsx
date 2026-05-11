@@ -1,14 +1,14 @@
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import { Heart, DollarSign, FileCheck, TestTube2, Bot } from 'lucide-react';
-import type { AgentItem, ProjectItem } from '@/types/domain';
+import type { Agent, Project } from '@/types/domain';
 
 interface DashboardMetricsProps {
   readonly healthScore: number;
   readonly budgetUsed: number;
   readonly budgetTotal: number;
-  readonly activeProject: ProjectItem | null;
-  readonly agents: AgentItem[];
+  readonly activeProject: Project | null;
+  readonly agents: Agent[];
   readonly onNavigate: (path: string) => void;
 }
 
