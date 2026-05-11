@@ -53,20 +53,6 @@ pub async fn insert(db: &DatabaseConnection, input: NewMessage) -> Result<Model,
     model.insert(db).await
 }
 
-pub async fn append_content(db: &DatabaseConnection, id: &str, chunk: &str) -> Result<(), DbErr> {
-    let existing = Entity::find_by_id(id.to_owned())
-        .one(db)
-        .await?
-        .ok_or(DbErr::RecordNotFound(id.to_owned()))?;
-    let mut combined = existing.content.clone();
-    combined.push_str(chunk);
-    let mut model: ActiveModel = existing.into();
-    model.content = Set(combined);
-    model.updated_at = Set(now_rfc3339());
-    model.update(db).await?;
-    Ok(())
-}
-
 pub async fn finalize(
     db: &DatabaseConnection,
     id: &str,

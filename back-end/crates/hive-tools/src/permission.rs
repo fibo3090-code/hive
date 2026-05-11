@@ -6,10 +6,9 @@
 //! `Deny` (refuse without asking).
 //!
 //! Three default profiles match the OpenCode pattern:
-//!   - `plan`    : everything read-only, only writes inside `.hive/plans/*.md`
-//!   - `build`   : default workshop profile — `ask` for shell.exec / writes
-//!                 outside `src/`
-//!   - `explore` : strictly read-only
+//! - `plan`: everything read-only, only writes inside `.hive/plans/*.md`
+//! - `build`: default workshop profile — `ask` for shell.exec / writes outside `src/`
+//! - `explore`: strictly read-only
 //!
 //! The matrix lives on `ToolContext`. Tools call
 //! `ctx.permissions().decide(class, target)` before performing privileged

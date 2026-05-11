@@ -540,7 +540,9 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     // catalog don't change, which lets provider prompt caching hit. Project
     // memory walks `HIVE.md` from the project's data directory; reminders
     // (live state) go last so the cache prefix survives.
-    let project_root = data_dir.join("projects").join(&project_id);
+    // Must match `hive_api::workspace_dir`: the per-project sandbox/workspace
+    // lives under `<data_dir>/workspaces/<project_id>`, not `projects/`.
+    let project_root = data_dir.join("workspaces").join(&project_id);
     let tool_catalog_block = tool_registry.as_ref().and_then(|r| {
         if r.names().is_empty() {
             None
@@ -660,6 +662,11 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     );
 
     let mut final_answer = String::new();
+    // Whether `final_answer` was already streamed to the SSE bus live (it was,
+    // whenever it comes from a model round). Synthetic fallback messages
+    // (tool-budget / loop-guard / "empty response") are not streamed, so they
+    // still need the post-loop chunk emit.
+    let mut final_answer_was_streamed = true;
     let mut total_tokens_in: u32 = 0;
     let mut total_tokens_out: u32 = 0;
     let mut total_cost: i64 = 0;
@@ -834,6 +841,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                 final_answer = format!(
                     "I stopped after exceeding the per-turn tool-call budget ({MAX_TOTAL_TOOL_CALLS}). Refine the request or adjust the allowed tools."
                 );
+                final_answer_was_streamed = false;
                 finish_reason = Some("tool_call_budget_exceeded".into());
                 halted_for_repeat = true;
                 break;
@@ -847,6 +855,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                     "I stopped because the same `{}` tool call was repeated {} times without making progress. Refine the request or adjust the allowed tools.",
                     invocation.tool, seen
                 );
+                final_answer_was_streamed = false;
                 finish_reason = Some("tool_loop_guard".into());
                 halted_for_repeat = true;
                 break;
@@ -968,15 +977,20 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     }
 
     if final_answer.is_empty() {
-        final_answer = last_non_empty_assistant_text.unwrap_or_else(|| {
-            if rounds_used >= MAX_TOOL_ROUNDS {
-                format!(
-                    "I exhausted the available tool rounds ({MAX_TOOL_ROUNDS}) without producing a final answer."
-                )
-            } else {
-                "The model returned an empty response. This often means the model produced no text and no tool calls — try rephrasing the request, switching models, or checking the provider logs.".to_owned()
+        match last_non_empty_assistant_text {
+            // Narration from an earlier round — already streamed to the bus.
+            Some(text) => final_answer = text,
+            None => {
+                final_answer_was_streamed = false;
+                final_answer = if rounds_used >= MAX_TOOL_ROUNDS {
+                    format!(
+                        "I exhausted the available tool rounds ({MAX_TOOL_ROUNDS}) without producing a final answer."
+                    )
+                } else {
+                    "The model returned an empty response. This often means the model produced no text and no tool calls — try rephrasing the request, switching models, or checking the provider logs.".to_owned()
+                };
             }
-        });
+        }
     }
 
     if !executed_calls.is_empty() {
@@ -985,17 +999,22 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                 .await?;
     }
 
-    for chunk in final_answer.as_bytes().chunks(48) {
-        let delta = String::from_utf8_lossy(chunk).into_owned();
-        chat_messages::append_content(db.conn(), &assistant_message_id, &delta).await?;
-        bus.emit(
-            format!("chat.{thread_id}.token"),
-            json!({
-                "threadId": thread_id,
-                "messageId": assistant_message_id,
-                "delta": delta,
-            }),
-        );
+    // The model's own narration was already streamed to the SSE bus round by
+    // round inside `collect_response`. Only re-stream when `final_answer` is a
+    // synthetic fallback message that nobody has seen yet — otherwise the
+    // client would render the final block twice.
+    if !final_answer_was_streamed {
+        for chunk in final_answer.as_bytes().chunks(48) {
+            let delta = String::from_utf8_lossy(chunk).into_owned();
+            bus.emit(
+                format!("chat.{thread_id}.token"),
+                json!({
+                    "threadId": thread_id,
+                    "messageId": assistant_message_id,
+                    "delta": delta,
+                }),
+            );
+        }
     }
 
     let _ = chat_messages::finalize(

@@ -2016,14 +2016,15 @@ async fn cancel_agent_subtree(
 /// Optional body for `ensure_coordinator`. When `team_mode` is supplied,
 /// the coordinator's tool registry is rewritten to match the requested
 /// stance:
-///   - `true`  → drop direct `web_search`, force delegation via
-///               `spawn_agent` + `message_agent`. Higher-quality
-///               research at the cost of more LLM turns.
-///   - `false` → solo loadout: keep `web_search` + `web_fetch` so the
-///               coordinator can do shallow research itself. Faster
-///               + cheaper, but the spec doc tends to be thinner.
-/// Omit the body entirely (POST `{}`) for the original behaviour:
-/// every tool enabled, no team-mode opinion.
+///
+/// - `true` → drop direct `web_search`, force delegation via `spawn_agent` +
+///   `message_agent`. Higher-quality research at the cost of more LLM turns.
+/// - `false` → solo loadout: keep `web_search` + `web_fetch` so the coordinator
+///   can do shallow research itself. Faster + cheaper, but the spec doc tends to
+///   be thinner.
+///
+/// Omit the body entirely (POST `{}`) for the original behaviour: every tool
+/// enabled, no team-mode opinion.
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct EnsureCoordinatorBody {
@@ -2731,13 +2732,15 @@ struct InsightsRangeQuery {
 fn parse_duration_or(input: Option<&str>, fallback_secs: i64) -> i64 {
     let Some(s) = input else { return fallback_secs };
     let s = s.trim();
-    let (n, unit) = s.split_at(s.len() - 1);
-    let value: i64 = n.parse().unwrap_or(0);
+    let Some(unit) = s.chars().last() else {
+        return fallback_secs;
+    };
+    let value: i64 = s[..s.len() - unit.len_utf8()].parse().unwrap_or(0);
     match unit {
-        "s" => value,
-        "m" => value * 60,
-        "h" => value * 3_600,
-        "d" => value * 86_400,
+        's' => value,
+        'm' => value * 60,
+        'h' => value * 3_600,
+        'd' => value * 86_400,
         _ => fallback_secs,
     }
 }

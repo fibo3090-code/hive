@@ -294,7 +294,7 @@ impl LlmPipelineDeps {
         self.blueprints
             .iter()
             .find(|b| b.id == target_id)
-            .or_else(|| self.blueprints.get(0))
+            .or_else(|| self.blueprints.first())
             .expect("at least one blueprint should exist")
     }
 }
@@ -466,9 +466,9 @@ mod tests {
             .unwrap();
         assert_eq!(apis.len(), 2);
         assert_eq!(apis[0].url, "https://api.github.com/repos");
-        assert_eq!(apis[0].requires_approval, false);
+        assert!(!apis[0].requires_approval);
         assert_eq!(apis[1].url, "https://sketchy-api.com");
-        assert_eq!(apis[1].requires_approval, true);
+        assert!(apis[1].requires_approval);
     }
 
     #[tokio::test]

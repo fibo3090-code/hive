@@ -44,9 +44,7 @@ pub fn context_window_for(kind: ProviderKind, model: &str) -> u64 {
                 1_000_000
             } else if m.contains("gpt-4o") || m.contains("chatgpt-4o") {
                 128_000
-            } else if m.starts_with("o3") || m.starts_with("o4") {
-                200_000
-            } else if m.starts_with("o1") {
+            } else if m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") {
                 200_000
             } else {
                 OPENAI_DEFAULT_CTX
@@ -55,9 +53,8 @@ pub fn context_window_for(kind: ProviderKind, model: &str) -> u64 {
         ProviderKind::Gemini => {
             if m.contains("2.5-pro") || m.contains("2.0-pro") {
                 2_000_000
-            } else if m.contains("flash-lite") {
-                1_000_000
             } else if m.contains("flash") {
+                // covers flash and flash-lite
                 1_000_000
             } else {
                 GEMINI_DEFAULT_CTX

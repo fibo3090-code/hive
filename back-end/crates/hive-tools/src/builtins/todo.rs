@@ -52,7 +52,7 @@ impl TodoTool {
 
     async fn save_state(ctx: &ToolContext, state: &TodoState) -> Result<(), ToolError> {
         let json = serde_json::to_string_pretty(state)
-            .map_err(|e| ToolError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| ToolError::Io(std::io::Error::other(e)))?;
         ctx.sandbox.write(TODO_FILE_PATH, json.as_bytes()).await?;
         Ok(())
     }
