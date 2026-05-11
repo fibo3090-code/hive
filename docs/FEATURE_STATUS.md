@@ -19,8 +19,8 @@ Legend
 | Sovereignty tier: Local | done | local | 0 | Forced default |
 | Sovereignty tier: Cloud | planned | server | — | Disabled card |
 | Sovereignty tier: Hybrid | removed | — | 1 | Removed entirely |
-| Estimated cost | partial | local | — | Heuristic only; will be removed once real cost projection lands |
-| Connect LLMs | done | cloud-llm | 2 | Per-provider model picker partial — only some providers list models live |
+| Estimated cost | removed | — | 1 | Fake heuristic removed from onboarding and the agent-spawn modal; `lib/cost-estimate.ts` deleted. Real cost projection still planned |
+| Connect LLMs | done | cloud-llm | 2 | All four provider clients (`anthropic`/`openai`/`gemini`/`ollama`) implement live `list_models`; the onboarding step shows them per provider |
 | Describe step (interview) | partial | cloud-llm | 3 | Single textarea + spec upload; merged chat-style capture is planned |
 | Describe step (import spec) | partial | local | 3 | Spec text becomes description; not yet decomposed into per-agent task tree |
 | Team mode toggle | partial | cloud-llm | 3 | Persisted; runtime side reads on `/coordinator/converse` |
@@ -53,12 +53,12 @@ Legend
 | Agent detail drawer | done | local | 1 | |
 | Pause / Resume agent | partial | server | 1 | Wired to backend; executor support varies |
 | Delete agent | done | server | 1 | Renamed from "Terminate", added confirm dialog |
-| Spawn agent (modal) | partial | server | 4 | Modal exists; needs alignment with Forge agent builder so config is not stripped down |
+| Spawn agent (modal) | partial | server | 4 | Modal now actually creates the agent (`POST /v1/projects/:id/agents`) with name/role/model/provider/system-prompt; hybrid tier removed, Cloud tier disabled. Still thinner than the Forge `AgentConfigDialog` (no tool allowlist) |
 | Wires (parent→child authority + comm) | planned | server | 4 | Visual edges exist; semantic graph + cycle prevention not implemented |
 | Wire creation by drag | planned | local | 4 | |
 | Wire deletion (left-click) | planned | local | 4 | |
 | Cycle prevention | planned | local | 4 | |
-| Lock-overlay toggle | done | server | 1 | Shows agents holding sandbox file locks (often empty) |
+| Lock-overlay toggle | mock | server | 1 | Toggle renders, but the locked-agent set in `HiveGraph.tsx` is a hardcoded empty `Set` — the runtime doesn't expose held sandbox locks yet, so the overlay is always empty |
 | Filters (status) | done | local | 1 | |
 | Search | done | local | 1 | |
 
@@ -89,11 +89,12 @@ Legend
 | Feature | Status | Dep | Phase | Notes |
 |---|---|---|---|---|
 | GitHub Connect | done | git-remote | 1 | Lives in **Settings → GitHub Sync** (not under Code & Versioning) |
-| Branch selector | mock | git-remote | 5 | UI exists; cannot actually switch branches |
-| Working tree status | mock | local | 5 | Folders clickable but state not refreshed from `git status` |
-| File viewer | mock | local | 5 | No real file content yet |
-| Restore | mock | local | 5 | No-op until file viewer is wired |
-| Refresh button | partial | local | 5 | Refetches list; underlying data still mocked |
+| Branch selector | done | local | 5 | Lists real branches (`GET …/git/branches`), checkout via `POST …/git/checkout` |
+| Working tree status | done | local | 5 | File list comes from `GET …/git/status`; stage toggles are client-side until commit |
+| File viewer | done | local | 5 | Read-only Monaco viewer fed by `GET …/git/file`; language inferred from extension |
+| Restore | done | local | 5 | "Discard" reverts unstaged files via `POST …/git/restore` |
+| Refresh button | done | local | 5 | Refetches status + branches + open file |
+| Push / pull from this page | planned | git-remote | — | No `git push`/`git pull` endpoint yet; remote sync goes through Settings → GitHub Sync |
 
 ## Hive Mind & Agent Tools (backend `hive-tools`)
 
@@ -102,7 +103,7 @@ Legend
 | `fs_read` / `fs_write` | done | local | 0 | |
 | `shell_exec` | done | local | 0 | |
 | `web_search` | done | server | 0 | |
-| `todo_*` | done | local | 0 | |
+| `todo` | done | local | 0 | Single tool with `action` ∈ {add, complete, remove, list} over `.hive/todo.json`. Not the richer `todo_create`/`todo_update`/… surface sketched in `back-end/docs/TODO_TOOL_SPEC.md` (still a design sketch) |
 | `hive_mind_read` / `_write` / `_list` / `_delete` | planned | local | 5 | Backed by `hive_notes` table (table exists) |
 | `send_message_to_agent` | planned | local | 4 | A2A messaging |
 | `list_visible_agents` | planned | local | 4 | Respects wire-derived visibility |
@@ -130,7 +131,7 @@ Legend
 | GitHub Sync | done | git-remote | 1 | Correctly placed here |
 | Sovereignty | partial | local | 1 | Cloud option visible-but-disabled |
 | Notifications | partial | local | 1 | Channel toggles work; central server delivery planned |
-| Audit log export | mock | local | 6 | UI present, no exporter yet |
+| Audit log export | planned | local | 6 | No export UI exists yet (only an "Audit Log Retention" dropdown that has no backend effect) |
 
 ## Command Palette
 
@@ -157,3 +158,6 @@ The following will stay disabled with a tooltip until the central server exists:
 - Hybrid sovereignty tier (replaced by Local + Cloud only)
 - Org Chart view in HiveGraph (Node graph is canonical)
 - Duplicate Hive Mind / Tech Debt / Session Weekly sub-tabs under Stats (canonical home is Planning)
+- Fake "estimated cost" heuristic (`front-end/src/lib/cost-estimate.ts`) — removed from onboarding and the agent-spawn modal
+- Mock Code & Versioning fixtures — replaced with the real `git/*` endpoints
+- Dead UI: `Index.tsx`, `CostForecastModal`, `BudgetExtensionModal`, `WakeReportModal`

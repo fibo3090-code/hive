@@ -28,10 +28,9 @@ UI has something to render. To wipe state, delete `~/.hive/` and rerun.
 
 | Path | Purpose |
 |---|---|
-| `back-end/` | Cargo workspace: `hive-api`, `hive-db`, `hive-runtime`, `hive-llm`, `hive-tools`, `hive-sandbox`, `hive-search`, `hive-git`, `hive-crypto` |
+| `back-end/` | Cargo workspace: `hive-api`, `hive-db`, `hive-domain`, `hive-runtime`, `hive-llm`, `hive-tools`, `hive-sandbox`, `hive-search`, `hive-git`, `hive-crypto`, `hive-seed` |
 | `front-end/` | React + TypeScript SPA (TanStack Query, shadcn/ui, Tailwind) |
-| `infra/` | `dev-compose.yml` for the optional Ollama + SearxNG sidecars |
-| `docs/` | Architecture, runbook, and contribution notes |
+| `docs/` | Architecture notes and the feature-status matrix |
 
 ## Configuration
 
@@ -58,5 +57,4 @@ just audit      # cargo audit + npm audit
 - [`back-end/README.md`](back-end/README.md) — Rust-side details.
 - [`front-end/README.md`](front-end/README.md) — frontend-side details.
 - [`docs/architecture.md`](docs/architecture.md) — agent loop, sandbox, SSE taxonomy.
-- [`docs/runbook.md`](docs/runbook.md) — on-call playbook.
-- [`docs/contributing.md`](docs/contributing.md) — branch + commit conventions.
+- [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) — what's done / partial / mock / planned.

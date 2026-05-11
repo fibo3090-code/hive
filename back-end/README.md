@@ -132,19 +132,17 @@ cargo fmt --check
 ```
 hive-code/back-end/
 ├── crates/
-│   ├── hive-api/           # REST API and main server
-│   │   └── src/
-│   ├── hive-domain/        # Business logic and domain models
-│   │   └── src/
-│   ├── hive-db/            # Database models and queries
-│   │   ├── migration/       # Database migrations
-│   │   └── src/
+│   ├── hive-api/           # Axum HTTP/SSE server, route handlers, AppState wiring
+│   ├── hive-domain/        # Shared domain types (thin today; will grow)
+│   ├── hive-db/            # SeaORM entities, repos, migrations (under migration/)
+│   ├── hive-runtime/       # Per-agent executor, chat turn driver, event bus, schema validator
+│   ├── hive-tools/         # Built-in tools (fs_*, shell_exec, todo, web_fetch, web_search)
+│   ├── hive-sandbox/       # LocalFsSandbox (path-escape protection, env-scrubbed exec)
+│   ├── hive-search/        # Tavily + SearxNG providers behind a SearchProvider trait
+│   ├── hive-git/           # git2 wrapper + optional octocrab for GitHub PRs
 │   ├── hive-crypto/        # ChaCha20-Poly1305 AEAD for secrets at rest
-│   │   └── src/
 │   ├── hive-llm/           # LLM provider clients (Anthropic/OpenAI/Gemini/Ollama)
-│   │   └── src/
-│   └── hive-seed/          # Database seeding utilities
-│       └── src/
+│   └── hive-seed/          # Demo project + agent seeding for an empty DB
 ├── config/
 │   ├── default.toml        # Default configuration
 │   └── local.example.toml   # Example local configuration
@@ -171,14 +169,35 @@ Main REST API server built with Axum. Contains:
 - Route handlers
 - Request/response models
 - Middleware configuration
-- CORS setup
+- CORS setup (restricted to the dev Vite origins; never permissive)
+- The shared SSE event bus
 
 ### hive-domain
-Core business logic and domain models:
-- Business rules
-- Domain entities
-- Service layer
-- Error types
+Shared domain types — currently a thin layer of plain structs/enums (it does
+not yet contain a service layer; that lives in `hive-api` handlers + `hive-db`
+repos).
+
+### hive-runtime
+Per-agent executor (`AgentExecutor`), the streaming chat turn driver
+(`run_turn`), the `EventBus`, the tool-call schema validator, the agent
+registry, and the `spawn_agent` / `message_agent` coordination tools.
+
+### hive-tools
+Built-in tools shipped with the runtime: `fs_read`, `fs_write`, `fs_list`,
+`shell_exec`, `todo`, `web_fetch`, and `web_search` (search needs a provider).
+Each tool has a JSON Schema manifest and runs through a per-tool timeout
+wrapper.
+
+### hive-sandbox
+`LocalFsSandbox`: two-layer path-escape protection (string-level `..`/absolute
+reject, then FS canonicalisation + root-prefix re-check), symlink-safe, and
+`env_clear()`-then-allowlist exec. A Docker variant is planned.
+
+### hive-search
+Tavily and SearxNG providers behind a `SearchProvider` trait.
+
+### hive-git
+`git2` wrapper plus optional `octocrab` for GitHub PRs.
 
 ### hive-db
 Database layer with SeaORM:
@@ -243,9 +262,9 @@ DATABASE_URL=postgresql://user:password@localhost:5432/hive
 
 ## API Documentation
 
-OpenAPI documentation is available at:
-- `http://localhost:3000/swagger-ui/` (if Swagger UI is configured)
-- `openapi/openapi.json` - Raw OpenAPI spec
+The server serves its OpenAPI document at `GET /v1/openapi.json` (no bundled
+Swagger UI). A static copy lives at `openapi/openapi.json`. The server binds
+`127.0.0.1:8787` by default (`HIVE_BIND`).
 
 ### Common Endpoints
 
@@ -253,11 +272,11 @@ Refer to individual handler files in `hive-api/src/` for endpoint definitions.
 
 ## Deployment
 
-### Docker Build (if Dockerfile exists)
+### Docker Build (no Dockerfile is shipped yet)
 
 ```bash
 docker build -t hive-backend .
-docker run -p 3000:3000 hive-backend
+docker run -p 8787:8787 hive-backend
 ```
 
 ### Binary Distribution

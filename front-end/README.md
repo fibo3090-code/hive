@@ -1,6 +1,6 @@
 # Hive Frontend
 
-A modern, feature-rich React TypeScript application built with Vite and Bun, providing a comprehensive dashboard and management interface for project coordination, agent orchestration, and real-time pro monitoring.
+A React + TypeScript single-page app built with Vite, providing a dashboard and management interface for project coordination, agent orchestration, and real-time monitoring. Tooling is plain npm (no Bun required).
 
 ## Overview
 
@@ -24,117 +24,79 @@ Hive Frontend is a powerful web application designed for managing complex projec
 
 ## Tech Stack
 
-- **Framework**: React 18+ with TypeScript
-- **Build Tool**: Vite
-- **Package Manager**: Bun
-- **Styling**: Tailwind CSS
-- **UI Components**: Custom component library
+- **Framework**: React 18 with TypeScript
+- **Build Tool**: Vite 5 (`@vitejs/plugin-react-swc`)
+- **Package Manager**: npm
+- **Styling**: Tailwind CSS + shadcn/ui (Radix primitives)
+- **Data**: TanStack Query
 - **Real-time**: Server-Sent Events (SSE)
-- **Testing**: Vitest + Playwright
+- **Testing**: Vitest (Playwright is installed but not yet wired to an npm script)
 - **Linting**: ESLint
 
 ## Prerequisites
 
-- Node.js 18+ (or Bun 1.0+)
-- Bun package manager (recommended)
+- Node.js 18+ (Node 22 is what CI uses)
+- npm
 
 ## Installation
 
-1. **Clone the repository:**
-   ```bash
-   git clone <repository-url>
-   cd hive/hive-code/front-end
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   bun install
-   ```
-
-3. **Configure environment variables:**
-   ```bash
-   cp .env.example .env.local
-   ```
-   Edit `.env.local` with your API endpoint and configuration.
+1. **Clone the repository** and `cd` into `front-end/`.
+2. **Install dependencies:** `npm install` (or run `npm install` at the repo root, which installs both halves).
+3. **Configure environment:** `cp .env.example .env` and edit if your backend is not on `127.0.0.1:8787`.
 
 ## Development
 
-### Start Development Server
-
 ```bash
-bun run dev
+npm run dev        # Vite dev server on http://localhost:8080
+npm run build      # production build into dist/
+npm run build:dev  # build with mode=development
+npm run preview     # preview the production build
+npm run lint       # ESLint
+npm run typecheck  # tsc --noEmit
+npm run test       # Vitest (one-shot)
+npm run test:watch # Vitest (watch)
 ```
 
-The application will be available at `http://localhost:8080` (configured in `vite.config.ts`). The dev server expects the backend on `VITE_API_BASE_URL` (default `http://127.0.0.1:8787`); see `.env.example`.
-
-### Build for Production
-
-```bash
-bun run build
-```
-
-### Preview Production Build
-
-```bash
-bun run preview
-```
-
-### Linting & Code Quality
-
-```bash
-bun run lint          # Run ESLint
-bun run lint:fix      # Fix ESLint issues
-```
-
-### Testing
-
-```bash
-bun run test          # Run unit tests
-bun run test:ui       # Run tests with UI
-bun run test:coverage # Generate coverage report
-```
-
-### E2E Testing
-
-```bash
-bun run test:e2e      # Run Playwright tests
-bun run test:e2e:ui   # Run E2E tests with UI
-```
+The dev server expects the backend on `VITE_API_BASE_URL` (default `http://127.0.0.1:8787`); see `.env.example`.
 
 ## Project Structure
 
 ```
 src/
-├── api/                 # API client and queries
-│   ├── client.ts
-│   ├── llm.ts           # LLM provider hooks (useLlmProviders, useProviderModels, etc.)
-│   ├── generated.ts     # Auto-generated API types
-│   └── queries/
-├── components/          # React components
-│   ├── layout/          # Layout components (AppLayout, Sidebar, TopBar)
-│   ├── modals/          # Modal dialogs (AgentSpawnModal, ...)
-│   ├── shared/          # Shared UI components (ModelPicker, ...)
-│   └── ui/              # Reusable UI elements
-├── context/             # React context providers
-├── hooks/               # Custom React hooks
-├── lib/                 # Utility functions
-├── pages/               # Page components
-├── realtime/            # Server-Sent Events integration
-├── test/                # Test utilities and fixtures
-└── types/               # TypeScript type definitions
+├── api/                 # API client + per-domain hooks (agents, chat, git, llm, …)
+│   ├── client.ts        # fetch wrapper + base URL + SSE URL helper
+│   ├── generated.ts     # hand-maintained TypeScript mirror of the OpenAPI schemas
+│   └── queries/         # cross-cutting TanStack Query hooks (useHiveData, useServerData)
+├── components/
+│   ├── layout/          # AppLayout, TopBar, HiveSidebar, page-specific panels
+│   ├── modals/          # Dialogs (AgentSpawnModal, AgentConfigDialog, …)
+│   ├── shared/          # ModelPicker, EmptyState, badges, …
+│   └── ui/              # shadcn/ui primitives
+├── context/             # React context providers (WorkspaceContext)
+├── hooks/               # Custom hooks
+├── lib/                 # Utilities
+├── pages/               # Route components
+├── realtime/            # useSse — Server-Sent Events
+└── types/               # domain.ts — re-exports of generated schema types
 ```
+
+> `src/api/generated.ts` is **not** auto-generated by a codegen step today; it's a
+> hand-maintained mirror of the backend OpenAPI schemas. Keep it in sync by hand
+> when the API changes.
 
 ## Pages
 
-- **Dashboard** - Main overview and metrics
-- **Projects** - Project listing and management
-- **Modules** - Module catalog and dependencies
-- **AgentForge** - AI agent creation and configuration
-- **ChatCentral** - Communication interface
-- **SessionHistory** - Historical session data
-- **Insights** - Analytics and reporting
-- **Settings → LLM Providers** - Manage API keys (encrypted server-side), base URLs, and connection tests for each provider
-- **Settings → General → Default Model** - Choose the provider/model pre-selected when spawning a new agent
+Canonical routes: **Projects** (`/`), **Onboarding**, **Dashboard**, **HiveGraph**,
+**ChatCentral**, **CodeVersioning**, **Stats**, **Planning**, **Forge**
+(Skills / Modules / Connectors / Agents tabs), **Settings**, **SessionHistory**.
+
+`/insights → /stats`, `/spec → /planning`, `/modules → /forge?tab=modules`,
+`/agent-forge → /forge?tab=agents` are redirects. The old `SpecPlan`, `Modules`,
+`ModuleDetail`, and `AgentForge` page components are still mounted at `*-legacy`
+routes pending removal — prefer the canonical pages.
+
+Settings has sub-sections including **LLM Providers** (encrypted API keys, base
+URLs, connection tests), **Default Model**, **GitHub Sync**, and **Tools & Sandbox**.
 
 ## LLM Providers
 
@@ -146,19 +108,15 @@ The backend exposes four provider slots out of the box: **Anthropic**, **OpenAI*
 - `useTestProvider()` — live connection test
 
 The `<ModelPicker />` component in `components/shared/` is the single entry point for picking a provider + model; it auto-selects the first connected provider and its first model, and shows a friendly empty state when no providers are connected.
-- **Settings** - Application configuration
-- **CodeVersioning** - Version control interface
-- **SpecPlan** - Specification and planning
-- **HiveGraph** - Visual system representation
-- **Onboarding** - Initial setup workflow
 
 ## API Integration
 
 The frontend communicates with the backend API. API calls are managed through:
 
-- **Client**: `src/api/client.ts` - HTTP client configuration
-- **Queries**: `src/api/queries/` - React hooks for data fetching and caching
-- **Types**: `src/api/generated.ts` - Auto-generated TypeScript types from OpenAPI spec
+- **Client**: `src/api/client.ts` — fetch wrapper, base URL, SSE URL helper
+- **Per-domain hooks**: `src/api/*.ts` (e.g. `agents.ts`, `chat.ts`, `git.ts`, `llm.ts`, `tools.ts`)
+- **Cross-cutting queries**: `src/api/queries/` — `useHiveData`, `useServerData`
+- **Types**: `src/api/generated.ts` — hand-maintained mirror of the OpenAPI schemas; re-exported via `src/types/domain.ts`
 
 ## Real-time Updates
 
@@ -167,26 +125,21 @@ Real-time data is synchronized using Server-Sent Events (SSE) configured in:
 
 ## Environment Variables
 
-Required environment variables (see `.env.example`):
+See `.env.example`. The only variable today:
 
 ```
-VITE_API_URL=http://127.0.0.1:8787  # Backend API URL
-VITE_API_WS_URL=ws://127.0.0.1:8787 # WebSocket URL (if applicable)
+VITE_API_BASE_URL=http://127.0.0.1:8787  # Backend API + SSE base URL
 ```
 
 ## Building & Deployment
 
-### Development Build
 ```bash
-bun run build
+npm run build       # production build into dist/
+npm run build:dev   # build with mode=development
 ```
 
-### Production Build
-```bash
-bun run build
-```
-
-The built files are in the `dist/` directory and ready for deployment.
+The built files are in the `dist/` directory and ready for deployment. (The repo
+root `npm run build` also runs `scripts/sync-dist.mjs` after the Vite build.)
 
 ## Best Practices
 
@@ -194,26 +147,24 @@ The built files are in the `dist/` directory and ready for deployment.
 - Follow the existing component structure
 - Keep components focused and reusable
 - Use custom hooks for shared logic
-- Write tests for critical features
-- Follow ESLint and Prettier configurations
+- Run `npm run typecheck` and `npm run lint` before committing
 
 ## Troubleshooting
 
 ### Port already in use
 ```bash
-# Change the default port
-bun run dev -- --port 5174
+npm run dev -- --port 5174
 ```
 
 ### Build errors
 ```bash
-bun run clean
-bun install
-bun run build
+rm -rf node_modules dist
+npm install
+npm run build
 ```
 
 ### API connection issues
-- Check that `VITE_API_URL` is correctly configured
+- Check that `VITE_API_BASE_URL` is correctly configured
 - Verify the backend is running
 - Check browser console for CORS errors
 
