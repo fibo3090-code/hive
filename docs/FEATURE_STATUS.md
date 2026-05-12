@@ -36,7 +36,7 @@ Legend
 | Per-project thread scoping | done | local | 3 | Threads filtered by `projectId` |
 | Delete thread | done | local | 3 | Trash icon on hover |
 | Slash commands `/help /clear /new /model` | done | local | 3 | Implemented client-side |
-| Slash command `/compact` | mock | server | 3 | Toast warning; needs runtime summarization endpoint |
+| Slash command `/compact` | done | cloud-llm | 3 | `POST /v1/chat-threads/:id/compact` — summarises older messages into a synthetic `system` message via the configured cheap model (mechanical fallback if no LLM is reachable) |
 | Streaming text **interleaved** with tool calls | planned | server | 3 | Backend currently emits text only after all tool rounds complete; `chat.rs` needs to flush `response.text` deltas between rounds |
 | Mention agent with `@name` | done | local | 1 | Routes message into that agent's thread |
 | Model picker per-message override | done | cloud-llm | 1 | |
@@ -138,9 +138,9 @@ Legend
 | Feature | Status | Dep | Phase | Notes |
 |---|---|---|---|---|
 | Open with `⌘K` | done | local | 1 | |
-| Hard-coded routes | partial | local | 6 | Modular auto-registration planned (commands should subscribe themselves) |
-| Fuzzy search | partial | local | 6 | Substring match only today |
-| Action commands (spawn agent, new thread, …) | planned | local | 6 | |
+| Routes | done | local | 6 | Static list, but routes are correct (no more stale `/insights` / `/spec` / `/modules`). Self-registration by feature modules still planned |
+| Fuzzy search | done | local | 6 | Subsequence matching with scoring (contiguous runs + word starts weighted) |
+| Action commands | partial | local | 6 | New project / new thread / connect-LLM navigations; agent-spawn-from-palette still planned |
 
 ---
 
