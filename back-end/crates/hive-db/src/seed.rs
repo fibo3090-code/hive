@@ -252,7 +252,7 @@ async fn ensure_agents(
 
         agents::update(
             db,
-            "demo",
+            project_id,
             &created.id,
             UpdateAgent {
                 slug: None,

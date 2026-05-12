@@ -863,7 +863,7 @@ function DataPrivacySection({ draft, patch }: { readonly draft: SettingsState; r
       if (!result.ok) throw new Error(`Delete failed (${result.status})`);
       toast.success('Project deleted');
       setDeleteOpen(false);
-      navigate('/projects');
+      navigate('/');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Delete failed');
     }

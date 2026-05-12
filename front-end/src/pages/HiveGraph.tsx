@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useHiveData } from '@/api/queries/useHiveData';
-import { useAgentLineage, useAgentMessages, useDispatchAgentTask, usePauseAgent, useResumeAgent, useTerminateAgent } from '@/api/agents';
+import { useAgentLineage, useAgentMessages, useDispatchAgentTask, usePauseAgent, useResumeAgent, useTerminateAgent, useWires, useCreateWire, useDeleteWire, type AgentWire } from '@/api/agents';
 import type { Agent } from '@/types/domain';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ConfidenceBar } from '@/components/shared/ConfidenceBar';
 import { Network, Search, Lock, Plus, X, MessageSquare, Pause, Play, Settings, Trash2, SendHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
-import { ReactFlow, Background, Controls, MiniMap, type Node, type Edge, Handle, Position, MarkerType } from '@xyflow/react';
+import { ReactFlow, Background, Controls, MiniMap, type Node, type Edge, type Connection, Handle, Position, MarkerType } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -32,7 +32,7 @@ type AgentNodeData = {
   onTogglePause: (agent: Agent) => void;
 };
 
-function buildGraph(agents: Agent[]): { nodes: Node[]; edges: Edge[] } {
+function buildGraph(agents: Agent[], wires: AgentWire[]): { nodes: Node[]; edges: Edge[] } {
   if (agents.length === 0) {
     return { nodes: [], edges: [] };
   }
@@ -41,27 +41,53 @@ function buildGraph(agents: Agent[]): { nodes: Node[]; edges: Edge[] } {
   dagreGraph.setDefaultEdgeLabel(() => ({}));
   dagreGraph.setGraph({ rankdir: 'TB', nodesep: 100, ranksep: 180 });
 
+  const agentIds = new Set(agents.map((a) => a.id));
   agents.forEach((agent) => {
     dagreGraph.setNode(agent.id, { width: 210, height: 160 });
   });
 
   const edges: Edge[] = [];
+  const wirePairs = new Set<string>();
+  const layoutPairs = new Set<string>();
+  const childStatus = new Map(agents.map((a) => [a.id, a.status]));
+
+  // Wire edges — the canonical authority/comm graph. Deletable (id = wire-<id>).
+  wires.forEach((w) => {
+    if (!agentIds.has(w.parentAgentId) || !agentIds.has(w.childAgentId)) return;
+    wirePairs.add(`${w.parentAgentId}->${w.childAgentId}`);
+    edges.push({
+      id: `wire-${w.id}`,
+      source: w.parentAgentId,
+      target: w.childAgentId,
+      animated: childStatus.get(w.childAgentId) === 'working',
+      style: { stroke: 'hsl(var(--primary))', strokeWidth: 1.5 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--primary))' },
+      data: { kind: 'wire' },
+    });
+    const key = `${w.parentAgentId}|${w.childAgentId}`;
+    if (!layoutPairs.has(key)) { dagreGraph.setEdge(w.parentAgentId, w.childAgentId); layoutPairs.add(key); }
+  });
+
+  // Spawn-lineage edges that aren't already represented by a wire (legacy data).
   agents.forEach((agent) => {
-    if (agent.parentAgentId && agents.some((a) => a.id === agent.parentAgentId)) {
-      edges.push({
-        id: `edge-${agent.parentAgentId}-${agent.id}`,
-        source: agent.parentAgentId,
-        target: agent.id,
-        animated: agent.status === 'working',
-        style: { stroke: 'hsl(var(--border))' },
-        markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--border))' },
-      });
-      dagreGraph.setEdge(agent.parentAgentId, agent.id);
-    }
+    if (!agent.parentAgentId || !agentIds.has(agent.parentAgentId)) return;
+    if (wirePairs.has(`${agent.parentAgentId}->${agent.id}`)) return;
+    edges.push({
+      id: `lineage-${agent.parentAgentId}-${agent.id}`,
+      source: agent.parentAgentId,
+      target: agent.id,
+      animated: agent.status === 'working',
+      style: { stroke: 'hsl(var(--border))', strokeDasharray: '4 3' },
+      markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--border))' },
+      data: { kind: 'lineage' },
+    });
+    const key = `${agent.parentAgentId}|${agent.id}`;
+    if (!layoutPairs.has(key)) { dagreGraph.setEdge(agent.parentAgentId, agent.id); layoutPairs.add(key); }
   });
 
   dagre.layout(dagreGraph);
 
+  const wiredChildIds = new Set(wires.map((w) => w.childAgentId));
   const nodes: Node[] = agents.map((agent) => {
     const nodePos = dagreGraph.node(agent.id);
     return {
@@ -71,7 +97,7 @@ function buildGraph(agents: Agent[]): { nodes: Node[]; edges: Edge[] } {
         x: nodePos.x - 105,
         y: nodePos.y - 80,
       },
-      data: { agent, isRoot: !agent.parentAgentId },
+      data: { agent, isRoot: !agent.parentAgentId && !wiredChildIds.has(agent.id) },
     };
   });
 
@@ -276,11 +302,15 @@ function AgentDetailDrawer({
 
 export default function HiveGraph() {
   const navigate = useNavigate();
-  const { state } = useHiveData();
+  const { state, activeProject } = useHiveData();
+  const projectId = activeProject?.id ?? null;
   const { setChatTargetAgentId, graphFocusAgentId, setGraphFocusAgentId } = useWorkspace();
   const pauseMutation = usePauseAgent();
   const resumeMutation = useResumeAgent();
   const terminateMutation = useTerminateAgent();
+  const wiresQuery = useWires(projectId);
+  const createWireMutation = useCreateWire(projectId);
+  const deleteWireMutation = useDeleteWire(projectId);
   // Org chart view removed in Phase 1; node graph is now the single canonical view.
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
@@ -288,7 +318,32 @@ export default function HiveGraph() {
   const [showLocks, setShowLocks] = useState(false);
   const [spawnModalOpen, setSpawnModalOpen] = useState(false);
   const [configAgent, setConfigAgent] = useState<Agent | null>(null);
-  const graph = useMemo(() => buildGraph(state.agents), [state.agents]);
+  const wires = useMemo(() => wiresQuery.data ?? [], [wiresQuery.data]);
+  const graph = useMemo(() => buildGraph(state.agents, wires), [state.agents, wires]);
+
+  const onConnect = useCallback((conn: Connection) => {
+    if (!conn.source || !conn.target || conn.source === conn.target) return;
+    createWireMutation.mutate(
+      { parentAgentId: conn.source, childAgentId: conn.target },
+      {
+        onSuccess: () => toast.success('Wire created'),
+        onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not create wire'),
+      },
+    );
+  }, [createWireMutation]);
+
+  const onEdgeClick = useCallback((_evt: unknown, edge: Edge) => {
+    if (!edge.id.startsWith('wire-')) {
+      toast.info('That edge comes from the spawn lineage — wire it explicitly to manage it.');
+      return;
+    }
+    const wireId = edge.id.slice('wire-'.length);
+    if (!window.confirm('Delete this wire?')) return;
+    deleteWireMutation.mutate(wireId, {
+      onSuccess: () => toast.success('Wire removed'),
+      onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not remove wire'),
+    });
+  }, [deleteWireMutation]);
 
   useEffect(() => {
     if (graphFocusAgentId) {
@@ -395,6 +450,8 @@ export default function HiveGraph() {
             <ReactFlow nodes={nodes} edges={graph.edges} nodeTypes={nodeTypes} fitView
               onNodeClick={(_, node) => setSelectedAgentId(node.id)}
               onNodeDoubleClick={(_, node) => { setChatTargetAgentId(node.id); navigate('/chat'); }}
+              onConnect={onConnect}
+              onEdgeClick={onEdgeClick}
               proOptions={{ hideAttribution: true }} className="bg-background">
               <Background gap={24} size={1} color="hsl(var(--border))" />
               <Controls className="!bg-card !border-border !rounded-md [&>button]:!bg-card [&>button]:!border-border [&>button]:!text-foreground [&>button:hover]:!bg-surface-2" />

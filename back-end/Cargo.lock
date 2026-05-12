@@ -1135,6 +1135,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "hive-db",
+ "hive-git",
  "hive-llm",
  "hive-search",
  "hive-tools",

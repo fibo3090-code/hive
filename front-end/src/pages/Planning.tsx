@@ -142,12 +142,13 @@ function SpecDocumentTab() {
 // ─── Skill Sprint tab ──────────────────────────────────────────────────
 
 function SkillSprintTab() {
-  const { activeProject } = useHiveData();
+  const { activeProject, createTask } = useHiveData();
   const activeProjectId = activeProject?.id ?? null;
   const assignments = useAssignments(activeProjectId);
   const [creatingTask, setCreatingTask] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskAgent, setNewTaskAgent] = useState('');
+  const [savingTask, setSavingTask] = useState(false);
 
   const grouped = useMemo(() => {
     const map = new Map<string, ReturnType<typeof useAssignments>['data']>();
@@ -159,15 +160,30 @@ function SkillSprintTab() {
     return Array.from(map.entries());
   }, [assignments.data]);
 
-  const handleCreateTask = () => {
-    if (!newTaskTitle || !newTaskAgent) {
-      toast.error('Please enter a task title and an agent ID.');
+  const handleCreateTask = async () => {
+    if (!newTaskTitle.trim()) {
+      toast.error('Please enter a task title.');
       return;
     }
-    toast.success(`Task created and assigned to ${newTaskAgent} (Simulated).`);
-    setCreatingTask(false);
-    setNewTaskTitle('');
-    setNewTaskAgent('');
+    if (!activeProjectId) {
+      toast.error('No active project.');
+      return;
+    }
+    setSavingTask(true);
+    try {
+      await createTask({
+        title: newTaskTitle.trim(),
+        agentId: newTaskAgent.trim() || undefined,
+      });
+      toast.success(newTaskAgent.trim() ? `Task created and assigned to ${newTaskAgent.trim()}.` : 'Task created.');
+      setCreatingTask(false);
+      setNewTaskTitle('');
+      setNewTaskAgent('');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to create task.');
+    } finally {
+      setSavingTask(false);
+    }
   };
 
   return (
@@ -203,7 +219,7 @@ function SkillSprintTab() {
           </div>
           <div className="flex justify-end gap-2 mt-2">
             <Button variant="ghost" size="sm" onClick={() => setCreatingTask(false)}>Cancel</Button>
-            <Button size="sm" onClick={handleCreateTask}>Create Task</Button>
+            <Button size="sm" onClick={handleCreateTask} disabled={savingTask}>{savingTask ? 'Creating…' : 'Create Task'}</Button>
           </div>
         </div>
       )}

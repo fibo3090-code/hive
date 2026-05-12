@@ -1,9 +1,14 @@
 import { cn } from '@/lib/utils';
-import { ChevronRight, ChevronDown, FileCode, Folder, CheckSquare, Square } from 'lucide-react';
-import type { GitFile } from '@/types/domain';
+import { FileCode, CheckSquare, Square } from 'lucide-react';
+
+export interface GitFileEntry {
+  readonly path: string;
+  readonly status: 'added' | 'modified' | 'deleted' | string;
+  readonly staged: boolean;
+}
 
 interface GitFileTreeProps {
-  readonly files: GitFile[];
+  readonly files: GitFileEntry[];
   readonly selectedFile: string | null;
   readonly onSelectFile: (path: string) => void;
   readonly onToggleStage: (path: string) => void;

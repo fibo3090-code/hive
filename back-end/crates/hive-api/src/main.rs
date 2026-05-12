@@ -15,15 +15,16 @@ use axum::{
         sse::{Event, KeepAlive},
         IntoResponse, Response, Sse,
     },
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use clap::{Parser, Subcommand};
 use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
-        agent_mcp_bindings, agent_messages, agent_spawn_requests, agent_task_assignments, agents,
-        alerts, audit, chat_attachments, chat_messages, chat_threads, connectors, cost_events,
+        agent_mcp_bindings, agent_messages, agent_spawn_requests, agent_task_assignments,
+        agent_wires, agents, alerts, audit, chat_attachments, chat_messages, chat_threads,
+        connectors, cost_events,
         custom_mcp_servers, drift_events, llm_providers, notes, notifications,
         project_workspaces, projects, sessions, settings, skills, spec_document_sections,
         spec_documents, sprints, synthesis_jobs, tasks, tech_debt,
@@ -515,10 +516,15 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             post(cancel_agent_subtree),
         )
         .route(
+            "/v1/projects/:project_id/wires",
+            get(list_agent_wires).post(create_agent_wire),
+        )
+        .route("/v1/wires/:wire_id", delete(delete_agent_wire))
+        .route(
             "/v1/projects/:project_id/coordinator/ensure",
             post(ensure_coordinator),
         )
-        .route("/v1/projects/:project_id/tasks", get(list_tasks))
+        .route("/v1/projects/:project_id/tasks", get(list_tasks).post(create_task))
         .route("/v1/tasks/:task_id/set-status", post(set_task_status))
         .route("/v1/projects/:project_id/alerts", get(list_alerts))
         .route("/v1/alerts/:alert_id/dismiss", post(dismiss_alert))
@@ -673,6 +679,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route(
             "/v1/chat-threads/:thread_id/messages",
             get(list_chat_messages).post(send_chat_message),
+        )
+        .route(
+            "/v1/chat-threads/:thread_id/compact",
+            post(compact_chat_thread),
         )
         .route(
             "/v1/chat-messages/:message_id/cancel",
@@ -1067,6 +1077,12 @@ async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppEr
         .unwrap_or_else(|| {
             let mut defaults = default_tool_names();
             defaults.insert(0, "web_search".into());
+            defaults.extend(
+                hive_runtime::RUNTIME_DEFAULT_TOOL_NAMES
+                    .iter()
+                    .chain(hive_runtime::GIT_TOOL_NAMES.iter())
+                    .map(|s| (*s).to_owned()),
+            );
             defaults
         });
 
@@ -1229,6 +1245,8 @@ async fn build_tooling(
         state.executors.clone(),
         EventBus::new(state.events.clone()),
     );
+    hive_runtime::register_db_tools(&mut registry, db(state).await.clone());
+    hive_runtime::register_git_tools(&mut registry, db(state).await.clone());
     let registry = registry.filtered(&enabled_tools);
 
     let mut context = ToolContext::new(project_id.to_owned(), sandbox);
@@ -2013,17 +2031,81 @@ async fn cancel_agent_subtree(
     ))
 }
 
+// ── Agent wires (HiveGraph parent→child edges) ──────────────────────────────
+
+async fn list_agent_wires(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        agent_wires::list_by_project(database.conn(), &project_id).await?
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateWireBody {
+    parent_agent_id: String,
+    child_agent_id: String,
+}
+
+async fn create_agent_wire(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<CreateWireBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let wire = agent_wires::create(
+        database.conn(),
+        &project_id,
+        body.parent_agent_id.trim(),
+        body.child_agent_id.trim(),
+    )
+    .await
+    .map_err(|e| match e {
+        agent_wires::WireError::Db(db_err) => AppError::from(db_err),
+        other => AppError::BadRequest(other.to_string()),
+    })?;
+    emit(
+        &state,
+        "wire.changed",
+        json!({ "projectId": project_id, "wireId": wire.id }),
+    )
+    .await;
+    Ok(Json(json!(wire)))
+}
+
+async fn delete_agent_wire(
+    State(state): State<AppState>,
+    Path(wire_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let project_id = agent_wires::get(database.conn(), &wire_id)
+        .await?
+        .map(|w| w.project_id);
+    let removed = agent_wires::delete(database.conn(), &wire_id).await?;
+    if !removed {
+        return Err(AppError::NotFound(format!("wire {wire_id}")));
+    }
+    if let Some(pid) = project_id {
+        emit(&state, "wire.changed", json!({ "projectId": pid, "wireId": wire_id })).await;
+    }
+    Ok(Json(json!({ "ok": true, "id": wire_id })))
+}
+
 /// Optional body for `ensure_coordinator`. When `team_mode` is supplied,
 /// the coordinator's tool registry is rewritten to match the requested
 /// stance:
-///   - `true`  → drop direct `web_search`, force delegation via
-///               `spawn_agent` + `message_agent`. Higher-quality
-///               research at the cost of more LLM turns.
-///   - `false` → solo loadout: keep `web_search` + `web_fetch` so the
-///               coordinator can do shallow research itself. Faster
-///               + cheaper, but the spec doc tends to be thinner.
-/// Omit the body entirely (POST `{}`) for the original behaviour:
-/// every tool enabled, no team-mode opinion.
+///
+/// - `true` → drop direct `web_search`, force delegation via `spawn_agent` +
+///   `message_agent`. Higher-quality research at the cost of more LLM turns.
+/// - `false` → solo loadout: keep `web_search` + `web_fetch` so the coordinator
+///   can do shallow research itself. Faster + cheaper, but the spec doc tends to
+///   be thinner.
+///
+/// Omit the body entirely (POST `{}`) for the original behaviour: every tool
+/// enabled, no team-mode opinion.
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct EnsureCoordinatorBody {
@@ -2041,6 +2123,8 @@ fn coordinator_tools(team_mode: Option<bool>) -> Vec<String> {
         "web_fetch".to_owned(),
         "spawn_agent".to_owned(),
         "message_agent".to_owned(),
+        "list_visible_agents".to_owned(),
+        "request_relay".to_owned(),
     ];
     match team_mode {
         Some(true) => {
@@ -2171,6 +2255,8 @@ async fn list_tool_manifests(State(state): State<AppState>) -> Result<Json<Value
         state.executors.clone(),
         EventBus::new(state.events.clone()),
     );
+    hive_runtime::register_db_tools(&mut registry, database.clone());
+    hive_runtime::register_git_tools(&mut registry, database.clone());
 
     let global = enabled_tools_for_turn(&state).await.unwrap_or_default();
     let manifests = registry.manifests();
@@ -2194,7 +2280,12 @@ fn tool_category(name: &str) -> &'static str {
         "web_search" | "web_fetch" => "research",
         "fs_read" | "fs_write" | "fs_list" => "filesystem",
         "shell_exec" => "execution",
-        "spawn_agent" | "message_agent" => "coordination",
+        "spawn_agent" | "message_agent" | "list_visible_agents" | "request_relay" => "coordination",
+        "hive_mind_write" | "hive_mind_read" | "hive_mind_list" | "hive_mind_delete" => "memory",
+        "list_spec_docs" | "read_spec_doc" | "add_task" | "add_tech_debt" | "update_tech_debt"
+        | "record_drift" => "planning",
+        "todo" => "planning",
+        "git_status" | "git_diff" | "git_log" | "git_commit" | "git_pull" | "git_push" => "git",
         _ => "other",
     }
 }
@@ -2264,13 +2355,18 @@ async fn update_agent(
     // doesn't silently disable everything on the next turn. The full
     // registered set is `default_tool_names()` (fs/shell/web_fetch),
     // plus `web_search` (added when configured), plus the runtime-only
-    // pair `spawn_agent` / `message_agent` from `hive-runtime`.
+    // tools from `hive-runtime` (`spawn_agent`, `message_agent`,
+    // `hive_mind_*`, spec / task / tech-debt / drift tools).
     if let Some(tools) = body.enabled_tools.as_ref() {
         let mut known: std::collections::HashSet<String> =
             default_tool_names().into_iter().collect();
         known.insert("web_search".into());
-        known.insert("spawn_agent".into());
-        known.insert("message_agent".into());
+        for name in hive_runtime::RUNTIME_TOOL_NAMES
+            .iter()
+            .chain(hive_runtime::GIT_TOOL_NAMES.iter())
+        {
+            known.insert((*name).to_owned());
+        }
         let unknown: Vec<&str> = tools
             .iter()
             .map(String::as_str)
@@ -2359,6 +2455,80 @@ async fn list_tasks(
     Ok(Json(json!(
         tasks::list_by_project(database.conn(), &project_id).await?
     )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTaskBody {
+    title: String,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    phase: Option<String>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    estimated_tokens: Option<i32>,
+}
+
+async fn create_task(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<CreateTaskBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.title.trim().is_empty() {
+        return Err(AppError::BadRequest("title is required".into()));
+    }
+    let database = db(&state).await;
+    let agent_id = body
+        .agent_id
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    if let Some(ref aid) = agent_id {
+        match agents::get(database.conn(), aid).await? {
+            Some(a) if a.project_id == project_id => {}
+            _ => {
+                return Err(AppError::BadRequest(format!(
+                    "agent {aid} not found in this project"
+                )))
+            }
+        }
+    }
+    let task = tasks::create(
+        database.conn(),
+        tasks::CreateTask {
+            project_id: project_id.clone(),
+            title: body.title.trim().to_owned(),
+            status: body.status.unwrap_or_else(|| "pending".into()),
+            phase: body.phase,
+            priority: body.priority.unwrap_or_else(|| "medium".into()),
+            estimated_tokens: body.estimated_tokens.unwrap_or(0),
+            agent_id,
+            sprint_id: None,
+            spec_section_id: None,
+            due_at: None,
+        },
+    )
+    .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "task.create",
+        "task",
+        &task.id,
+        None,
+        Some(serde_json::to_value(&task).unwrap_or(Value::Null)),
+    )
+    .await?;
+    emit(
+        &state,
+        "task.status",
+        json!({ "id": task.id, "status": task.status, "projectId": project_id }),
+    )
+    .await;
+    Ok(Json(json!(task)))
 }
 
 async fn set_task_status(
@@ -2731,13 +2901,15 @@ struct InsightsRangeQuery {
 fn parse_duration_or(input: Option<&str>, fallback_secs: i64) -> i64 {
     let Some(s) = input else { return fallback_secs };
     let s = s.trim();
-    let (n, unit) = s.split_at(s.len() - 1);
-    let value: i64 = n.parse().unwrap_or(0);
+    let Some(unit) = s.chars().last() else {
+        return fallback_secs;
+    };
+    let value: i64 = s[..s.len() - unit.len_utf8()].parse().unwrap_or(0);
     match unit {
-        "s" => value,
-        "m" => value * 60,
-        "h" => value * 3_600,
-        "d" => value * 86_400,
+        's' => value,
+        'm' => value * 60,
+        'h' => value * 3_600,
+        'd' => value * 86_400,
         _ => fallback_secs,
     }
 }
@@ -4286,6 +4458,136 @@ async fn delete_chat_thread(
     Ok(Json(json!({ "success": true })))
 }
 
+/// Number of most-recent messages a `/compact` call always keeps verbatim.
+const COMPACT_KEEP_RECENT: usize = 6;
+
+/// `POST /v1/chat-threads/:thread_id/compact` — summarise the older half of a
+/// thread into a single synthetic `system` message and delete the originals.
+/// No-op (returns `summarizedCount: 0`) when the thread already has
+/// `<= COMPACT_KEEP_RECENT` messages.
+async fn compact_chat_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    chat_threads::get(database.conn(), &thread_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("thread {thread_id}")))?;
+
+    let messages = chat_messages::list_by_thread(database.conn(), &thread_id).await?;
+    if messages.len() <= COMPACT_KEEP_RECENT {
+        return Ok(Json(json!({
+            "ok": true,
+            "summarizedCount": 0,
+            "message": "thread is already short — nothing to compact",
+        })));
+    }
+
+    let split = messages.len() - COMPACT_KEEP_RECENT;
+    let (to_summarize, _kept) = messages.split_at(split);
+
+    // Build a transcript, capped so the summariser prompt stays bounded.
+    let mut transcript = String::new();
+    for m in to_summarize {
+        let line = format!("{}: {}\n\n", m.role, m.content.trim());
+        if transcript.len() + line.len() > 16 * 1024 {
+            transcript.push_str("…(earlier messages truncated)…\n\n");
+            break;
+        }
+        transcript.push_str(&line);
+    }
+
+    // Try the configured cheap/default model; fall back to a mechanical
+    // summary if no provider is available so the feature still works offline.
+    let summary = match resolve_chat_target(&state, None).await {
+        Ok((provider_id, model_id)) => {
+            match llm_providers::get(database.conn(), &provider_id).await? {
+                Some(provider_row) => match build_provider_config(&state, &provider_row).await {
+                    Ok(config) => {
+                        let client = client_for(config);
+                        let req = hive_llm::chat::ChatRequest::new(
+                            model_id,
+                            vec![
+                                hive_llm::chat::ChatMessage::system(
+                                    "Summarise the following chat transcript in 150-350 words. \
+                                     Preserve concrete decisions, file names, open questions, and \
+                                     any state the assistant must remember to continue. Respond with \
+                                     plain prose only — no preamble, no markdown headers."
+                                        .to_owned(),
+                                ),
+                                hive_llm::chat::ChatMessage::user(transcript.clone()),
+                            ],
+                        );
+                        match client.chat(req).await {
+                            Ok(resp) if !resp.text.trim().is_empty() => resp.text.trim().to_owned(),
+                            _ => mechanical_summary(&transcript),
+                        }
+                    }
+                    Err(_) => mechanical_summary(&transcript),
+                },
+                None => mechanical_summary(&transcript),
+            }
+        }
+        Err(_) => mechanical_summary(&transcript),
+    };
+
+    let summarized_count = to_summarize.len();
+    let body = format!(
+        "[Conversation summary — {summarized_count} earlier message(s) compacted]\n\n{summary}"
+    );
+    // Sort the summary ahead of everything that remains.
+    let created_at = to_summarize
+        .first()
+        .map(|m| m.created_at.clone())
+        .unwrap_or_else(|| messages[0].created_at.clone());
+
+    let ids: Vec<String> = to_summarize.iter().map(|m| m.id.clone()).collect();
+    chat_messages::delete_ids(database.conn(), &ids).await?;
+    let inserted = chat_messages::insert_at(
+        database.conn(),
+        chat_messages::NewMessage {
+            thread_id: thread_id.clone(),
+            role: "system".into(),
+            content: body.clone(),
+            tool_calls: json!([]),
+            model: None,
+            provider_id: None,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_cents: 0,
+            parent_message_id: None,
+            status: "done".into(),
+        },
+        created_at,
+    )
+    .await?;
+    let _ = chat_threads::touch(database.conn(), &thread_id).await;
+
+    emit(
+        &state,
+        &format!("chat.{thread_id}.message"),
+        json!({ "threadId": thread_id, "messageId": inserted.id, "kind": "compact" }),
+    )
+    .await;
+
+    Ok(Json(json!({
+        "ok": true,
+        "summarizedCount": summarized_count,
+        "summary": summary,
+        "messageId": inserted.id,
+    })))
+}
+
+/// Cheap fallback summary when no LLM is reachable: keep the head of the
+/// transcript so at least *something* survives the compaction.
+fn mechanical_summary(transcript: &str) -> String {
+    let head: String = transcript.chars().take(600).collect();
+    format!(
+        "(Automatic summary — no LLM provider was available for compaction.)\n\n{head}{}",
+        if transcript.chars().count() > 600 { "…" } else { "" }
+    )
+}
+
 async fn list_chat_messages(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -5176,9 +5478,15 @@ Your role is `{role}`. Your display name is `{name}`.\n\
 - Delegate only when parallel specialist work materially improves speed or quality.\n\
 - Use `spawn_agent` with a concrete role, bounded task, expected output, and file or responsibility ownership.\n\
 - Do not spawn agents that would edit the same files or resources in parallel.\n\
-- Use `message_agent` for short coordination updates, handoffs, or clarifying facts.\n\
+- Use `message_agent` for short coordination updates, handoffs, or clarifying facts. You may only message your direct parents and your own descendants — call `list_visible_agents` to see who that is, and `request_relay` to route a message through a parent that can see a more distant agent.\n\
 - Integrate delegated results critically; verify before treating them as complete.\n\
 </delegation>\n\
+\n\
+<project_memory>\n\
+- Use `hive_mind_write` to record durable decisions, conventions, and facts other agents should know; `hive_mind_list` / `hive_mind_read` to recall them; `hive_mind_delete` to prune.\n\
+- Use `list_spec_docs` / `read_spec_doc` to ground your work in the project's spec; `add_task` to file follow-up work; `add_tech_debt` / `update_tech_debt` to track shortcuts; `record_drift` when your work, the code, or behaviour has diverged from its intent.\n\
+- Use `git_status` / `git_diff` / `git_log` to inspect the working tree, and `git_commit` to checkpoint coherent units of work. `git_pull` / `git_push` only work on cloud-tier projects.\n\
+</project_memory>\n\
 \n\
 <quality_bar>\n\
 - Match the repository's architecture, naming, formatting, dependency choices, and testing style.\n\

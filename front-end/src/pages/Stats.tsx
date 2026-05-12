@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import {
   Activity,
@@ -245,11 +246,37 @@ function ProjectMetricsTab() {
   const totalSpend = (spendTimeline.data ?? []).reduce((sum, point) => sum + (point.cost ?? 0), 0);
   const totalThroughput = (throughputTimeline.data ?? []).reduce((sum, point) => sum + (point.completed ?? 0), 0);
 
+  const exportCsv = () => {
+    const spend = spendTimeline.data ?? [];
+    const tput = throughputTimeline.data ?? [];
+    if (spend.length === 0 && tput.length === 0) {
+      toast.info('No metrics to export yet.');
+      return;
+    }
+    const days = Array.from(new Set([...spend.map((p) => p.day), ...tput.map((p) => p.day)])).sort();
+    const spendByDay = new Map(spend.map((p) => [p.day, p.cost ?? 0]));
+    const tputByDay = new Map(tput.map((p) => [p.day, p.completed ?? 0]));
+    const rows = [
+      ['day', 'spend_usd', 'tasks_completed'],
+      ...days.map((d) => [d, String(spendByDay.get(d) ?? 0), String(tputByDay.get(d) ?? 0)]),
+    ];
+    const csv = rows.map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${activeProject?.name?.replace(/[^\w.-]+/g, '_') ?? 'project'}-metrics.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Project Metrics</h2>
-        <button className="flex items-center gap-1 text-xs text-primary hover:underline">
+        <button onClick={exportCsv} className="flex items-center gap-1 text-xs text-primary hover:underline">
           <Download className="h-3.5 w-3.5" /> Export CSV
         </button>
       </div>

@@ -103,6 +103,39 @@ export function useUpdateAgent() {
   });
 }
 
+export interface AgentWire {
+  id: string;
+  projectId: string;
+  parentAgentId: string;
+  childAgentId: string;
+  createdAt: string;
+}
+
+export function useWires(projectId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['wires', projectId],
+    queryFn: () => api<AgentWire[]>(`/v1/projects/${projectId}/wires`),
+    enabled: Boolean(projectId),
+  });
+}
+
+export function useCreateWire(projectId: string | null | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { parentAgentId: string; childAgentId: string }) =>
+      api<AgentWire>(`/v1/projects/${projectId}/wires`, { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['wires', projectId] }),
+  });
+}
+
+export function useDeleteWire(projectId: string | null | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (wireId: string) => api<{ ok: boolean }>(`/v1/wires/${wireId}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['wires', projectId] }),
+  });
+}
+
 export interface ToolDescriptor {
   name: string;
   description: string;

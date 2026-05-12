@@ -24,6 +24,7 @@ import { useHiveData } from '@/api/queries/useHiveData';
 import { useSkills } from '@/api/skills';
 import { useConnectors } from '@/api/connectors';
 import { Button } from '@/components/ui/button';
+import { DisabledFeature } from '@/components/shared/DisabledFeature';
 import { cn } from '@/lib/utils';
 
 const ModulesPage = lazy(() => import('./Modules'));
@@ -184,9 +185,11 @@ function ConnectorsTab() {
           server. The auto-spawn pipeline reuses these before falling back to
           synthesis.
         </p>
-        <Button className="mt-4" variant="outline" disabled>
-          + New connector (UI coming)
-        </Button>
+        <div className="mt-4">
+          <DisabledFeature kind="planned" reason="The connector editor (HTTP API + encrypted credentials, MCP server config) is not built yet.">
+            <Button variant="outline">+ New connector</Button>
+          </DisabledFeature>
+        </div>
       </div>
     );
   }

@@ -341,6 +341,17 @@ impl GitRepo {
         let _ = self.run_git(&args)?;
         Ok(())
     }
+
+    /// `git pull` (fast-forward against the configured upstream). Returns the
+    /// command's stdout (and stderr, which git uses for progress).
+    pub fn pull(&self) -> Result<String, GitError> {
+        self.run_git(&["pull", "--ff-only"])
+    }
+
+    /// `git push` to the configured upstream for the current branch.
+    pub fn push(&self) -> Result<String, GitError> {
+        self.run_git(&["push"])
+    }
 }
 
 pub struct GitHubClient {

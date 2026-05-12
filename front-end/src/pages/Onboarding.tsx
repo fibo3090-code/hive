@@ -51,11 +51,6 @@ export default function Onboarding() {
     return true;
   }, [step, onboardingDraft.connectedProviderIds]);
 
-  const estimatedCost = useMemo(() => {
-    const factor = onboardingDraft.tier === 'local' ? 0.6 : 1.4;
-    return Math.round(onboardingDraft.agents * 8.5 * factor);
-  }, [onboardingDraft.agents, onboardingDraft.tier]);
-
   const launchProject = () => {
     const trimmedDescription = onboardingDraft.description.trim();
     let sourceDefaultName = 'New Hive Project';
@@ -111,7 +106,6 @@ export default function Onboarding() {
             budget={onboardingDraft.budget}
             agents={onboardingDraft.agents}
             tier={onboardingDraft.tier}
-            _estimatedCost={estimatedCost}
             onBudgetChange={(budget) => updateOnboardingDraft({ budget })}
             onAgentsChange={(agents) => updateOnboardingDraft({ agents })}
             onTierChange={(tier) => updateOnboardingDraft({ tier })}
@@ -128,10 +122,8 @@ export default function Onboarding() {
         {step === 3 && (
           <>
             <StepDescribe
-              _mode={onboardingDraft.describeMode}
               description={onboardingDraft.description}
               uploadedSpecName={onboardingDraft.uploadedSpecName}
-              _onModeChange={(describeMode: 'interview' | 'import') => updateOnboardingDraft({ describeMode })}
               onDescriptionChange={(description) => updateOnboardingDraft({ description })}
               onSpecUpload={(file) =>
                 updateOnboardingDraft({
@@ -155,7 +147,6 @@ export default function Onboarding() {
             budget={onboardingDraft.budget}
             agents={onboardingDraft.agents}
             tier={onboardingDraft.tier}
-            _estimatedCost={estimatedCost}
             description={onboardingDraft.description}
           />
         )}
@@ -224,7 +215,6 @@ function StepBudget({
   budget,
   agents,
   tier,
-  _estimatedCost,
   onBudgetChange,
   onAgentsChange,
   onTierChange,
@@ -232,7 +222,6 @@ function StepBudget({
   readonly budget: number;
   readonly agents: number;
   readonly tier: SovereigntyTier;
-  readonly _estimatedCost: number;
   readonly onBudgetChange: (budget: number) => void;
   readonly onAgentsChange: (agents: number) => void;
   readonly onTierChange: (tier: SovereigntyTier) => void;
@@ -283,17 +272,13 @@ function StepBudget({
 }
 
 function StepDescribe({
-  _mode,
   description,
   uploadedSpecName,
-  _onModeChange,
   onDescriptionChange,
   onSpecUpload,
 }: {
-  readonly _mode: 'interview' | 'import';
   readonly description: string;
   readonly uploadedSpecName: string | null;
-  readonly _onModeChange: (mode: 'interview' | 'import') => void;
   readonly onDescriptionChange: (description: string) => void;
   readonly onSpecUpload: (file: { name: string; text: string }) => void;
 }) {
@@ -372,14 +357,12 @@ function StepPlanReview({
   budget,
   agents,
   tier,
-  _estimatedCost,
   description,
 }: {
   readonly source: 'scratch' | 'template' | 'import' | null;
   readonly budget: number;
   readonly agents: number;
   readonly tier: SovereigntyTier;
-  readonly _estimatedCost: number;
   readonly description: string;
 }) {
   // Real preview from the backend, grounded in the user's description.

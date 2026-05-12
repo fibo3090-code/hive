@@ -43,7 +43,7 @@ Two halves talking over `127.0.0.1:8787`:
 | `hive-db` | SeaORM entities, repos, migrations. |
 | `hive-llm` | Provider trait + Anthropic / OpenAI / Gemini / Ollama clients. Streaming, tool-use, pricing, family-keyed metadata, token-budget estimator. |
 | `hive-runtime` | Per-agent executor (`AgentExecutor`), the streaming chat turn driver (`run_turn`), the event bus, the tool-call schema validator, registry. |
-| `hive-tools` | Built-in tools (`web_search`, `web_fetch`, `fs_read`, `fs_write`, `fs_list`, `shell_exec`, `spawn_agent`, `message_agent`). Each tool gets a JSON Schema manifest and runs through the per-tool timeout wrapper. |
+| `hive-tools` | Sandbox-scoped built-in tools (`fs_read`, `fs_write`, `fs_list`, `shell_exec`, `todo`, `web_fetch`, `web_search`). Each tool gets a JSON Schema manifest and runs through the per-tool timeout wrapper. The DB- and registry-backed tools live in `hive-runtime` (since `hive-tools` can't depend on `hive-db`): `agent_tools.rs` (`spawn_agent`, `message_agent`, `list_visible_agents`, `request_relay`), `db_tools.rs` (`hive_mind_*`, `list_spec_docs`, `read_spec_doc`, `add_task`, `add_tech_debt`, `update_tech_debt`, `record_drift`), `git_tools.rs` (`git_status`, `git_diff`, `git_log`, `git_commit`, `git_pull`, `git_push`). |
 | `hive-sandbox` | `LocalFsSandbox` (path-escape protection, symlink-safe canonicalisation, env-scrubbed exec). Docker variant ships in a follow-up. |
 | `hive-search` | Tavily + SearxNG providers behind a `SearchProvider` trait. |
 | `hive-git` | `git2` wrapper + optional `octocrab` for GitHub PRs. |
@@ -80,11 +80,21 @@ Two halves talking over `127.0.0.1:8787`:
 ## SSE event taxonomy
 
 Per-thread chat events (consumed by `useChatStream`):
-- `chat.<thread_id>.token` — incremental assistant text.
+- `chat.<thread_id>.token` — incremental assistant text (streamed live during
+  every LLM round; synthetic fallback messages are streamed once at the end).
 - `chat.<thread_id>.tool_call` / `…tool_result` — inline tool dispatch.
+- `chat.<thread_id>.tool_validation_error` — a tool call failed schema
+  validation before dispatch.
 - `chat.<thread_id>.context_trim` — pre-flight history truncation.
+- `chat.<thread_id>.message` — a freshly persisted chat message (user or
+  assistant) is available; clients refetch the thread.
 - `chat.<thread_id>.complete` / `…cancelled` / `…error` — terminal.
 - `chat.<thread_id>.streaming` — fired once when the assistant starts.
+
+> Note: assistant text is streamed live but only persisted to the DB once, at
+> the end of the turn (the final tool-free round's text, or the last non-empty
+> narration). Interleaved persistence of all rounds is still planned — see
+> `docs/FEATURE_STATUS.md` → "Streaming text interleaved with tool calls".
 
 Global events (consumed by `useSse` with payload-scoped invalidation):
 - `project.updated`, `agent.status`, `agent.spawned`, `task.status`,

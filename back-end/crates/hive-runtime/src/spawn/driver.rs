@@ -670,9 +670,11 @@ mod tests {
         assert_eq!(outcome.synthesized_mcp_ids.len(), 1);
         assert_eq!(deps.plan_calls.load(Ordering::SeqCst), 1);
         assert_eq!(deps.synth_calls.load(Ordering::SeqCst), 1);
-        let materialize_args = deps.materialize_calls.lock().unwrap();
-        assert_eq!(materialize_args.len(), 1);
-        assert_eq!(materialize_args[0].len(), 1, "synthesised mcp bound");
+        {
+            let materialize_args = deps.materialize_calls.lock().unwrap();
+            assert_eq!(materialize_args.len(), 1);
+            assert_eq!(materialize_args[0].len(), 1, "synthesised mcp bound");
+        }
 
         // The persisted row reflects the final state.
         let row = agent_spawn_requests::get(db.conn(), &req_id)

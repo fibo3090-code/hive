@@ -11,6 +11,7 @@ import {
   useChatStream,
   useCreateChatThread,
   useDeleteChatThread,
+  useCompactChatThread,
   useSendChatMessage,
   useCancelChatMessage,
   useChatAttachments,
@@ -266,6 +267,7 @@ export default function ChatCentral() {
 
   const createThreadMutation = useCreateChatThread();
   const deleteThreadMutation = useDeleteChatThread();
+  const compactThreadMutation = useCompactChatThread();
   const cancelMutation = useCancelChatMessage();
 
   // Pick the first thread once loaded.
@@ -366,7 +368,7 @@ export default function ChatCentral() {
     switch (cmd) {
       case 'help': {
         toast.info(
-          'Slash commands: /help · /clear (delete current thread) · /new [title] · /compact (planned: summarize history) · /model (open picker)',
+          'Slash commands: /help · /clear (delete current thread) · /new [title] · /compact (summarize older messages) · /model (open picker)',
           { duration: 8000 },
         );
         setInput('');
@@ -395,7 +397,18 @@ export default function ChatCentral() {
         return true;
       }
       case 'compact': {
-        toast.warning('/compact will summarize older messages — backend support is not yet wired. Tracked in FEATURE_STATUS.md.');
+        if (!activeThreadId) {
+          toast.error('Open a thread first.');
+        } else {
+          toast.promise(compactThreadMutation.mutateAsync(activeThreadId), {
+            loading: 'Compacting thread…',
+            success: (r) =>
+              r.summarizedCount > 0
+                ? `Compacted ${r.summarizedCount} older message(s) into a summary.`
+                : (r.message ?? 'Nothing to compact.'),
+            error: (e) => (e instanceof Error ? e.message : 'Compaction failed.'),
+          });
+        }
         setInput('');
         return true;
       }

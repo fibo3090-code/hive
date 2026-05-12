@@ -1,7 +1,5 @@
 import { cn } from '@/lib/utils';
-import { toast } from 'sonner';
 import { Bot, GitCommit, AlertTriangle, TestTube2, FileText, DollarSign, Eye } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 import type { ActivityFeedItem } from '@/types/domain';
 
 const activityIcons = { Bot, GitCommit, AlertTriangle, TestTube2, FileText, DollarSign, Eye } as const;
