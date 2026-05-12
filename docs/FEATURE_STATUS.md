@@ -53,7 +53,7 @@ Legend
 | Agent detail drawer | done | local | 1 | |
 | Pause / Resume agent | partial | server | 1 | Wired to backend; executor support varies |
 | Delete agent | done | server | 1 | Renamed from "Terminate", added confirm dialog |
-| Spawn agent (modal) | partial | server | 4 | Modal now actually creates the agent (`POST /v1/projects/:id/agents`) with name/role/model/provider/system-prompt; hybrid tier removed, Cloud tier disabled. Still thinner than the Forge `AgentConfigDialog` (no tool allowlist) |
+| Spawn agent (modal) | done | local | 4 | Uses the shared `AgentFormFields` component (name, role + presets, model, system prompt, tool allowlist grouped by category) — identical to the Forge builder and the HiveGraph config dialog. POSTs `/v1/projects/:id/agents` |
 | Wires (parent→child authority + comm) | done | local | 4 | `agent_wires` table + `GET/POST /v1/projects/:pid/wires`, `DELETE /v1/wires/:id`. `spawn_agent` records a wire automatically; agent visibility (`message_agent` / `list_visible_agents` / `request_relay`) walks this graph |
 | Wire creation by drag | done | local | 4 | Drag node→node in HiveGraph (`onConnect` → `POST …/wires`) |
 | Wire deletion (left-click) | done | local | 4 | Click a wire edge → confirm → `DELETE /v1/wires/:id` (lineage edges are not deletable) |
@@ -123,8 +123,8 @@ Legend
 |---|---|---|---|---|
 | Skills tab | partial | local | 3 | List + create (name/slug/description/system-prompt fragment) + delete; tool/path allowlists not editable from the UI yet |
 | Modules tab | partial | server | 3 | Synthesis pipeline mocked |
-| Connectors tab | partial | local | 3 | List works; encrypted credential editor minimal |
-| Agents tab (custom builder) | partial | local | 3 | Currently exposes role/model/tier/autonomy only — needs alignment with HiveGraph spawn |
+| Connectors tab | done | local | 3 | List + create (HTTP API with auth kind + encrypted credential, or MCP server) + delete, via `/v1/projects/:id/connectors` / `DELETE /v1/connectors/:id` |
+| Agents tab (custom builder) | done | local | 3 | Uses the shared `AgentFormFields` (name/role/model/system-prompt/tool-allowlist); the unused tier/autonomy inputs were removed; Blueprints sub-tab pre-fills the form |
 | Marketplace download | planned | server | — | Disabled; needs Hive central server |
 | Publish to public registry | planned | server | — | Same dependency |
 

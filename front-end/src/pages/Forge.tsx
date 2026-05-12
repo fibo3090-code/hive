@@ -17,15 +17,14 @@
  * sidebar / command-palette deep-link, and old `/modules` and
  * `/agent-forge` routes redirect here with the matching tab pre-selected.
  */
-import { lazy, Suspense, useCallback, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Boxes, Plug, Sparkles, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useSkills, useCreateSkill, useDeleteSkill } from '@/api/skills';
-import { useConnectors } from '@/api/connectors';
+import { useConnectors, useCreateConnector, useDeleteConnector, type ConnectorKind, type ConnectorAuthKind } from '@/api/connectors';
 import { Button } from '@/components/ui/button';
-import { DisabledFeature } from '@/components/shared/DisabledFeature';
 import { cn } from '@/lib/utils';
 
 const ModulesPage = lazy(() => import('./Modules'));
@@ -235,58 +234,141 @@ function SkillsTab() {
 
 // ─── Connectors tab ────────────────────────────────────────────────────
 
+const AUTH_KINDS: ConnectorAuthKind[] = ['none', 'bearer', 'basic', 'oauth2', 'mcp_handshake'];
+
 function ConnectorsTab() {
   const { activeProject } = useHiveData();
-  const connectors = useConnectors(activeProject?.id);
+  const projectId = activeProject?.id ?? null;
+  const connectors = useConnectors(projectId);
+  const createConnector = useCreateConnector(projectId);
+  const deleteConnector = useDeleteConnector(projectId);
   const items = connectors.data ?? [];
-  const grouped = useMemo(() => {
-    const data = connectors.data ?? [];
-    const apis = data.filter((c) => c.kind === 'api');
-    const mcps = data.filter((c) => c.kind === 'mcp');
-    return { apis, mcps };
-  }, [connectors.data]);
+  const apis = items.filter((c) => c.kind === 'api');
+  const mcps = items.filter((c) => c.kind === 'mcp');
 
-  if (!items.length) {
-    return (
-      <div className="rounded-lg border border-dashed border-border p-8 text-center">
-        <h3 className="text-sm font-semibold">No connectors yet</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Connect an external HTTP API (with encrypted credentials) or an MCP
-          server. The auto-spawn pipeline reuses these before falling back to
-          synthesis.
-        </p>
-        <div className="mt-4">
-          <DisabledFeature kind="planned" reason="The connector editor (HTTP API + encrypted credentials, MCP server config) is not built yet.">
-            <Button variant="outline">+ New connector</Button>
-          </DisabledFeature>
-        </div>
-      </div>
-    );
-  }
+  const [open, setOpen] = useState(false);
+  const [kind, setKind] = useState<ConnectorKind>('api');
+  const [name, setName] = useState('');
+  const [slug, setSlug] = useState('');
+  const slugTouched = useRef(false);
+  const [baseUrl, setBaseUrl] = useState('');
+  const [authKind, setAuthKind] = useState<ConnectorAuthKind>('bearer');
+  const [credential, setCredential] = useState('');
+
+  const reset = () => { setOpen(false); setKind('api'); setName(''); setSlug(''); slugTouched.current = false; setBaseUrl(''); setAuthKind('bearer'); setCredential(''); };
+
+  const submit = async () => {
+    if (!projectId) { toast.error('No active project.'); return; }
+    if (!name.trim()) { toast.error('Name is required.'); return; }
+    if (!baseUrl.trim()) { toast.error(kind === 'mcp' ? 'MCP server URL is required.' : 'Base URL is required.'); return; }
+    const effAuth: ConnectorAuthKind = kind === 'mcp' ? 'mcp_handshake' : authKind;
+    if (effAuth !== 'none' && effAuth !== 'mcp_handshake' && !credential.trim()) {
+      toast.error('Credential is required for the selected auth kind.'); return;
+    }
+    try {
+      await createConnector.mutateAsync({
+        kind,
+        slug: (slug.trim() || slugify(name)) || 'connector',
+        name: name.trim(),
+        baseUrl: baseUrl.trim(),
+        authKind: effAuth,
+        credential: credential.trim() || undefined,
+      });
+      toast.success(`Connector "${name.trim()}" created.`);
+      reset();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to create connector.');
+    }
+  };
 
   return (
-    <div className="space-y-6">
-      {grouped.apis.length > 0 && (
-        <section>
-          <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-            HTTP APIs
-          </h3>
-          <ConnectorList items={grouped.apis} />
-        </section>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          Connect an external HTTP API (with an encrypted credential) or an MCP server. Credentials encrypt at rest like LLM provider keys.
+        </p>
+        <Button size="sm" variant="outline" onClick={() => (open ? reset() : setOpen(true))}>{open ? 'Cancel' : '+ New connector'}</Button>
+      </div>
+
+      {open && (
+        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+          <div className="flex gap-1.5">
+            {(['api', 'mcp'] as const).map((k) => (
+              <button key={k} type="button" onClick={() => setKind(k)}
+                className={cn('rounded-md border px-3 py-1 text-xs transition-colors', kind === k ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground')}>
+                {k === 'api' ? 'HTTP API' : 'MCP server'}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label htmlFor="conn-name" className="text-[10px] font-medium uppercase text-muted-foreground">Name</label>
+              <input id="conn-name" value={name} onChange={(e) => { setName(e.target.value); if (!slugTouched.current) setSlug(slugify(e.target.value)); }} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm" placeholder={kind === 'mcp' ? 'e.g. GitHub MCP' : 'e.g. Stripe API'} />
+            </div>
+            <div>
+              <label htmlFor="conn-slug" className="text-[10px] font-medium uppercase text-muted-foreground">Slug</label>
+              <input id="conn-slug" value={slug} onChange={(e) => { slugTouched.current = true; setSlug(slugify(e.target.value)); }} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm font-mono" />
+            </div>
+          </div>
+          <div>
+            <label htmlFor="conn-url" className="text-[10px] font-medium uppercase text-muted-foreground">{kind === 'mcp' ? 'MCP server URL' : 'Base URL'}</label>
+            <input id="conn-url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm font-mono" placeholder="https://api.example.com" />
+          </div>
+          {kind === 'api' && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="conn-auth" className="text-[10px] font-medium uppercase text-muted-foreground">Auth</label>
+                <select id="conn-auth" value={authKind} onChange={(e) => setAuthKind(e.target.value as ConnectorAuthKind)} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-2 text-sm">
+                  {AUTH_KINDS.filter((a) => a !== 'mcp_handshake').map((a) => <option key={a} value={a}>{a}</option>)}
+                </select>
+              </div>
+              {authKind !== 'none' && (
+                <div>
+                  <label htmlFor="conn-cred" className="text-[10px] font-medium uppercase text-muted-foreground">Credential</label>
+                  <input id="conn-cred" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm" placeholder="token / password — encrypted at rest" />
+                </div>
+              )}
+            </div>
+          )}
+          <div className="flex justify-end">
+            <Button size="sm" onClick={() => { void submit(); }} disabled={createConnector.isPending || !name.trim()}>
+              {createConnector.isPending ? 'Creating…' : 'Create connector'}
+            </Button>
+          </div>
+        </div>
       )}
-      {grouped.mcps.length > 0 && (
-        <section>
-          <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-            MCP Servers
-          </h3>
-          <ConnectorList items={grouped.mcps} />
-        </section>
+
+      {!items.length ? (
+        <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+          No connectors yet. Use “+ New connector” above. The auto-spawn pipeline reuses these before falling back to MCP synthesis.
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {apis.length > 0 && (
+            <section>
+              <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">HTTP APIs</h3>
+              <ConnectorList items={apis} onDelete={(id, name) => {
+                if (!window.confirm(`Delete connector "${name}"?`)) return;
+                deleteConnector.mutate(id, { onSuccess: () => toast.success('Connector deleted'), onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed') });
+              }} />
+            </section>
+          )}
+          {mcps.length > 0 && (
+            <section>
+              <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">MCP Servers</h3>
+              <ConnectorList items={mcps} onDelete={(id, name) => {
+                if (!window.confirm(`Delete connector "${name}"?`)) return;
+                deleteConnector.mutate(id, { onSuccess: () => toast.success('Connector deleted'), onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed') });
+              }} />
+            </section>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
-function ConnectorList({ items }: { items: ReturnType<typeof useConnectors>['data'] }) {
+function ConnectorList({ items, onDelete }: { items: ReturnType<typeof useConnectors>['data']; onDelete: (id: string, name: string) => void }) {
   if (!items) return null;
   const statusColor: Record<string, string> = {
     connected: 'text-success',
@@ -296,10 +378,7 @@ function ConnectorList({ items }: { items: ReturnType<typeof useConnectors>['dat
   return (
     <ul className="space-y-2">
       {items.map((c) => (
-        <li
-          key={c.id}
-          className="flex items-center justify-between rounded-lg border border-border bg-card p-3"
-        >
+        <li key={c.id} className="flex items-center justify-between rounded-lg border border-border bg-card p-3">
           <div>
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold">{c.name}</span>
@@ -310,9 +389,10 @@ function ConnectorList({ items }: { items: ReturnType<typeof useConnectors>['dat
               {c.maskedKey && <> · key {c.maskedKey}</>}
             </div>
           </div>
-          <span className={cn('text-[11px] font-semibold', statusColor[c.status])}>
-            {c.status}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className={cn('text-[11px] font-semibold', statusColor[c.status])}>{c.status}</span>
+            <button onClick={() => onDelete(c.id, c.name)} className="text-[11px] text-destructive hover:underline">Delete</button>
+          </div>
         </li>
       ))}
     </ul>
