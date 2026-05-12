@@ -25,7 +25,7 @@ Legend
 | Describe step (import spec) | partial | local | 3 | Spec text becomes description; not yet decomposed into per-agent task tree |
 | Team mode toggle | partial | cloud-llm | 3 | Persisted; runtime side reads on `/coordinator/converse` |
 | Plan review | partial | cloud-llm | 3 | Calls `/v1/projects/genesis/preview`; phases shown but not editable yet |
-| Real launch sequence (DB migrate ping, search probe, sandbox provision) | planned | local | 2 | Currently navigates straight to dashboard after `addProject` |
+| Real launch sequence (sandbox provision, git init, migrate ping, search probe) | done | local | 2 | `POST /v1/projects/:id/launch` runs the steps and returns a per-step report; onboarding shows it before navigating to the dashboard |
 
 ## Chat Central
 
@@ -68,7 +68,7 @@ Legend
 |---|---|---|---|---|
 | Spec doc list | partial | local | 2 | Read-only |
 | Import multiple spec docs | planned | local | 2 | Currently one-at-a-time via onboarding only |
-| Spec → roadmap → per-agent tasks | planned | cloud-llm | 2 | Spec decomposition pipeline missing |
+| Spec → roadmap → per-agent tasks | partial | cloud-llm | 2 | Onboarding `/launch` decomposes the brief into `sprints` + `tasks` (per-task assignee role → matched to an existing agent). Standalone spec-doc → section-anchored decomposition (`/v1/spec-documents/:id/decompose`) exists but isn't wired to a UI button yet |
 | Tech debt board (Planning) | partial | local | 1 | Move + create supported; fine-grained edit/delete still missing |
 | Hive Mind notes (Planning) | partial | local | 1 | Create + filter in the UI; agents read/write via `hive_mind_*` tools. UI edit/delete still missing |
 | Drift visualization | partial | local | 5 | UI panel present; agents can write events via `record_drift`, but the runtime does not auto-detect drift yet |
