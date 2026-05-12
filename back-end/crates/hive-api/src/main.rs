@@ -15,15 +15,16 @@ use axum::{
         sse::{Event, KeepAlive},
         IntoResponse, Response, Sse,
     },
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use clap::{Parser, Subcommand};
 use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
-        agent_mcp_bindings, agent_messages, agent_spawn_requests, agent_task_assignments, agents,
-        alerts, audit, chat_attachments, chat_messages, chat_threads, connectors, cost_events,
+        agent_mcp_bindings, agent_messages, agent_spawn_requests, agent_task_assignments,
+        agent_wires, agents, alerts, audit, chat_attachments, chat_messages, chat_threads,
+        connectors, cost_events,
         custom_mcp_servers, drift_events, llm_providers, notes, notifications,
         project_workspaces, projects, sessions, settings, skills, spec_document_sections,
         spec_documents, sprints, synthesis_jobs, tasks, tech_debt,
@@ -514,6 +515,11 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/agents/:agent_id/cancel-subtree",
             post(cancel_agent_subtree),
         )
+        .route(
+            "/v1/projects/:project_id/wires",
+            get(list_agent_wires).post(create_agent_wire),
+        )
+        .route("/v1/wires/:wire_id", delete(delete_agent_wire))
         .route(
             "/v1/projects/:project_id/coordinator/ensure",
             post(ensure_coordinator),
@@ -2025,6 +2031,69 @@ async fn cancel_agent_subtree(
     ))
 }
 
+// ── Agent wires (HiveGraph parent→child edges) ──────────────────────────────
+
+async fn list_agent_wires(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        agent_wires::list_by_project(database.conn(), &project_id).await?
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateWireBody {
+    parent_agent_id: String,
+    child_agent_id: String,
+}
+
+async fn create_agent_wire(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<CreateWireBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let wire = agent_wires::create(
+        database.conn(),
+        &project_id,
+        body.parent_agent_id.trim(),
+        body.child_agent_id.trim(),
+    )
+    .await
+    .map_err(|e| match e {
+        agent_wires::WireError::Db(db_err) => AppError::from(db_err),
+        other => AppError::BadRequest(other.to_string()),
+    })?;
+    emit(
+        &state,
+        "wire.changed",
+        json!({ "projectId": project_id, "wireId": wire.id }),
+    )
+    .await;
+    Ok(Json(json!(wire)))
+}
+
+async fn delete_agent_wire(
+    State(state): State<AppState>,
+    Path(wire_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let project_id = agent_wires::get(database.conn(), &wire_id)
+        .await?
+        .map(|w| w.project_id);
+    let removed = agent_wires::delete(database.conn(), &wire_id).await?;
+    if !removed {
+        return Err(AppError::NotFound(format!("wire {wire_id}")));
+    }
+    if let Some(pid) = project_id {
+        emit(&state, "wire.changed", json!({ "projectId": pid, "wireId": wire_id })).await;
+    }
+    Ok(Json(json!({ "ok": true, "id": wire_id })))
+}
+
 /// Optional body for `ensure_coordinator`. When `team_mode` is supplied,
 /// the coordinator's tool registry is rewritten to match the requested
 /// stance:
@@ -2054,6 +2123,8 @@ fn coordinator_tools(team_mode: Option<bool>) -> Vec<String> {
         "web_fetch".to_owned(),
         "spawn_agent".to_owned(),
         "message_agent".to_owned(),
+        "list_visible_agents".to_owned(),
+        "request_relay".to_owned(),
     ];
     match team_mode {
         Some(true) => {
@@ -2209,7 +2280,7 @@ fn tool_category(name: &str) -> &'static str {
         "web_search" | "web_fetch" => "research",
         "fs_read" | "fs_write" | "fs_list" => "filesystem",
         "shell_exec" => "execution",
-        "spawn_agent" | "message_agent" => "coordination",
+        "spawn_agent" | "message_agent" | "list_visible_agents" | "request_relay" => "coordination",
         "hive_mind_write" | "hive_mind_read" | "hive_mind_list" | "hive_mind_delete" => "memory",
         "list_spec_docs" | "read_spec_doc" | "add_task" | "add_tech_debt" | "update_tech_debt"
         | "record_drift" => "planning",
@@ -5407,7 +5478,7 @@ Your role is `{role}`. Your display name is `{name}`.\n\
 - Delegate only when parallel specialist work materially improves speed or quality.\n\
 - Use `spawn_agent` with a concrete role, bounded task, expected output, and file or responsibility ownership.\n\
 - Do not spawn agents that would edit the same files or resources in parallel.\n\
-- Use `message_agent` for short coordination updates, handoffs, or clarifying facts.\n\
+- Use `message_agent` for short coordination updates, handoffs, or clarifying facts. You may only message your direct parents and your own descendants — call `list_visible_agents` to see who that is, and `request_relay` to route a message through a parent that can see a more distant agent.\n\
 - Integrate delegated results critically; verify before treating them as complete.\n\
 </delegation>\n\
 \n\

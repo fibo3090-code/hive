@@ -20,6 +20,8 @@ use serde_json::{json, Value};
 pub const RUNTIME_TOOL_NAMES: &[&str] = &[
     "spawn_agent",
     "message_agent",
+    "list_visible_agents",
+    "request_relay",
     "hive_mind_write",
     "hive_mind_read",
     "hive_mind_list",

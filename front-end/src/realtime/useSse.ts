@@ -41,8 +41,13 @@ const HANDLERS: Record<string, Invalidator> = {
     const parentId = getString(p, 'parentId');
     return [
       projectId ? ['agents', projectId] : ['agents'],
+      projectId ? ['wires', projectId] : ['wires'],
       parentId ? ['agent-lineage', parentId] : ['agent-lineage'],
     ];
+  },
+  'wire.changed': (p) => {
+    const projectId = getString(p, 'projectId');
+    return [projectId ? ['wires', projectId] : ['wires']];
   },
 
   'task.status': (p) => {

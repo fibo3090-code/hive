@@ -54,10 +54,10 @@ Legend
 | Pause / Resume agent | partial | server | 1 | Wired to backend; executor support varies |
 | Delete agent | done | server | 1 | Renamed from "Terminate", added confirm dialog |
 | Spawn agent (modal) | partial | server | 4 | Modal now actually creates the agent (`POST /v1/projects/:id/agents`) with name/role/model/provider/system-prompt; hybrid tier removed, Cloud tier disabled. Still thinner than the Forge `AgentConfigDialog` (no tool allowlist) |
-| Wires (parent→child authority + comm) | planned | server | 4 | Visual edges exist; semantic graph + cycle prevention not implemented |
-| Wire creation by drag | planned | local | 4 | |
-| Wire deletion (left-click) | planned | local | 4 | |
-| Cycle prevention | planned | local | 4 | |
+| Wires (parent→child authority + comm) | done | local | 4 | `agent_wires` table + `GET/POST /v1/projects/:pid/wires`, `DELETE /v1/wires/:id`. `spawn_agent` records a wire automatically; agent visibility (`message_agent` / `list_visible_agents` / `request_relay`) walks this graph |
+| Wire creation by drag | done | local | 4 | Drag node→node in HiveGraph (`onConnect` → `POST …/wires`) |
+| Wire deletion (left-click) | done | local | 4 | Click a wire edge → confirm → `DELETE /v1/wires/:id` (lineage edges are not deletable) |
+| Cycle prevention | done | local | 4 | `agent_wires::create` BFS-rejects any edge that would close a loop |
 | Lock-overlay toggle | mock | server | 1 | Toggle renders, but the locked-agent set in `HiveGraph.tsx` is a hardcoded empty `Set` — the runtime doesn't expose held sandbox locks yet, so the overlay is always empty |
 | Filters (status) | done | local | 1 | |
 | Search | done | local | 1 | |
@@ -112,7 +112,7 @@ Legend
 | `record_drift` | done | local | 5 | `hive-runtime::db_tools` — writes a `drift_events` row (the runtime does not auto-detect drift yet; this is the agent-driven path) |
 | `git_status` / `git_diff` / `git_log` / `git_commit` | done | local | 5 | `hive-runtime::git_tools` — operate on the project workspace repo |
 | `git_pull` / `git_push` | done | git-remote | 5 | `hive-runtime::git_tools` — rejected on `local`-tier projects |
-| `send_message_to_agent` (with wire-derived visibility) / `list_visible_agents` / `request_relay` | planned | local | 4 | Need the `agent_wires` graph first; today there is only the unscoped `message_agent` |
+| `message_agent` (wire-derived visibility) / `list_visible_agents` / `request_relay` | done | local | 4 | `message_agent` now enforces the visibility rule (self + direct parents + descendants; falls back to "same project" if the project has no wires). `list_visible_agents` lists reachable peers; `request_relay` routes a message through a parent that can see a more distant agent |
 | `delete_agent` / `monitor_agent` / `delegate_task` | planned | local | 5 | Agent-management primitives beyond `spawn_agent` |
 
 ## Forge

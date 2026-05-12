@@ -17,6 +17,7 @@ mod m20260605_000001_notification_payload;
 mod m20260606_000001_redesign_foundations;
 mod m20260606_000002_repair_chat_attachments;
 mod m20260612_000001_chat_threads_agent_index;
+mod m20260613_000001_agent_wires;
 
 pub struct Migrator;
 
@@ -41,6 +42,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260606_000001_redesign_foundations::Migration),
             Box::new(m20260606_000002_repair_chat_attachments::Migration),
             Box::new(m20260612_000001_chat_threads_agent_index::Migration),
+            Box::new(m20260613_000001_agent_wires::Migration),
         ]
     }
 }
