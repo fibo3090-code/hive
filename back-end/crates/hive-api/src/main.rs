@@ -755,6 +755,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/spec-documents/:spec_document_id/decompose",
             post(decompose_spec_document),
         )
+        .route(
+            "/v1/spec-documents/:spec_document_id/auto-decompose",
+            post(auto_decompose_spec_document),
+        )
         // Agent task assignments (the Skill-Sprint planning view)
         .route(
             "/v1/projects/:project_id/agent-task-assignments",
@@ -2126,6 +2130,9 @@ fn coordinator_tools(team_mode: Option<bool>) -> Vec<String> {
         "message_agent".to_owned(),
         "list_visible_agents".to_owned(),
         "request_relay".to_owned(),
+        "delete_agent".to_owned(),
+        "monitor_agent".to_owned(),
+        "delegate_task".to_owned(),
     ];
     match team_mode {
         Some(true) => {
@@ -2281,7 +2288,8 @@ fn tool_category(name: &str) -> &'static str {
         "web_search" | "web_fetch" => "research",
         "fs_read" | "fs_write" | "fs_list" => "filesystem",
         "shell_exec" => "execution",
-        "spawn_agent" | "message_agent" | "list_visible_agents" | "request_relay" => "coordination",
+        "spawn_agent" | "message_agent" | "list_visible_agents" | "request_relay" | "delete_agent"
+        | "monitor_agent" | "delegate_task" => "coordination",
         "hive_mind_write" | "hive_mind_read" | "hive_mind_list" | "hive_mind_delete" => "memory",
         "list_spec_docs" | "read_spec_doc" | "add_task" | "add_tech_debt" | "update_tech_debt"
         | "record_drift" => "planning",
@@ -5773,6 +5781,7 @@ Your role is `{role}`. Your display name is `{name}`.\n\
 - Delegate only when parallel specialist work materially improves speed or quality.\n\
 - Use `spawn_agent` with a concrete role, bounded task, expected output, and file or responsibility ownership.\n\
 - Do not spawn agents that would edit the same files or resources in parallel.\n\
+- Use `delegate_task` to hand a bounded unit of work to an agent you can see (creates a tracked task and dispatches it); `monitor_agent` to check a sub-agent's status and recent inbox; `delete_agent` to retire one of your direct sub-agents when it's done.\n\
 - Use `message_agent` for short coordination updates, handoffs, or clarifying facts. You may only message your direct parents and your own descendants — call `list_visible_agents` to see who that is, and `request_relay` to route a message through a parent that can see a more distant agent.\n\
 - Integrate delegated results critically; verify before treating them as complete.\n\
 </delegation>\n\
@@ -6094,6 +6103,38 @@ struct DecomposeBody {
     /// Optional offset for sprint position to chain with existing rows.
     #[serde(default)]
     starting_position: i32,
+}
+
+/// `POST /v1/spec-documents/:id/auto-decompose` — generate a phased task tree
+/// from the document's markdown via the planner LLM and persist it as
+/// `sprints` + `tasks` (same logic as the onboarding `/launch` decompose step).
+async fn auto_decompose_spec_document(
+    State(state): State<AppState>,
+    Path(spec_document_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let doc = spec_documents::get(database.conn(), &spec_document_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("spec document {spec_document_id}")))?;
+    if doc.markdown.trim().is_empty() {
+        return Err(AppError::BadRequest("spec document is empty".into()));
+    }
+    let (sprint_ids, task_ids) = decompose_brief(&state, &doc.project_id, &doc.markdown)
+        .await
+        .map_err(AppError::BadRequest)?;
+    emit(
+        &state,
+        "spec_document.decomposed",
+        json!({ "specDocumentId": spec_document_id, "projectId": doc.project_id, "sprintIds": sprint_ids, "taskIds": task_ids }),
+    )
+    .await;
+    Ok(Json(json!({
+        "specDocumentId": spec_document_id,
+        "projectId": doc.project_id,
+        "sprintIds": sprint_ids,
+        "taskIds": task_ids,
+        "taskCount": task_ids.len(),
+    })))
 }
 
 async fn decompose_spec_document(

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { api } from '@/api/client';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useSpecDocuments, useSpecDocumentSections } from '@/api/spec-documents';
 import { useDriftEvents, useUpdateDriftStatus } from '@/api/drift';
@@ -70,9 +71,22 @@ function SpecDocumentTab() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const effectiveId = selectedId ?? docs.data?.[0]?.id ?? null;
   const sections = useSpecDocumentSections(effectiveId);
+  const [decomposing, setDecomposing] = useState(false);
 
-  const handleDecompose = () => {
-    toast.success('Spec decomposition started (Simulated). The planner agent will break this document down into tasks.');
+  const handleDecompose = async () => {
+    if (!effectiveId) return;
+    setDecomposing(true);
+    try {
+      const result = await api<{ taskCount: number; sprintIds: string[] }>(
+        `/v1/spec-documents/${effectiveId}/auto-decompose`,
+        { method: 'POST' },
+      );
+      toast.success(`Decomposed into ${result.sprintIds.length} sprint(s) and ${result.taskCount} task(s) — see Planning → Skill Sprint.`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Decomposition failed (a connected LLM provider is required).');
+    } finally {
+      setDecomposing(false);
+    }
   };
 
   if (!docs.data?.length) {
@@ -107,8 +121,8 @@ function SpecDocumentTab() {
           </button>
         ))}
         
-        <Button variant="outline" className="w-full mt-4 text-xs h-8" onClick={handleDecompose}>
-          Decompose Spec
+        <Button variant="outline" className="w-full mt-4 text-xs h-8" onClick={() => { void handleDecompose(); }} disabled={decomposing || !effectiveId}>
+          {decomposing ? 'Decomposing…' : 'Decompose Spec'}
         </Button>
       </aside>
 

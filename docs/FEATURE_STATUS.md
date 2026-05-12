@@ -68,7 +68,7 @@ Legend
 |---|---|---|---|---|
 | Spec doc list | partial | local | 2 | Read-only |
 | Import multiple spec docs | planned | local | 2 | Currently one-at-a-time via onboarding only |
-| Spec → roadmap → per-agent tasks | partial | cloud-llm | 2 | Onboarding `/launch` decomposes the brief into `sprints` + `tasks` (per-task assignee role → matched to an existing agent). Standalone spec-doc → section-anchored decomposition (`/v1/spec-documents/:id/decompose`) exists but isn't wired to a UI button yet |
+| Spec → roadmap → per-agent tasks | done | cloud-llm | 2 | Onboarding `/launch` decomposes the brief into `sprints` + `tasks` (per-task assignee role → matched to an existing agent), and Planning → Spec → "Decompose Spec" runs the same via `POST /v1/spec-documents/:id/auto-decompose`. Section-anchored decomposition (`/v1/spec-documents/:id/decompose`) is the alternate path |
 | Tech debt board (Planning) | partial | local | 1 | Move + create supported; fine-grained edit/delete still missing |
 | Hive Mind notes (Planning) | partial | local | 1 | Create + filter in the UI; agents read/write via `hive_mind_*` tools. UI edit/delete still missing |
 | Drift visualization | partial | local | 5 | UI panel present; agents can write events via `record_drift`, but the runtime does not auto-detect drift yet |
@@ -84,7 +84,7 @@ Legend
 | Session replay | partial | server | 1 | Empty until runtime emits replay events |
 | Live SSE updates on dashboards | partial | local | 5 | The global `/v1/events` stream already drives query invalidation for cost/task/agent changes (see `realtime/useSse.ts`). A dedicated `GET /v1/projects/:pid/events` multiplexed stream is still planned, as is the eval-leaderboard data source |
 | Runtime drift auto-detection | planned | local | 5 | `hive-runtime/src/drift.rs` has scoring fns but the turn loop doesn't call them yet; agents can write events via the `record_drift` tool |
-| Interleaved persistence of assistant narration | planned | local | 3 | Intra-round text is streamed live over SSE but only the final round's text is persisted; persisting the full transcript is pending |
+| Interleaved persistence of assistant narration | done | local | 3 | The full per-round transcript is persisted (rounds joined by blank lines), so a reload matches the live stream |
 
 ## Code & Versioning
 
@@ -115,7 +115,7 @@ Legend
 | `git_status` / `git_diff` / `git_log` / `git_commit` | done | local | 5 | `hive-runtime::git_tools` — operate on the project workspace repo |
 | `git_pull` / `git_push` | done | git-remote | 5 | `hive-runtime::git_tools` — rejected on `local`-tier projects |
 | `message_agent` (wire-derived visibility) / `list_visible_agents` / `request_relay` | done | local | 4 | `message_agent` now enforces the visibility rule (self + direct parents + descendants; falls back to "same project" if the project has no wires). `list_visible_agents` lists reachable peers; `request_relay` routes a message through a parent that can see a more distant agent |
-| `delete_agent` / `monitor_agent` / `delegate_task` | planned | local | 5 | Agent-management primitives beyond `spawn_agent` |
+| `delete_agent` / `monitor_agent` / `delegate_task` | done | local | 5 | `hive-runtime::agent_tools`. `delete_agent` retires a direct sub-agent (cancel subtree + terminate + status=deprecated); `monitor_agent` reads status/runtime-state/recent inbox; `delegate_task` creates a tracked task assigned to a visible agent and dispatches it |
 
 ## Forge
 
