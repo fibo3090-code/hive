@@ -77,12 +77,14 @@ Legend
 
 | Feature | Status | Dep | Phase | Notes |
 |---|---|---|---|---|
-| Agent metrics | partial | local | 1 | Polled snapshot, not live SSE |
-| Project metrics | partial | local | 1 | Same as above |
+| Agent metrics | partial | local | 1 | React Query snapshot; refetched on `agent.status` / `cost.ingested` SSE events (not a dedicated per-project stream) |
+| Project metrics | partial | local | 1 | Same — `spend-timeline` / `task-throughput` / `cost-timeline` queries are invalidated by `cost.ingested` / `task.status` events |
 | Eval leaderboard | mock | local | 1 | Static seed |
 | Runtime feed (traces) | done | server | 1 | |
 | Session replay | partial | server | 1 | Empty until runtime emits replay events |
-| Live SSE updates on dashboards | planned | server | 5 | Subscribe to `cost_event`, `task_event`, `agent_state` channels |
+| Live SSE updates on dashboards | partial | local | 5 | The global `/v1/events` stream already drives query invalidation for cost/task/agent changes (see `realtime/useSse.ts`). A dedicated `GET /v1/projects/:pid/events` multiplexed stream is still planned, as is the eval-leaderboard data source |
+| Runtime drift auto-detection | planned | local | 5 | `hive-runtime/src/drift.rs` has scoring fns but the turn loop doesn't call them yet; agents can write events via the `record_drift` tool |
+| Interleaved persistence of assistant narration | planned | local | 3 | Intra-round text is streamed live over SSE but only the final round's text is persisted; persisting the full transcript is pending |
 
 ## Code & Versioning
 
