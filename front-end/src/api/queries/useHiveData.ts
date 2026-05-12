@@ -198,6 +198,15 @@ export function useHiveData() {
     onSuccess: invalidateProject,
   });
 
+  const createTaskMutation = useMutation({
+    mutationFn: (input: { title: string; agentId?: string; phase?: string; priority?: string }) =>
+      api<TaskItem>(`/v1/projects/${projectId}/tasks`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: invalidateProject,
+  });
+
   const setAgentStatusMutation = useMutation({
     mutationFn: ({ agentId, status }: { agentId: string; status: AgentStatus }) =>
       api<Agent>(`/v1/agents/${agentId}/set-status`, {
@@ -250,6 +259,7 @@ export function useHiveData() {
     markNotificationRead: (id: string) => markNotificationReadMutation.mutateAsync(id),
     markAllNotificationsRead: () => markAllNotificationsReadMutation.mutateAsync(),
     updateTaskStatus: (taskId: string, status: TaskItem['status']) => updateTaskMutation.mutateAsync({ taskId, status }),
+    createTask: (input: { title: string; agentId?: string; phase?: string; priority?: string }) => createTaskMutation.mutateAsync(input),
     setAgentStatus: (agentId: string, status: AgentStatus) => setAgentStatusMutation.mutateAsync({ agentId, status }),
     extendBudget: (newTotal: number) => extendBudgetMutation.mutateAsync(newTotal),
     setActiveProject: (nextProjectId: string) => activateMutation.mutateAsync(nextProjectId),

@@ -33,7 +33,16 @@ pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbE
 }
 
 pub async fn insert(db: &DatabaseConnection, input: NewMessage) -> Result<Model, DbErr> {
-    let now = now_rfc3339();
+    insert_at(db, input, now_rfc3339()).await
+}
+
+/// Like [`insert`] but with an explicit `created_at` — used by `/compact` so the
+/// synthetic summary message sorts ahead of the messages it replaces.
+pub async fn insert_at(
+    db: &DatabaseConnection,
+    input: NewMessage,
+    created_at: String,
+) -> Result<Model, DbErr> {
     let model = ActiveModel {
         id: Set(new_id()),
         thread_id: Set(input.thread_id),
@@ -47,10 +56,22 @@ pub async fn insert(db: &DatabaseConnection, input: NewMessage) -> Result<Model,
         cost_cents: Set(input.cost_cents),
         parent_message_id: Set(input.parent_message_id),
         status: Set(input.status),
-        created_at: Set(now.clone()),
-        updated_at: Set(now),
+        created_at: Set(created_at.clone()),
+        updated_at: Set(created_at),
     };
     model.insert(db).await
+}
+
+/// Delete a specific set of messages by id. Returns the number of rows removed.
+pub async fn delete_ids(db: &DatabaseConnection, ids: &[String]) -> Result<u64, DbErr> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let result = Entity::delete_many()
+        .filter(Column::Id.is_in(ids.iter().cloned()))
+        .exec(db)
+        .await?;
+    Ok(result.rows_affected)
 }
 
 pub async fn finalize(

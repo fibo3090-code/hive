@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bot, FileText, GitCommit, Brain, Settings, LayoutDashboard, Network, MessageSquare, GitBranch, BarChart3, Boxes } from 'lucide-react';
+import { Bot, Settings, LayoutDashboard, Network, MessageSquare, GitBranch, BarChart3, Boxes, ClipboardList, Hammer, History, Plus } from 'lucide-react';
 import { useHiveData } from '@/api/queries/useHiveData';
 import type { Agent } from '@/types/domain';
 import { cn } from '@/lib/utils';
@@ -9,60 +9,70 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Drawer, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle } from '@/components/ui/drawer';
 import { useWorkspace } from '@/context/WorkspaceContext';
 
+type LucideIconComponent = typeof LayoutDashboard;
+
 type PaletteItem = {
   id: string;
-  group: 'Commands' | 'Agents' | 'Files' | 'Commits' | 'Memory';
+  group: 'Navigate' | 'Actions' | 'Agents';
   label: string;
   meta?: string;
   preview: string;
   path: string;
   kind: 'navigation' | 'agent';
+  icon: LucideIconComponent;
 };
 
 const commandItems: PaletteItem[] = [
-  { id: 'nav-dash', group: 'Commands', label: 'Go to Dashboard', preview: 'Open the summary view with alerts, tasks, commits, and budget status.', path: '/dashboard', kind: 'navigation' },
-  { id: 'nav-graph', group: 'Commands', label: 'Go to Hive Graph', preview: 'Open the agent graph with status filters, lock overlay, and context menu actions.', path: '/hive-graph', kind: 'navigation' },
-  { id: 'nav-chat', group: 'Commands', label: 'Go to Chat Central', preview: 'Open the coordination thread with mentions, attachments, and typing indicators.', path: '/chat', kind: 'navigation' },
-  { id: 'nav-code', group: 'Commands', label: 'Go to Code & Versioning', preview: 'Inspect the file tree, PRs, diff review state, and active lock activity.', path: '/code', kind: 'navigation' },
-  { id: 'nav-insights', group: 'Commands', label: 'Go to Insights', preview: 'Inspect replays, Hive Mind notes, technical debt, and evaluation metrics.', path: '/insights', kind: 'navigation' },
-  { id: 'nav-spec', group: 'Commands', label: 'Go to Spec & Plan', preview: 'View sprint ordering, stories, and implementation status.', path: '/spec', kind: 'navigation' },
-  { id: 'nav-modules', group: 'Commands', label: 'Go to Modules', preview: 'Browse installed and generated HCM modules.', path: '/modules', kind: 'navigation' },
-  { id: 'nav-settings', group: 'Commands', label: 'Go to Settings', preview: 'Edit persisted preferences, appearance, integrations, and security.', path: '/settings', kind: 'navigation' },
+  { id: 'nav-dash', group: 'Navigate', label: 'Go to Dashboard', preview: 'Summary view: alerts, tasks, commits, budget status.', path: '/dashboard', kind: 'navigation', icon: LayoutDashboard },
+  { id: 'nav-graph', group: 'Navigate', label: 'Go to Hive Graph', preview: 'Agent graph with status filters and the agent detail drawer.', path: '/hive-graph', kind: 'navigation', icon: Network },
+  { id: 'nav-chat', group: 'Navigate', label: 'Go to Chat Central', preview: 'Coordination threads with mentions, attachments, and slash commands.', path: '/chat', kind: 'navigation', icon: MessageSquare },
+  { id: 'nav-code', group: 'Navigate', label: 'Go to Code & Versioning', preview: 'Working tree, file viewer, commit / discard against the project git repo.', path: '/code', kind: 'navigation', icon: GitBranch },
+  { id: 'nav-stats', group: 'Navigate', label: 'Go to Stats', preview: 'Agent / project metrics, runtime feed, eval leaderboard.', path: '/stats', kind: 'navigation', icon: BarChart3 },
+  { id: 'nav-planning', group: 'Navigate', label: 'Go to Planning', preview: 'Spec docs, sprint plan, tech-debt board, Hive Mind notes, drift.', path: '/planning', kind: 'navigation', icon: ClipboardList },
+  { id: 'nav-forge', group: 'Navigate', label: 'Go to Forge', preview: 'Skills, Modules, Connectors, and the custom agent builder.', path: '/forge', kind: 'navigation', icon: Hammer },
+  { id: 'nav-modules', group: 'Navigate', label: 'Go to Modules', preview: 'Browse installed and generated HCM modules.', path: '/forge?tab=modules', kind: 'navigation', icon: Boxes },
+  { id: 'nav-history', group: 'Navigate', label: 'Go to Session History', preview: 'Past sessions and their outcomes.', path: '/session-history', kind: 'navigation', icon: History },
+  { id: 'nav-settings', group: 'Navigate', label: 'Go to Settings', preview: 'LLM providers, GitHub sync, tools & sandbox, and other preferences.', path: '/settings', kind: 'navigation', icon: Settings },
+  { id: 'act-new-project', group: 'Actions', label: 'New project (onboarding)', preview: 'Start the onboarding flow to create a new project.', path: '/onboarding', kind: 'navigation', icon: Plus },
+  { id: 'act-new-thread', group: 'Actions', label: 'New chat thread', preview: 'Open Chat Central — use the "+" next to an agent or type /new.', path: '/chat', kind: 'navigation', icon: MessageSquare },
+  { id: 'act-llm-settings', group: 'Actions', label: 'Connect an LLM provider', preview: 'Jump to Settings → LLM Providers to add or test API keys.', path: '/settings', kind: 'navigation', icon: Settings },
 ];
 
-const iconMap = {
-  Commands: LayoutDashboard,
-  Agents: Bot,
-  Files: FileText,
-  Commits: GitCommit,
-  Memory: Brain,
-} as const;
-
-type LucideIconComponent = typeof LayoutDashboard;
-
-const commandLabelIconEntries: Array<[string, LucideIconComponent]> = [
-  ['Hive Graph', Network],
-  ['Chat', MessageSquare],
-  ['Code', GitBranch],
-  ['Insights', BarChart3],
-  ['Spec', FileText],
-  ['Modules', Boxes],
-  ['Settings', Settings],
-];
-
-function getCommandIcon(group: PaletteItem['group'], label: string): LucideIconComponent {
-  if (group !== 'Commands') {
-    return iconMap[group];
+/**
+ * Subsequence fuzzy match: every char of `q` must appear in `text` in order.
+ * Returns a score (higher = better, contiguous + word-start matches win); -1 = no match.
+ */
+function fuzzyScore(query: string, text: string): number {
+  if (query === '') return 0;
+  const q = query.toLowerCase();
+  const t = text.toLowerCase();
+  let qi = 0;
+  let score = 0;
+  let prevMatch = -2;
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) {
+      score += ti === prevMatch + 1 ? 5 : 1; // reward contiguous runs
+      if (ti === 0 || ' /-_.'.includes(t[ti - 1])) score += 3; // reward word starts
+      prevMatch = ti;
+      qi++;
+    }
   }
-  for (const [keyword, Icon] of commandLabelIconEntries) {
-    if (label.includes(keyword)) return Icon;
+  if (qi < q.length) return -1;
+  return score - text.length * 0.01; // mild bias toward shorter strings
+}
+
+function bestFuzzyScore(query: string, ...fields: Array<string | undefined>): number {
+  let best = -1;
+  for (const f of fields) {
+    if (f === undefined) continue;
+    best = Math.max(best, fuzzyScore(query, f));
   }
-  return LayoutDashboard;
+  return best;
 }
 
 export function CommandPalette() {
   const navigate = useNavigate();
-  const { setChatTargetAgentId, setGraphFocusAgentId, selectedCommandId, setSelectedCommandId } = useWorkspace();
+  const { setChatTargetAgentId, setGraphFocusAgentId, setSelectedCommandId } = useWorkspace();
   const { state } = useHiveData();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -79,14 +89,18 @@ export function CommandPalette() {
       preview: `${agent.role} agent currently ${agent.status}. Current task: ${agent.currentTask ?? 'No active task'}`,
       path: '/hive-graph',
       kind: 'agent' as const,
+      icon: Bot,
     })),
   ], [state.agents]);
 
   const filtered = useMemo(() => {
-    const normalized = query.toLowerCase();
-    return normalized === ''
-      ? items
-      : items.filter((item) => item.label.toLowerCase().includes(normalized) || item.preview.toLowerCase().includes(normalized) || item.meta?.toLowerCase().includes(normalized));
+    const q = query.trim();
+    if (q === '') return items;
+    return items
+      .map((item) => ({ item, score: bestFuzzyScore(q, item.label, item.meta, item.preview) }))
+      .filter((x) => x.score >= 0)
+      .sort((a, b) => b.score - a.score)
+      .map((x) => x.item);
   }, [items, query]);
 
   const current = filtered[selectedIndex] ?? filtered[0] ?? null;
@@ -167,7 +181,7 @@ export function CommandPalette() {
                   <CommandGroup key={group} heading={group}>
                     {filtered.filter((item) => item.group === group).map((item) => {
                       const index = filtered.findIndex((entry) => entry.id === item.id);
-                      const Icon = getCommandIcon(group, item.label);
+                      const Icon = item.icon;
                       return (
                         <CommandItem
                           key={item.id}
@@ -196,8 +210,9 @@ export function CommandPalette() {
                   <p className="text-sm text-muted-foreground mt-4 leading-relaxed">{current.preview}</p>
                   {current.meta && <div className="mt-4 rounded-md bg-surface-2 px-3 py-2 text-xs font-mono text-muted-foreground">{current.meta}</div>}
                   <div className="mt-auto rounded-lg border border-border bg-surface-2 p-3 text-xs text-muted-foreground">
-                    <div className="font-medium text-foreground mb-1">Current selection</div>
-                    <div>{selectedCommandId ?? current.id}</div>
+                    {current.kind === 'agent'
+                      ? 'Press Enter to open the agent detail drawer.'
+                      : <>Press Enter to go to <span className="font-mono text-foreground">{current.path}</span>.</>}
                   </div>
                 </>
               ) : (

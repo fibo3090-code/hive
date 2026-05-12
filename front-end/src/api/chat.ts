@@ -139,6 +139,26 @@ export function useCancelChatMessage() {
   });
 }
 
+export interface CompactResult {
+  ok: boolean;
+  summarizedCount: number;
+  summary?: string;
+  message?: string;
+  messageId?: string;
+}
+
+export function useCompactChatThread() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (threadId: string) =>
+      api<CompactResult>(`/v1/chat-threads/${threadId}/compact`, { method: 'POST' }),
+    onSuccess: (_data, threadId) => {
+      qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
+      qc.invalidateQueries({ queryKey: ['chat-threads'] });
+    },
+  });
+}
+
 /**
  * Subscribe to chat.<threadId>.* server-sent events and accumulate streaming
  * text by `assistantMessageId`. Token deltas go into `streaming[id]`; when

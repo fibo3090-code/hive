@@ -518,7 +518,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/projects/:project_id/coordinator/ensure",
             post(ensure_coordinator),
         )
-        .route("/v1/projects/:project_id/tasks", get(list_tasks))
+        .route("/v1/projects/:project_id/tasks", get(list_tasks).post(create_task))
         .route("/v1/tasks/:task_id/set-status", post(set_task_status))
         .route("/v1/projects/:project_id/alerts", get(list_alerts))
         .route("/v1/alerts/:alert_id/dismiss", post(dismiss_alert))
@@ -673,6 +673,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route(
             "/v1/chat-threads/:thread_id/messages",
             get(list_chat_messages).post(send_chat_message),
+        )
+        .route(
+            "/v1/chat-threads/:thread_id/compact",
+            post(compact_chat_thread),
         )
         .route(
             "/v1/chat-messages/:message_id/cancel",
@@ -2360,6 +2364,80 @@ async fn list_tasks(
     Ok(Json(json!(
         tasks::list_by_project(database.conn(), &project_id).await?
     )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTaskBody {
+    title: String,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    phase: Option<String>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    estimated_tokens: Option<i32>,
+}
+
+async fn create_task(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(body): Json<CreateTaskBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.title.trim().is_empty() {
+        return Err(AppError::BadRequest("title is required".into()));
+    }
+    let database = db(&state).await;
+    let agent_id = body
+        .agent_id
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    if let Some(ref aid) = agent_id {
+        match agents::get(database.conn(), aid).await? {
+            Some(a) if a.project_id == project_id => {}
+            _ => {
+                return Err(AppError::BadRequest(format!(
+                    "agent {aid} not found in this project"
+                )))
+            }
+        }
+    }
+    let task = tasks::create(
+        database.conn(),
+        tasks::CreateTask {
+            project_id: project_id.clone(),
+            title: body.title.trim().to_owned(),
+            status: body.status.unwrap_or_else(|| "pending".into()),
+            phase: body.phase,
+            priority: body.priority.unwrap_or_else(|| "medium".into()),
+            estimated_tokens: body.estimated_tokens.unwrap_or(0),
+            agent_id,
+            sprint_id: None,
+            spec_section_id: None,
+            due_at: None,
+        },
+    )
+    .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "task.create",
+        "task",
+        &task.id,
+        None,
+        Some(serde_json::to_value(&task).unwrap_or(Value::Null)),
+    )
+    .await?;
+    emit(
+        &state,
+        "task.status",
+        json!({ "id": task.id, "status": task.status, "projectId": project_id }),
+    )
+    .await;
+    Ok(Json(json!(task)))
 }
 
 async fn set_task_status(
@@ -4287,6 +4365,136 @@ async fn delete_chat_thread(
     let database = db(&state).await;
     chat_threads::delete(database.conn(), &thread_id).await?;
     Ok(Json(json!({ "success": true })))
+}
+
+/// Number of most-recent messages a `/compact` call always keeps verbatim.
+const COMPACT_KEEP_RECENT: usize = 6;
+
+/// `POST /v1/chat-threads/:thread_id/compact` — summarise the older half of a
+/// thread into a single synthetic `system` message and delete the originals.
+/// No-op (returns `summarizedCount: 0`) when the thread already has
+/// `<= COMPACT_KEEP_RECENT` messages.
+async fn compact_chat_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    chat_threads::get(database.conn(), &thread_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("thread {thread_id}")))?;
+
+    let messages = chat_messages::list_by_thread(database.conn(), &thread_id).await?;
+    if messages.len() <= COMPACT_KEEP_RECENT {
+        return Ok(Json(json!({
+            "ok": true,
+            "summarizedCount": 0,
+            "message": "thread is already short — nothing to compact",
+        })));
+    }
+
+    let split = messages.len() - COMPACT_KEEP_RECENT;
+    let (to_summarize, _kept) = messages.split_at(split);
+
+    // Build a transcript, capped so the summariser prompt stays bounded.
+    let mut transcript = String::new();
+    for m in to_summarize {
+        let line = format!("{}: {}\n\n", m.role, m.content.trim());
+        if transcript.len() + line.len() > 16 * 1024 {
+            transcript.push_str("…(earlier messages truncated)…\n\n");
+            break;
+        }
+        transcript.push_str(&line);
+    }
+
+    // Try the configured cheap/default model; fall back to a mechanical
+    // summary if no provider is available so the feature still works offline.
+    let summary = match resolve_chat_target(&state, None).await {
+        Ok((provider_id, model_id)) => {
+            match llm_providers::get(database.conn(), &provider_id).await? {
+                Some(provider_row) => match build_provider_config(&state, &provider_row).await {
+                    Ok(config) => {
+                        let client = client_for(config);
+                        let req = hive_llm::chat::ChatRequest::new(
+                            model_id,
+                            vec![
+                                hive_llm::chat::ChatMessage::system(
+                                    "Summarise the following chat transcript in 150-350 words. \
+                                     Preserve concrete decisions, file names, open questions, and \
+                                     any state the assistant must remember to continue. Respond with \
+                                     plain prose only — no preamble, no markdown headers."
+                                        .to_owned(),
+                                ),
+                                hive_llm::chat::ChatMessage::user(transcript.clone()),
+                            ],
+                        );
+                        match client.chat(req).await {
+                            Ok(resp) if !resp.text.trim().is_empty() => resp.text.trim().to_owned(),
+                            _ => mechanical_summary(&transcript),
+                        }
+                    }
+                    Err(_) => mechanical_summary(&transcript),
+                },
+                None => mechanical_summary(&transcript),
+            }
+        }
+        Err(_) => mechanical_summary(&transcript),
+    };
+
+    let summarized_count = to_summarize.len();
+    let body = format!(
+        "[Conversation summary — {summarized_count} earlier message(s) compacted]\n\n{summary}"
+    );
+    // Sort the summary ahead of everything that remains.
+    let created_at = to_summarize
+        .first()
+        .map(|m| m.created_at.clone())
+        .unwrap_or_else(|| messages[0].created_at.clone());
+
+    let ids: Vec<String> = to_summarize.iter().map(|m| m.id.clone()).collect();
+    chat_messages::delete_ids(database.conn(), &ids).await?;
+    let inserted = chat_messages::insert_at(
+        database.conn(),
+        chat_messages::NewMessage {
+            thread_id: thread_id.clone(),
+            role: "system".into(),
+            content: body.clone(),
+            tool_calls: json!([]),
+            model: None,
+            provider_id: None,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_cents: 0,
+            parent_message_id: None,
+            status: "done".into(),
+        },
+        created_at,
+    )
+    .await?;
+    let _ = chat_threads::touch(database.conn(), &thread_id).await;
+
+    emit(
+        &state,
+        &format!("chat.{thread_id}.message"),
+        json!({ "threadId": thread_id, "messageId": inserted.id, "kind": "compact" }),
+    )
+    .await;
+
+    Ok(Json(json!({
+        "ok": true,
+        "summarizedCount": summarized_count,
+        "summary": summary,
+        "messageId": inserted.id,
+    })))
+}
+
+/// Cheap fallback summary when no LLM is reachable: keep the head of the
+/// transcript so at least *something* survives the compaction.
+fn mechanical_summary(transcript: &str) -> String {
+    let head: String = transcript.chars().take(600).collect();
+    format!(
+        "(Automatic summary — no LLM provider was available for compaction.)\n\n{head}{}",
+        if transcript.chars().count() > 600 { "…" } else { "" }
+    )
 }
 
 async fn list_chat_messages(
