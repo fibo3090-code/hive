@@ -1071,6 +1071,11 @@ async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppEr
         .unwrap_or_else(|| {
             let mut defaults = default_tool_names();
             defaults.insert(0, "web_search".into());
+            defaults.extend(
+                hive_runtime::RUNTIME_DEFAULT_TOOL_NAMES
+                    .iter()
+                    .map(|s| (*s).to_owned()),
+            );
             defaults
         });
 
@@ -1233,6 +1238,7 @@ async fn build_tooling(
         state.executors.clone(),
         EventBus::new(state.events.clone()),
     );
+    hive_runtime::register_db_tools(&mut registry, db(state).await.clone());
     let registry = registry.filtered(&enabled_tools);
 
     let mut context = ToolContext::new(project_id.to_owned(), sandbox);
@@ -2176,6 +2182,7 @@ async fn list_tool_manifests(State(state): State<AppState>) -> Result<Json<Value
         state.executors.clone(),
         EventBus::new(state.events.clone()),
     );
+    hive_runtime::register_db_tools(&mut registry, database.clone());
 
     let global = enabled_tools_for_turn(&state).await.unwrap_or_default();
     let manifests = registry.manifests();
@@ -2200,6 +2207,10 @@ fn tool_category(name: &str) -> &'static str {
         "fs_read" | "fs_write" | "fs_list" => "filesystem",
         "shell_exec" => "execution",
         "spawn_agent" | "message_agent" => "coordination",
+        "hive_mind_write" | "hive_mind_read" | "hive_mind_list" | "hive_mind_delete" => "memory",
+        "list_spec_docs" | "read_spec_doc" | "add_task" | "add_tech_debt" | "update_tech_debt"
+        | "record_drift" => "planning",
+        "todo" => "planning",
         _ => "other",
     }
 }
@@ -2269,13 +2280,15 @@ async fn update_agent(
     // doesn't silently disable everything on the next turn. The full
     // registered set is `default_tool_names()` (fs/shell/web_fetch),
     // plus `web_search` (added when configured), plus the runtime-only
-    // pair `spawn_agent` / `message_agent` from `hive-runtime`.
+    // tools from `hive-runtime` (`spawn_agent`, `message_agent`,
+    // `hive_mind_*`, spec / task / tech-debt / drift tools).
     if let Some(tools) = body.enabled_tools.as_ref() {
         let mut known: std::collections::HashSet<String> =
             default_tool_names().into_iter().collect();
         known.insert("web_search".into());
-        known.insert("spawn_agent".into());
-        known.insert("message_agent".into());
+        for name in hive_runtime::RUNTIME_TOOL_NAMES {
+            known.insert((*name).to_owned());
+        }
         let unknown: Vec<&str> = tools
             .iter()
             .map(String::as_str)
@@ -5390,6 +5403,11 @@ Your role is `{role}`. Your display name is `{name}`.\n\
 - Use `message_agent` for short coordination updates, handoffs, or clarifying facts.\n\
 - Integrate delegated results critically; verify before treating them as complete.\n\
 </delegation>\n\
+\n\
+<project_memory>\n\
+- Use `hive_mind_write` to record durable decisions, conventions, and facts other agents should know; `hive_mind_list` / `hive_mind_read` to recall them; `hive_mind_delete` to prune.\n\
+- Use `list_spec_docs` / `read_spec_doc` to ground your work in the project's spec; `add_task` to file follow-up work; `add_tech_debt` / `update_tech_debt` to track shortcuts; `record_drift` when your work, the code, or behaviour has diverged from its intent.\n\
+</project_memory>\n\
 \n\
 <quality_bar>\n\
 - Match the repository's architecture, naming, formatting, dependency choices, and testing style.\n\

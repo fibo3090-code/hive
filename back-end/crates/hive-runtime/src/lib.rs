@@ -9,6 +9,7 @@
 
 pub mod agent_tools;
 pub mod chat;
+pub mod db_tools;
 pub mod drift;
 pub mod events;
 pub mod executor;
@@ -20,6 +21,7 @@ pub mod spec_doc;
 pub mod turn_driver;
 
 pub use agent_tools::register_agent_tools;
+pub use db_tools::{register_db_tools, RUNTIME_DEFAULT_TOOL_NAMES, RUNTIME_TOOL_NAMES};
 
 pub use events::{EventBus, RuntimeEvent};
 pub use executor::{AgentExecutor, ExecutorState, InboxItem};
