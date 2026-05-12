@@ -70,8 +70,8 @@ Legend
 | Import multiple spec docs | planned | local | 2 | Currently one-at-a-time via onboarding only |
 | Spec → roadmap → per-agent tasks | planned | cloud-llm | 2 | Spec decomposition pipeline missing |
 | Tech debt board (Planning) | partial | local | 1 | Move + create supported; fine-grained edit/delete still missing |
-| Hive Mind notes (Planning) | partial | local | 1 | Create + filter; agent-side read/write tools missing |
-| Drift visualization | mock | server | 5 | UI panel present; drift events not yet emitted by runtime |
+| Hive Mind notes (Planning) | partial | local | 1 | Create + filter in the UI; agents read/write via `hive_mind_*` tools. UI edit/delete still missing |
+| Drift visualization | partial | local | 5 | UI panel present; agents can write events via `record_drift`, but the runtime does not auto-detect drift yet |
 
 ## Stats / Insights
 
@@ -96,7 +96,7 @@ Legend
 | Refresh button | done | local | 5 | Refetches status + branches + open file |
 | Push / pull from this page | planned | git-remote | — | No `git push`/`git pull` endpoint yet; remote sync goes through Settings → GitHub Sync |
 
-## Hive Mind & Agent Tools (backend `hive-tools`)
+## Hive Mind & Agent Tools (backend `hive-tools` + `hive-runtime`)
 
 | Tool | Status | Dep | Phase | Notes |
 |---|---|---|---|---|
@@ -104,13 +104,16 @@ Legend
 | `shell_exec` | done | local | 0 | |
 | `web_search` | done | server | 0 | |
 | `todo` | done | local | 0 | Single tool with `action` ∈ {add, complete, remove, list} over `.hive/todo.json`. Not the richer `todo_create`/`todo_update`/… surface sketched in `back-end/docs/TODO_TOOL_SPEC.md` (still a design sketch) |
-| `hive_mind_read` / `_write` / `_list` / `_delete` | planned | local | 5 | Backed by `hive_notes` table (table exists) |
-| `send_message_to_agent` | planned | local | 4 | A2A messaging |
-| `list_visible_agents` | planned | local | 4 | Respects wire-derived visibility |
-| `request_relay` | planned | local | 4 | Child→non-ancestor message relay through parent |
-| `spawn_agent` / `delete_agent` / `monitor_agent` / `delegate_task` | planned | local | 5 | Agent management primitives |
-| `list_spec_docs` / `add_task` / `add_tech_debt` / `update_tech_debt` / `record_drift` | planned | local | 5 | Spec & quality tools |
-| `git_status` / `git_diff` / `git_commit` / `git_pull` / `git_push` | planned | git-remote | 5 | Gated by sovereignty tier |
+| `hive_mind_write` / `_read` / `_list` / `_delete` | done | local | 5 | `hive-runtime::db_tools`, backed by `hive_mind_notes` (topic = `category`). Enabled by default for every agent |
+| `spawn_agent` / `message_agent` | done | local | 4 | `hive-runtime::agent_tools`. Coordinator-scoped (in `coordinator_tools`, not the global default) |
+| `list_spec_docs` / `read_spec_doc` | done | local | 5 | `hive-runtime::db_tools` — read project spec docs + section anchors |
+| `add_task` | done | local | 5 | `hive-runtime::db_tools` — file a backlog task (optionally agent-assigned) |
+| `add_tech_debt` / `update_tech_debt` | done | local | 5 | `hive-runtime::db_tools` |
+| `record_drift` | done | local | 5 | `hive-runtime::db_tools` — writes a `drift_events` row (the runtime does not auto-detect drift yet; this is the agent-driven path) |
+| `git_status` / `git_diff` / `git_log` / `git_commit` | done | local | 5 | `hive-runtime::git_tools` — operate on the project workspace repo |
+| `git_pull` / `git_push` | done | git-remote | 5 | `hive-runtime::git_tools` — rejected on `local`-tier projects |
+| `send_message_to_agent` (with wire-derived visibility) / `list_visible_agents` / `request_relay` | planned | local | 4 | Need the `agent_wires` graph first; today there is only the unscoped `message_agent` |
+| `delete_agent` / `monitor_agent` / `delegate_task` | planned | local | 5 | Agent-management primitives beyond `spawn_agent` |
 
 ## Forge
 

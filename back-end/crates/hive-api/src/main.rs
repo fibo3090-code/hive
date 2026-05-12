@@ -1074,6 +1074,7 @@ async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppEr
             defaults.extend(
                 hive_runtime::RUNTIME_DEFAULT_TOOL_NAMES
                     .iter()
+                    .chain(hive_runtime::GIT_TOOL_NAMES.iter())
                     .map(|s| (*s).to_owned()),
             );
             defaults
@@ -1239,6 +1240,7 @@ async fn build_tooling(
         EventBus::new(state.events.clone()),
     );
     hive_runtime::register_db_tools(&mut registry, db(state).await.clone());
+    hive_runtime::register_git_tools(&mut registry, db(state).await.clone());
     let registry = registry.filtered(&enabled_tools);
 
     let mut context = ToolContext::new(project_id.to_owned(), sandbox);
@@ -2183,6 +2185,7 @@ async fn list_tool_manifests(State(state): State<AppState>) -> Result<Json<Value
         EventBus::new(state.events.clone()),
     );
     hive_runtime::register_db_tools(&mut registry, database.clone());
+    hive_runtime::register_git_tools(&mut registry, database.clone());
 
     let global = enabled_tools_for_turn(&state).await.unwrap_or_default();
     let manifests = registry.manifests();
@@ -2211,6 +2214,7 @@ fn tool_category(name: &str) -> &'static str {
         "list_spec_docs" | "read_spec_doc" | "add_task" | "add_tech_debt" | "update_tech_debt"
         | "record_drift" => "planning",
         "todo" => "planning",
+        "git_status" | "git_diff" | "git_log" | "git_commit" | "git_pull" | "git_push" => "git",
         _ => "other",
     }
 }
@@ -2286,7 +2290,10 @@ async fn update_agent(
         let mut known: std::collections::HashSet<String> =
             default_tool_names().into_iter().collect();
         known.insert("web_search".into());
-        for name in hive_runtime::RUNTIME_TOOL_NAMES {
+        for name in hive_runtime::RUNTIME_TOOL_NAMES
+            .iter()
+            .chain(hive_runtime::GIT_TOOL_NAMES.iter())
+        {
             known.insert((*name).to_owned());
         }
         let unknown: Vec<&str> = tools
@@ -5407,6 +5414,7 @@ Your role is `{role}`. Your display name is `{name}`.\n\
 <project_memory>\n\
 - Use `hive_mind_write` to record durable decisions, conventions, and facts other agents should know; `hive_mind_list` / `hive_mind_read` to recall them; `hive_mind_delete` to prune.\n\
 - Use `list_spec_docs` / `read_spec_doc` to ground your work in the project's spec; `add_task` to file follow-up work; `add_tech_debt` / `update_tech_debt` to track shortcuts; `record_drift` when your work, the code, or behaviour has diverged from its intent.\n\
+- Use `git_status` / `git_diff` / `git_log` to inspect the working tree, and `git_commit` to checkpoint coherent units of work. `git_pull` / `git_push` only work on cloud-tier projects.\n\
 </project_memory>\n\
 \n\
 <quality_bar>\n\

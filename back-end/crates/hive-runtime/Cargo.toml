@@ -9,6 +9,7 @@ async-trait = "0.1"
 chrono = { workspace = true }
 futures-util = { workspace = true }
 hive-db = { workspace = true }
+hive-git = { workspace = true }
 hive-llm = { workspace = true }
 hive-search = { workspace = true }
 hive-tools = { workspace = true }
