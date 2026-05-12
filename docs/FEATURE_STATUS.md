@@ -84,6 +84,7 @@ Legend
 | Session replay | partial | server | 1 | Empty until runtime emits replay events |
 | Live SSE updates on dashboards | partial | local | 5 | The global `/v1/events` stream already drives query invalidation for cost/task/agent changes (see `realtime/useSse.ts`). A dedicated `GET /v1/projects/:pid/events` multiplexed stream is still planned, as is the eval-leaderboard data source |
 | Runtime drift auto-detection | planned | local | 5 | `hive-runtime/src/drift.rs` has scoring fns but the turn loop doesn't call them yet; agents can write events via the `record_drift` tool |
+| Budget enforcement | done | local | 5 | `chat::run_turn` refuses to start a turn (chat or agent dispatch) once the project's cumulative `cost_events` spend reaches `budget_total_cents`; emits a `budget_exceeded` error. `budget_total_cents <= 0` = unlimited |
 | Interleaved persistence of assistant narration | done | local | 3 | The full per-round transcript is persisted (rounds joined by blank lines), so a reload matches the live stream |
 
 ## Code & Versioning

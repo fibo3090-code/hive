@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use futures_util::StreamExt;
 use hive_db::{
-    repos::{chat_messages, chat_threads, cost_events},
+    repos::{chat_messages, chat_threads, cost_events, projects},
     Db,
 };
 use hive_llm::{
@@ -523,6 +523,43 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     let _thread = chat_threads::get(db.conn(), &thread_id)
         .await?
         .ok_or_else(|| ChatError::NotFound(thread_id.clone()))?;
+
+    // Budget enforcement: refuse to start a turn once the project's cumulative
+    // spend has reached its budget. (`budget_total_cents <= 0` = unlimited.)
+    if let Ok(Some(project)) = projects::get(db.conn(), &project_id).await {
+        if project.budget_total_cents > 0 {
+            let spent = cost_events::total_cost_cents_for_project(db.conn(), &project_id)
+                .await
+                .unwrap_or(0);
+            if spent >= project.budget_total_cents {
+                let detail = format!(
+                    "This project has reached its budget (${:.2} of ${:.2}). Raise the budget in Settings → project, or wait for the next cycle. No more agent turns will run until then.",
+                    spent as f64 / 100.0,
+                    project.budget_total_cents as f64 / 100.0,
+                );
+                let _ = chat_messages::finalize(
+                    db.conn(),
+                    &assistant_message_id,
+                    &format!("[budget] {detail}"),
+                    0,
+                    0,
+                    0,
+                    "error",
+                )
+                .await;
+                bus.emit(
+                    format!("chat.{thread_id}.error"),
+                    json!({
+                        "threadId": thread_id,
+                        "messageId": assistant_message_id,
+                        "error": detail,
+                        "kind": "budget_exceeded",
+                    }),
+                );
+                return Ok(());
+            }
+        }
+    }
 
     let mut history = chat_messages::list_by_thread(db.conn(), &thread_id).await?;
     history
