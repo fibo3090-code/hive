@@ -1,10 +1,10 @@
 # Hive Feature Status
 
-Living matrix mapping every promised feature to its current implementation state and dependency profile. Update whenever a feature ships, gets disabled, or moves between local/server scopes.
+Living matrix mapping every promised feature to its current implementation state and dependency profile. Update whenever a feature ships, gets disabled, or moves between local/server scopes. (How the built parts work → [`architecture.md`](architecture.md); the forward plan → [`ROADMAP.md`](ROADMAP.md).)
 
 Legend
 - **Status**: `done` · `partial` · `mock` (UI exists, no backend) · `planned` · `removed`
-- **Dep**: `local` (works fully offline) · `server` (needs Hive central server, not yet built) · `cloud-llm` (needs configured LLM provider) · `git-remote` (needs GitHub/GitLab token)
+- **Dep**: `local` (works fully offline) · `server` (needs the Hive central server — planned, not built) · `cloud-llm` (needs a configured LLM provider) · `git-remote` (needs a GitHub/GitLab token)
 - **Phase**: which redesign phase delivered/will deliver this
 
 ## Onboarding

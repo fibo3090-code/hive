@@ -1,60 +1,93 @@
 # HIVE
 
-HIVE is a local-first multi-agent platform. The frontend is a React + Vite
-application; the backend is a Rust workspace exposing an Axum HTTP/SSE API.
-Agents are persistent: each one owns an inbox, can spawn children, call
-tools, and stream responses through the shared event bus.
+HIVE is a **local-first multi-agent project-execution platform**. You give it a
+project brief; a *coordinator* agent (the "CEO") turns it into a spec document
+and a roadmap of sprints/tasks, spawns specialist sub-agents, and the agents
+work through the tasks — editing files in a per-project sandbox, running shell
+commands, searching the web, talking to each other, committing to git, writing
+shared notes — while you watch the agent graph, read the threads, and steer.
+
+It runs entirely on your machine by default: SQLite, `127.0.0.1` only, no auth,
+a local Ollama fallback when no cloud LLM key is set, a local SearXNG fallback
+for web search, and a path-jailed local-filesystem sandbox. Bring your own keys
+(Anthropic / OpenAI / Gemini, Tavily, a GitHub PAT) to use the cloud variants;
+they're stored encrypted at rest. A few features are explicitly **server-only**
+and stay disabled with a tooltip until a "Hive central server" exists
+(template gallery, marketplace, public agent registry, the *Cloud* sovereignty
+tier) — that server is planned, not built.
+
+- **Backend**: a Rust/Axum workspace exposing an HTTP + SSE API on `:8787`.
+- **Frontend**: a React + TypeScript SPA (Vite, TanStack Query, shadcn/ui, Tailwind) on `:8080`.
+
+The two halves never share a process; long work (chat turns, agent turns,
+module synthesis) runs as background tasks that stream progress over one shared
+`GET /v1/events` SSE stream.
 
 ## Quickstart
 
 ```sh
 just setup   # copy .env.example files into place; idempotent
-just up      # launch back-end (127.0.0.1:8787) + front-end (127.0.0.1:8080) in tmux
+just up      # launch back-end (:8787) + front-end (:8080) in a tmux session
 ```
 
-If you don't have `just`, the `Makefile` mirrors every target:
+No `just`? The `Makefile` mirrors every target, or run the halves directly:
 
 ```sh
 make setup
-make dev-back   # in one terminal
-make dev-front  # in another
+make dev-back    # one terminal — cargo run -p hive-api -- serve
+make dev-front   # another     — npm run dev (in front-end/)
 ```
 
-The first run creates a SQLite database under `~/.hive/`, generates a
-master encryption key (chmod 0600), and seeds three demo projects so the
-UI has something to render. To wipe state, delete `~/.hive/` and rerun.
+The first backend start creates `back-end/data/` (the SQLite database +
+per-project sandbox workspaces), runs migrations, generates a master encryption
+key at `~/.hive/master.key` (chmod 0600 on Unix; chat attachments also live
+under `~/.hive/`), probes Ollama at `localhost:11434`, and seeds three demo
+projects + agents so the UI has something to render. Override the database URL
+in `back-end/config/local.toml` (`[database] url = …`). To wipe state, delete
+`back-end/data/` and `~/.hive/` and rerun.
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
-| `back-end/` | Cargo workspace: `hive-api`, `hive-db`, `hive-domain`, `hive-runtime`, `hive-llm`, `hive-tools`, `hive-sandbox`, `hive-search`, `hive-git`, `hive-crypto`, `hive-seed` |
-| `front-end/` | React + TypeScript SPA (TanStack Query, shadcn/ui, Tailwind) |
-| `docs/` | Architecture notes and the feature-status matrix |
+| `back-end/` | Cargo workspace: `hive-api`, `hive-domain`, `hive-db` (+ `migration/`), `hive-runtime`, `hive-llm`, `hive-tools`, `hive-sandbox`, `hive-search`, `hive-git`, `hive-crypto`, `hive-seed`. See [`back-end/README.md`](back-end/README.md). |
+| `front-end/` | React + TypeScript SPA. See [`front-end/README.md`](front-end/README.md). |
+| `docs/` | [`architecture.md`](docs/architecture.md) (design reference), [`FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) (the living feature matrix), [`ROADMAP.md`](docs/ROADMAP.md) (the forward plan). |
+| `back-end/docs/` | Operator notes ([`CHAT_OPERATOR.md`](back-end/docs/CHAT_OPERATOR.md)), a design sketch for richer todo tools, and the historical fix plans. |
 
 ## Configuration
 
-Both halves read environment variables from their respective `.env`
-files (created by `just setup`). The defaults bind `127.0.0.1` only and
-expect to find each other at:
+Each half reads env vars from its own `.env` (created by `just setup` from
+`.env.example`):
 
-- back-end: `127.0.0.1:8787`
-- front-end: `127.0.0.1:8080`
+- **back-end**: logging via `HIVE_LOG` (same syntax as `RUST_LOG`) and
+  `HIVE_LOG_JSON`; the database URL via `back-end/config/local.toml`
+  (`[database] url = …`; copy from `config/local.example.toml` — defaults to
+  SQLite at `back-end/data/hive.db`); Ollama via `HIVE_OLLAMA_URL`. Bind
+  address is `127.0.0.1:8787` (`[server]` in `config/default.toml`).
+  Project-scoped settings (search provider, enabled tools, GitHub creds, etc.)
+  live in the DB; LLM-provider keys are entered in **Settings → LLM Providers**
+  and stored encrypted at rest. (`back-end/.env.example` documents some
+  additional `HIVE_*` vars; the database/data-dir ones aren't currently honored
+  — use `config/local.toml`.)
+- **front-end** (`front-end/.env`): `VITE_API_BASE_URL` (default
+  `http://127.0.0.1:8787`) — the backend's HTTP + SSE base URL.
 
-LLM provider keys are entered through Settings → LLM Providers and stored
-encrypted at rest (ChaCha20-Poly1305 with the host master key).
-
-## Tests
+## Common commands
 
 ```sh
-just test       # back-end + front-end
-just lint       # clippy + eslint + tsc
-just audit      # cargo audit + npm audit
+just test    # cargo test --workspace + npm test
+just lint    # cargo clippy --workspace --all-targets -D warnings + eslint + tsc --noEmit
+just audit   # cargo audit + npm audit
+just build   # release build of hive-api + production build of the frontend
 ```
+
+Backend CLI (in `back-end/`): `cargo run -p hive-api -- serve` (runs migrations
++ seeds an empty DB, then serves), `… -- migrate`, `… -- seed`.
 
 ## More
 
-- [`back-end/README.md`](back-end/README.md) — Rust-side details.
-- [`front-end/README.md`](front-end/README.md) — frontend-side details.
-- [`docs/architecture.md`](docs/architecture.md) — agent loop, sandbox, SSE taxonomy.
-- [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) — what's done / partial / mock / planned.
+- [`docs/architecture.md`](docs/architecture.md) — topology, crates, core concepts (project / agent / coordinator / skills vs modules vs connectors / wires & visibility / drift / budget), the chat-turn flow, the SSE event taxonomy, the HTTP surface, the agent-tool catalog, security defaults.
+- [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) — what's `done` / `partial` / `mock` / `planned` / `removed`, with dependency profile.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — the forward plan (coordinator-led onboarding, skill mounting, autonomous task loop, auto-MCP pipeline, drift auto-detection, …).
+- [`back-end/README.md`](back-end/README.md) · [`front-end/README.md`](front-end/README.md) — dev setup per half.

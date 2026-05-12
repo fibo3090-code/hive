@@ -1,390 +1,127 @@
-# Hive Backend
+# HIVE backend
 
-A high-performance, modular Rust backend built with Axum, providing a robust API for project management, agent orchestration, and real-time data synchronization.
-
-## Overview
-
-Hive Backend is a production-ready REST API powered by Rust, designed to handle complex project workflows, manage AI agents, track resources, and provide real-time updates to connected clients.
-
-## Features
-
-- **RESTful API** - Clean and intuitive API endpoints
-- **Database Support** - SQLite and PostgreSQL via SeaORM
-- **Async Runtime** - Built on Tokio for high concurrency
-- **CORS Support** - Cross-origin resource sharing configured
-- **OpenAPI Documentation** - Auto-generated API documentation
-- **Modular Codebase** - Organized into focused crates
-- **Type Safety** - Full Rust type safety and compile-time guarantees
-- **Database Migrations** - Version-controlled schema changes
-- **Seed Data** - Pre-populated datasets for development
-- **LLM Providers** - Pluggable clients for Anthropic, OpenAI, Gemini, Ollama with encrypted key storage
-- **Secret Encryption** - ChaCha20-Poly1305 AEAD for API keys at rest
-
-## Tech Stack
-
-- **Language**: Rust
-- **Web Framework**: Axum 0.7+
-- **Async Runtime**: Tokio
-- **Database ORM**: SeaORM
-- **Database Drivers**: SQLx (SQLite & PostgreSQL)
-- **API Documentation**: OpenAPI/Swagger
-- **HTTP Client**: Tower
+A Rust/Axum workspace: the HTTP + SSE API, the agent runtime, the LLM clients,
+the tools, the sandbox, the DB layer, and the at-rest crypto. See
+[`../docs/architecture.md`](../docs/architecture.md) for the design (topology,
+core concepts, the chat-turn flow, the SSE taxonomy, the HTTP surface, the agent
+tool catalog, security defaults) and [`../docs/FEATURE_STATUS.md`](../docs/FEATURE_STATUS.md)
+for what's built vs planned. This file is the dev-setup reference.
 
 ## Prerequisites
 
-- Rust 1.70+ (see `rust-toolchain.toml`)
-- Cargo
-- PostgreSQL or SQLite (depending on configuration)
+- Rust (pinned by `rust-toolchain.toml`) + Cargo.
+- That's it — SQLite is bundled via `sqlx`. Postgres/MySQL are supported but optional.
+- Optional sidecars: a local **Ollama** (`localhost:11434`, no-key LLM fallback, auto-detected at startup) and a local **SearXNG** (`localhost:8888`, no-key web-search fallback).
 
-## Installation
+## Run it
 
-1. **Clone the repository:**
-   ```bash
-   git clone <repository-url>
-   cd hive/hive-code/back-end
-   ```
+```sh
+cargo run -p hive-api -- serve     # runs migrations, seeds an empty DB, then serves on 127.0.0.1:8787
+cargo run -p hive-api -- migrate   # run pending migrations only (also seeds an empty DB)
+cargo run -p hive-api -- seed      # (re)seed demo data
+```
 
-2. **Install Rust (if not already installed):**
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
+On first `serve`/`migrate` the API creates `back-end/data/` (the SQLite file +
+per-project sandbox workspaces under `data/workspaces/<project_id>/`), runs all
+migrations, generates `~/.hive/master.key` (ChaCha20-Poly1305 master key, mode
+0600 on Unix — also where chat attachments live), probes Ollama, and seeds three
+demo projects + agents (idempotent — guarded by a `settings` sentinel row; force
+a reseed with the `seed` subcommand or `POST /v1/setup/seed`).
 
-3. **Verify Rust installation:**
-   ```bash
-   rustc --version
-   cargo --version
-   ```
+```sh
+cargo build --release -p hive-api          # binary at target/release/hive-api
+cargo test --workspace                     # all tests
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+cargo doc --open -p hive-api               # API docs
+```
 
 ## Configuration
 
-### Environment Setup
-
-1. **Copy the example configuration:**
-   ```bash
-   cp config/local.example.toml config/local.toml
-   ```
-
-2. **Edit `config/local.toml`** with your settings:
-   ```toml
-   [database]
-   url = "sqlite://hive.db"  # or PostgreSQL URL
-   
-   [server]
-   host = "127.0.0.1"
-   port = 8787
-   ```
-
-### Database Setup
-
-1. **Run migrations:**
-   ```bash
-   cargo run -p hive-api -- migrate
-   ```
-
-2. **Seed the database (optional):**
-   ```bash
-   cargo run -p hive-api -- seed
-   ```
-
-Migrations and seeds also run automatically on `serve`.
-
-## Development
-
-### Start Development Server
-
-```bash
-cargo run -p hive-api -- serve
-```
-
-The API will be available at `http://127.0.0.1:8787`.
-
-On first start the API generates `~/.hive/master.key` (ChaCha20-Poly1305 master key for secret encryption) and probes Ollama at `http://localhost:11434` — if Ollama is running, its provider row is flagged connected automatically.
-
-### Build for Production
-
-```bash
-cargo build --release
-```
-
-Binary will be at `target/release/hive-api`
-
-### Run Tests
-
-```bash
-cargo test
-```
-
-### Build Documentation
-
-```bash
-cargo doc --open
-```
-
-### Check Code Quality
-
-```bash
-cargo clippy -- -D warnings
-cargo fmt --check
-```
-
-## Project Structure
-
-```
-hive-code/back-end/
-├── crates/
-│   ├── hive-api/           # Axum HTTP/SSE server, route handlers, AppState wiring
-│   ├── hive-domain/        # Shared domain types (thin today; will grow)
-│   ├── hive-db/            # SeaORM entities, repos, migrations (under migration/)
-│   ├── hive-runtime/       # Per-agent executor, chat turn driver, event bus, schema validator
-│   ├── hive-tools/         # Built-in tools (fs_*, shell_exec, todo, web_fetch, web_search)
-│   ├── hive-sandbox/       # LocalFsSandbox (path-escape protection, env-scrubbed exec)
-│   ├── hive-search/        # Tavily + SearxNG providers behind a SearchProvider trait
-│   ├── hive-git/           # git2 wrapper + optional octocrab for GitHub PRs
-│   ├── hive-crypto/        # ChaCha20-Poly1305 AEAD for secrets at rest
-│   ├── hive-llm/           # LLM provider clients (Anthropic/OpenAI/Gemini/Ollama)
-│   └── hive-seed/          # Demo project + agent seeding for an empty DB
-├── config/
-│   ├── default.toml        # Default configuration
-│   └── local.example.toml   # Example local configuration
-├── openapi/
-│   └── openapi.json        # OpenAPI specification
-├── seed/                    # Seed data files
-│   ├── activity_feed.json
-│   ├── agent_blueprints.json
-│   ├── module_catalog.json
-│   ├── requirements.json
-│   ├── session_history.json
-│   ├── settings_state.json
-│   ├── spend.json
-│   ├── task_throughput.json
-│   └── user_stories.json
-├── Cargo.toml              # Workspace manifest
-└── rust-toolchain.toml     # Rust version specification
-```
+- **Database URL** — `config/local.toml` (`[database] url = …`; copy from
+  `config/local.example.toml`). Defaults (when no `local.toml`) to
+  `sqlite://<back-end>/data/hive.db?mode=rwc`. An *empty* url triggers the
+  first-run setup flow. `config/default.toml` also holds `[server] host/port`
+  (the `127.0.0.1:8787` bind).
+- **Logging** — `HIVE_LOG` (same syntax as `RUST_LOG`, e.g.
+  `info,hive_runtime=debug`) and `HIVE_LOG_JSON=1` (structured one-line JSON).
+- **Ollama** — `HIVE_OLLAMA_URL` overrides the auto-detected
+  `http://localhost:11434`.
+- Most operational settings (search provider + SearXNG URL, the per-project
+  enabled-tools allowlist, GitHub owner/repo/token, etc.) live in the DB
+  (`settings` table, project-scoped) and are edited through the UI.
+- `back-end/.env.example` documents some additional `HIVE_*` vars; the
+  database/data-dir ones aren't currently honored by the bootstrap path — use
+  `config/local.toml`.
 
 ## Crates
 
-### hive-api
-Main REST API server built with Axum. Contains:
-- Route handlers
-- Request/response models
-- Middleware configuration
-- CORS setup (restricted to the dev Vite origins; never permissive)
-- The shared SSE event bus
+| Crate | Role |
+|---|---|
+| `hive-api` | Axum HTTP/SSE server: route handlers, `AppState` wiring, the global SSE `EventBus`, the `ApiTurnDriver` the runtime calls to drive a turn, onboarding `/launch` + brief decomposition, the LLM-provider / connector / git / GitHub endpoints, and the CLI (`serve` / `migrate` / `seed`). |
+| `hive-domain` | Shared domain types — a thin layer of plain structs/enums (no service layer; that lives in `hive-api` handlers + `hive-db` repos). |
+| `hive-db` | SeaORM entities, one repo module per table, and migrations (`migration/`). SQLite by default; Postgres/MySQL via the same set (raw SQL dispatches on `DatabaseBackend`). Also `seed::seed_demo`. New migration: `cargo run -p migration -- create <name>` (or `cargo run --package hive-db --bin migration create <name>`), then register it in `migration/src/lib.rs`. |
+| `hive-runtime` | The agent runtime: `AgentExecutor` (per-agent inbox + cancel scope), `ExecutorRegistry`, the `TurnDriver` trait, the streaming chat turn loop (`chat::run_turn` — round loop, tool dispatch, schema validation, loop/repeat guards, budget enforcement, interleaved-transcript persistence), the `EventBus`, the drift scorer (`drift.rs`, not yet wired into the loop), the auto-MCP-synthesis pipeline (`spawn/`), and the DB-/executor-backed agent tools — `agent_tools.rs` (`spawn_agent`, `message_agent`, `list_visible_agents`, `request_relay`, `delete_agent`, `monitor_agent`, `delegate_task`), `db_tools.rs` (`hive_mind_*`, `list_spec_docs`, `read_spec_doc`, `add_task`, `add_tech_debt`, `update_tech_debt`, `record_drift`), `git_tools.rs` (`git_status`, `git_diff`, `git_log`, `git_commit`, `git_pull`, `git_push`). |
+| `hive-tools` | The sandbox-only built-in tools: `fs_read`, `fs_write`, `fs_list`, `shell_exec`, `todo`, `web_fetch`, `web_search` (search needs a `SearchProvider`). Each declares a JSON-Schema manifest; the runtime validates calls against the `required` list and wraps each in a per-tool 60 s timeout. (`hive-tools` can't depend on `hive-db`, so the DB-/executor-backed tools live in `hive-runtime`.) |
+| `hive-sandbox` | `Sandbox` trait + `LocalFsSandbox`: two-layer path-escape protection (string-level `..`/absolute reject, then FS canonicalisation + root-prefix re-check), symlink-safe, `env_clear()`-then-allowlist exec. A Docker-backed variant is planned. |
+| `hive-search` | `SearchProvider` trait with Tavily and SearXNG implementations. |
+| `hive-git` | `GitRepo` — shells out to the `git` CLI in the project workspace (`status`/`branches`/`checkout`/`log`/`tree`/`file`/`diff`/`commit`/`restore`/`init`/`pull`/`push`) — plus `GitHubClient` (`octocrab`) for GitHub status/PRs. |
+| `hive-crypto` | ChaCha20-Poly1305 secret-at-rest encryption. `Crypto::load_or_create` reads/creates `~/.hive/master.key` (0600 on Unix; a `tracing::warn!` on Windows since there's no ACL helper yet); `seal`/`open` for LLM keys, connector credentials, GitHub tokens; `mask_key` for UI previews (`sk-…abcd`). Opaque errors — callers only ever see `Decrypt`. |
+| `hive-seed` | Demo-data helper used by `hive-db::seed`. Loads the JSON fixtures in `seed/` (`agent_blueprints.json`, `module_catalog.json`, `activity_feed.json`, `spend.json`, `task_throughput.json`, `session_history.json`, `requirements.json`, `user_stories.json`, `quality_over_time.json`, `settings_state.json`). |
 
-### hive-domain
-Shared domain types — currently a thin layer of plain structs/enums (it does
-not yet contain a service layer; that lives in `hive-api` handlers + `hive-db`
-repos).
+## LLM providers API
 
-### hive-runtime
-Per-agent executor (`AgentExecutor`), the streaming chat turn driver
-(`run_turn`), the `EventBus`, the tool-call schema validator, the agent
-registry, and the `spawn_agent` / `message_agent` coordination tools.
-
-### hive-tools
-Built-in tools shipped with the runtime: `fs_read`, `fs_write`, `fs_list`,
-`shell_exec`, `todo`, `web_fetch`, and `web_search` (search needs a provider).
-Each tool has a JSON Schema manifest and runs through a per-tool timeout
-wrapper.
-
-### hive-sandbox
-`LocalFsSandbox`: two-layer path-escape protection (string-level `..`/absolute
-reject, then FS canonicalisation + root-prefix re-check), symlink-safe, and
-`env_clear()`-then-allowlist exec. A Docker variant is planned.
-
-### hive-search
-Tavily and SearxNG providers behind a `SearchProvider` trait.
-
-### hive-git
-`git2` wrapper plus optional `octocrab` for GitHub PRs.
-
-### hive-db
-Database layer with SeaORM:
-- Entity models
-- Database queries
-- Connection pool management
-- Schema definitions
-
-#### Migrations
-Located in `crates/hive-db/migration/`. Create new migrations with:
-```bash
-cargo run --package hive-db --bin migration create <migration_name>
-```
-
-### hive-seed
-Database seeding utilities:
-- Loads JSON seed files from `seed/` directory
-- Populates initial data for development
-
-### hive-crypto
-Secret-at-rest encryption. On first use, generates a master key at `~/.hive/master.key` (0600 on Unix). Provides `seal` / `open` helpers using ChaCha20-Poly1305 AEAD plus `mask_key` for UI-safe previews (`sk-…abcd`).
-
-### hive-llm
-Async trait `LlmProvider` with `list_models`, `test_connection`, and `complete` methods. Factory `client_for(ProviderKind, ProviderConfig)` returns a boxed client. Built-in kinds:
-- `anthropic` — `https://api.anthropic.com`
-- `openai` — `https://api.openai.com`
-- `gemini` — `https://generativelanguage.googleapis.com`
-- `ollama` — `http://localhost:11434` (no API key required)
-
-## LLM Providers API
-
-Sprint 0 delivers CRUD + live model discovery for LLM providers.
+CRUD + live model discovery for the four provider slots
+(`anthropic` / `openai` / `gemini` / `ollama` — Ollama needs no key):
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| GET    | `/v1/llm-providers`             | List all providers (never returns ciphertext; `hasKey` derived server-side) |
-| PATCH  | `/v1/llm-providers/:id`         | Update `apiKey` (stored encrypted, masked for display) and/or `baseUrl` |
-| POST   | `/v1/llm-providers/:id/test`    | Live connection test; persists `connected` flag |
-| GET    | `/v1/llm-providers/:id/models`  | Live model list from provider (cached 5 min) |
+| GET    | `/v1/llm-providers`             | List providers (never returns ciphertext; `hasKey`/`connected` derived server-side) |
+| PATCH  | `/v1/llm-providers/:id`         | Set/clear `apiKey` (encrypted at rest, masked for display) and/or `baseUrl` |
+| POST   | `/v1/llm-providers/:id/test`    | Live connection test; persists the `connected` flag |
+| GET    | `/v1/llm-providers/:id/models`  | Live model list from the provider (cached 5 min) |
+| GET    | `/v1/llm-providers/:id/refresh-models` | Force-refresh that cache |
 
-Empty-string `apiKey` clears the stored key. Setting/changing keys invalidates the model cache for that provider.
+Empty-string `apiKey` clears the stored key; setting/changing a key invalidates
+that provider's model cache. `client_for(ProviderConfig)` returns a boxed
+`LlmProvider` (`list_models` / `test_connection` / `complete` / `chat_stream`).
 
-## Database
-
-### Supported Databases
-
-- **SQLite** - Development (default)
-- **PostgreSQL** - Production recommended
-
-### Connection String Examples
-
-```
-# SQLite (file-based)
-DATABASE_URL=sqlite://hive.db
-
-# SQLite (in-memory)
-DATABASE_URL=sqlite://:memory:
-
-# PostgreSQL
-DATABASE_URL=postgresql://user:password@localhost:5432/hive
-```
-
-## API Documentation
+## API documentation
 
 The server serves its OpenAPI document at `GET /v1/openapi.json` (no bundled
-Swagger UI). A static copy lives at `openapi/openapi.json`. The server binds
-`127.0.0.1:8787` by default (`HIVE_BIND`).
+Swagger UI); a static snapshot lives at `openapi/openapi.json`. The route groups
+are listed in [`../docs/architecture.md`](../docs/architecture.md) §6;
+the handlers are in `hive-api/src/main.rs`.
 
-### Common Endpoints
+## Database connection strings
 
-Refer to individual handler files in `hive-api/src/` for endpoint definitions.
-
-## Deployment
-
-### Docker Build (no Dockerfile is shipped yet)
-
-```bash
-docker build -t hive-backend .
-docker run -p 8787:8787 hive-backend
+```
+sqlite://./data/hive.db?mode=rwc          # local file (default; relative to back-end/)
+sqlite://:memory:                         # in-memory (tests)
+postgres://user:pass@host:5432/hive       # Postgres
+mysql://user:pass@host:3306/hive          # MySQL
 ```
 
-### Binary Distribution
+Cost columns (`cost_events.cost_cents`, `chat_messages.cost_cents`,
+`projects.budget_total_cents`) are i64 end-to-end.
 
-```bash
-cargo build --release
-# Binary at: target/release/hive-api
-```
+## Operator notes
 
-### System Service (Linux)
-
-Create a systemd service file and configure for your platform.
-
-## Performance Optimization
-
-- Async handlers throughout
-- Connection pooling configured in SeaORM
-- CORS middleware for efficient cross-origin handling
-- Efficient database queries with SeaORM
-
-## Security Considerations
-
-- Input validation on all endpoints
-- CORS restrictions (configure in `config/local.toml`)
-- Sensitive data handling in environment variables
-- Use HTTPS in production
-
-## Troubleshooting
-
-### Database Connection Issues
-
-```bash
-# Check connection string
-echo $DATABASE_URL
-
-# Verify database exists and is accessible
-sqlite3 hive.db ".tables"
-```
-
-### Build Issues
-
-```bash
-# Clean build
-cargo clean
-cargo build
-
-# Check for outdated dependencies
-cargo update
-```
-
-### Runtime Errors
-
-```bash
-# Enable debug logging
-RUST_LOG=debug cargo run
-```
+- Chat-runner round limits, the empty-final-answer fallback, and small-model
+  tips: [`docs/CHAT_OPERATOR.md`](docs/CHAT_OPERATOR.md).
+- A design sketch for richer `todo_*` tools (the shipped `todo` tool is a
+  simpler single-tool version): [`docs/TODO_TOOL_SPEC.md`](docs/TODO_TOOL_SPEC.md).
+- The historical 6-phase fix plan (mostly delivered): [`docs/plan fix evything.md`](docs/plan%20fix%20evything.md).
+  The historical backend-dependency list (mostly delivered): [`docs/PHASE_2_TO_5_BACKEND_TODO.md`](docs/PHASE_2_TO_5_BACKEND_TODO.md).
+  The forward plan: [`../docs/ROADMAP.md`](../docs/ROADMAP.md).
 
 ## Contributing
 
-When contributing:
-1. Follow Rust conventions and idioms
-2. Run `cargo fmt` before committing
-3. Ensure `cargo clippy` passes
-4. Write tests for new functionality
-5. Update documentation
-
-## Code Style
-
-- Format code with: `cargo fmt`
-- Lint code with: `cargo clippy`
-- Write idiomatic Rust
-- Use meaningful variable names
-
-## Testing
-
-```bash
-# Run all tests
-cargo test
-
-# Run tests for specific crate
-cargo test -p hive-api
-
-# Run with output
-cargo test -- --nocapture
-
-# Run specific test
-cargo test test_name
-```
-
-## Dependencies
-
-Key workspace dependencies:
-
-- **tokio** - Async runtime
-- **axum** - Web framework
-- **sea-orm** - ORM
-- **sqlx** - SQL toolkit
-- **serde** - Serialization
-- **tower** - Middleware framework
-- **tower-http** - HTTP utilities
+`cargo fmt --all` + `cargo clippy --workspace --all-targets -- -D warnings`
+must pass; add tests for new behaviour; keep handlers thin and put DB logic in
+`hive-db` repos. The API has **no auth** and tools run shell commands — keep the
+bind on `127.0.0.1`.
 
 ## License
 
-MIT
-
-## Support
-
-For issues or questions:
-1. Check existing documentation
-2. Review similar code patterns in the codebase
-3. Open an issue with detailed information
+MIT.
