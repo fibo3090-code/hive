@@ -667,6 +667,10 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     // (tool-budget / loop-guard / "empty response") are not streamed, so they
     // still need the post-loop chunk emit.
     let mut final_answer_was_streamed = true;
+    // Full assistant narration across every tool round, joined with blank lines.
+    // This (not just the last round's text) is what gets persisted, so a reload
+    // shows the same interleaved narration the user saw stream live.
+    let mut transcript = String::new();
     let mut total_tokens_in: u32 = 0;
     let mut total_tokens_out: u32 = 0;
     let mut total_cost: i64 = 0;
@@ -769,6 +773,10 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         let trimmed = outcome.accumulated.trim();
         if !trimmed.is_empty() {
             last_non_empty_assistant_text = Some(outcome.accumulated.clone());
+            if !transcript.is_empty() {
+                transcript.push_str("\n\n");
+            }
+            transcript.push_str(trimmed);
         }
 
         // If cancellation flipped during streaming, stop here.
@@ -1004,6 +1012,10 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     // synthetic fallback message that nobody has seen yet — otherwise the
     // client would render the final block twice.
     if !final_answer_was_streamed {
+        if !transcript.is_empty() {
+            transcript.push_str("\n\n");
+        }
+        transcript.push_str(&final_answer);
         for chunk in final_answer.as_bytes().chunks(48) {
             let delta = String::from_utf8_lossy(chunk).into_owned();
             bus.emit(
@@ -1017,10 +1029,17 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         }
     }
 
+    // Persist the full narration (every round), falling back to `final_answer`
+    // only when nothing was accumulated (e.g. an immediate empty response).
+    let persisted_body: &str = if transcript.trim().is_empty() {
+        &final_answer
+    } else {
+        transcript.trim()
+    };
     let _ = chat_messages::finalize(
         db.conn(),
         &assistant_message_id,
-        &final_answer,
+        persisted_body,
         total_tokens_in as i32,
         total_tokens_out as i32,
         total_cost,
