@@ -4947,6 +4947,26 @@ async fn send_chat_message(
     )
     .await;
 
+    // Auto-name the thread from its first user message (titled threads get a
+    // default like "Thread N" or the agent's name at creation time).
+    if let Ok(msgs) = chat_messages::list_by_thread(database.conn(), &thread.id).await {
+        if msgs.len() == 1 {
+            let mut title: String = body.content.split_whitespace().collect::<Vec<_>>().join(" ");
+            if title.chars().count() > 60 {
+                title = title.chars().take(57).collect::<String>() + "…";
+            }
+            if !title.is_empty() && title != thread.title {
+                let _ = chat_threads::rename(database.conn(), &thread.id, &title).await;
+                emit(
+                    &state,
+                    "chat.thread.created",
+                    json!({ "threadId": thread.id, "projectId": thread.project_id, "title": title }),
+                )
+                .await;
+            }
+        }
+    }
+
     // Insert the pending assistant row so the frontend can render a placeholder.
     let assistant_row = chat_messages::insert(
         database.conn(),

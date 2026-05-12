@@ -32,7 +32,7 @@ Legend
 | Feature | Status | Dep | Phase | Notes |
 |---|---|---|---|---|
 | Sidebar threads grouped by agent | done | local | 3 | |
-| Thread title from first user message | partial | local | 3 | Defaults to "Thread N" or agent name; auto-rename pending |
+| Thread title from first user message | done | local | 3 | On the first user message the thread is renamed to a (single-spaced, 60-char) truncation of it; emits chat.thread.created so the sidebar updates live |
 | Per-project thread scoping | done | local | 3 | Threads filtered by `projectId` |
 | Delete thread | done | local | 3 | Trash icon on hover |
 | Slash commands `/help /clear /new /model` | done | local | 3 | Implemented client-side |
