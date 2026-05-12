@@ -17,11 +17,12 @@
  * sidebar / command-palette deep-link, and old `/modules` and
  * `/agent-forge` routes redirect here with the matching tab pre-selected.
  */
-import { lazy, Suspense, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Boxes, Plug, Sparkles, Wand2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useHiveData } from '@/api/queries/useHiveData';
-import { useSkills } from '@/api/skills';
+import { useSkills, useCreateSkill, useDeleteSkill } from '@/api/skills';
 import { useConnectors } from '@/api/connectors';
 import { Button } from '@/components/ui/button';
 import { DisabledFeature } from '@/components/shared/DisabledFeature';
@@ -102,35 +103,94 @@ export default function Forge() {
 
 // ─── Skills tab ────────────────────────────────────────────────────────
 
+function slugify(s: string): string {
+  return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+}
+
 function SkillsTab() {
   const { activeProject } = useHiveData();
-  const skills = useSkills(activeProject?.id);
+  const projectId = activeProject?.id ?? null;
+  const skills = useSkills(projectId);
+  const createSkill = useCreateSkill(projectId);
+  const deleteSkill = useDeleteSkill(projectId);
   const items = skills.data ?? [];
 
-  if (!items.length) {
-    return (
-      <div className="rounded-lg border border-dashed border-border p-8 text-center">
-        <h3 className="text-sm font-semibold">No skills yet</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          A skill is a small reusable package — system-prompt fragment +
-          allowed tools + allowed paths — that an agent can mount. Coming
-          to this UI: a builder; for now POST to <code>/v1/projects/:id/skills</code>.
-        </p>
-      </div>
-    );
-  }
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [slug, setSlug] = useState('');
+  const [description, setDescription] = useState('');
+  const [promptFragment, setPromptFragment] = useState('');
+  const slugTouched = useRef(false);
+
+  const submit = async () => {
+    if (!projectId) { toast.error('No active project.'); return; }
+    if (!name.trim()) { toast.error('Name is required.'); return; }
+    const finalSlug = (slug.trim() || slugify(name)) || 'skill';
+    try {
+      await createSkill.mutateAsync({
+        projectId,
+        slug: finalSlug,
+        name: name.trim(),
+        description: description.trim(),
+        systemPromptFragment: promptFragment.trim() || undefined,
+      });
+      toast.success(`Skill "${name.trim()}" created.`);
+      setOpen(false);
+      setName(''); setSlug(''); setDescription(''); setPromptFragment(''); slugTouched.current = false;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to create skill.');
+    }
+  };
 
   return (
-    <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-      {items.map((s) => (
-        <li
-          key={s.id}
-          className="rounded-lg border border-border bg-card p-4"
-        >
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold">{s.name}</h3>
-            <code className="text-[10px] text-muted-foreground">{s.slug}</code>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          A skill is a reusable package — system-prompt fragment + allowed tools + allowed paths — an agent can mount.
+        </p>
+        <Button size="sm" variant="outline" onClick={() => setOpen((v) => !v)}>{open ? 'Cancel' : '+ New skill'}</Button>
+      </div>
+
+      {open && (
+        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label htmlFor="skill-name" className="text-[10px] font-medium uppercase text-muted-foreground">Name</label>
+              <input id="skill-name" value={name} onChange={(e) => { setName(e.target.value); if (!slugTouched.current) setSlug(slugify(e.target.value)); }} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm" placeholder="e.g. Rust reviewer" />
+            </div>
+            <div>
+              <label htmlFor="skill-slug" className="text-[10px] font-medium uppercase text-muted-foreground">Slug</label>
+              <input id="skill-slug" value={slug} onChange={(e) => { slugTouched.current = true; setSlug(slugify(e.target.value)); }} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm font-mono" placeholder="rust-reviewer" />
+            </div>
           </div>
+          <div>
+            <label htmlFor="skill-desc" className="text-[10px] font-medium uppercase text-muted-foreground">Description</label>
+            <input id="skill-desc" value={description} onChange={(e) => setDescription(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm" placeholder="What this skill does" />
+          </div>
+          <div>
+            <label htmlFor="skill-prompt" className="text-[10px] font-medium uppercase text-muted-foreground">System-prompt fragment <span className="font-normal lowercase text-muted-foreground">(optional)</span></label>
+            <textarea id="skill-prompt" value={promptFragment} onChange={(e) => setPromptFragment(e.target.value)} className="mt-1 h-20 w-full rounded-md border border-border bg-surface-2 p-3 text-xs resize-none scrollbar-thin" placeholder="Instructions injected when an agent mounts this skill" />
+          </div>
+          <div className="flex justify-end">
+            <Button size="sm" onClick={() => { void submit(); }} disabled={createSkill.isPending || !name.trim()}>
+              {createSkill.isPending ? 'Creating…' : 'Create skill'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {!items.length ? (
+        <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+          No skills yet. Use “+ New skill” above to create one.
+        </div>
+      ) : (
+        <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+          {items.map((s) => (
+            <li key={s.id} className="rounded-lg border border-border bg-card p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold">{s.name}</h3>
+                <code className="text-[10px] text-muted-foreground">{s.slug}</code>
+              </div>
           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
             {s.description || 'No description.'}
           </p>
@@ -146,20 +206,30 @@ function SkillsTab() {
               ))}
             </ul>
           )}
-          <div className="mt-3 flex gap-2 text-[10px] text-muted-foreground">
-            {s.allowedToolsJson?.length > 0 && (
-              <span>{s.allowedToolsJson.length} tools</span>
-            )}
-            {s.requiresConnectorIdsJson?.length > 0 && (
-              <span>· {s.requiresConnectorIdsJson.length} connector(s) needed</span>
-            )}
-            {s.projectId === null && (
-              <span className="text-info">· global</span>
-            )}
+          <div className="mt-3 flex items-center justify-between text-[10px] text-muted-foreground">
+            <span className="flex gap-2">
+              {s.allowedToolsJson?.length > 0 && <span>{s.allowedToolsJson.length} tools</span>}
+              {s.requiresConnectorIdsJson?.length > 0 && <span>· {s.requiresConnectorIdsJson.length} connector(s) needed</span>}
+              {s.projectId === null && <span className="text-info">· global</span>}
+            </span>
+            <button
+              onClick={() => {
+                if (!window.confirm(`Delete skill "${s.name}"?`)) return;
+                deleteSkill.mutate(s.id, {
+                  onSuccess: () => toast.success('Skill deleted'),
+                  onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed'),
+                });
+              }}
+              className="text-destructive hover:underline"
+            >
+              Delete
+            </button>
           </div>
-        </li>
-      ))}
-    </ul>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

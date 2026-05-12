@@ -121,7 +121,7 @@ Legend
 
 | Feature | Status | Dep | Phase | Notes |
 |---|---|---|---|---|
-| Skills tab | partial | local | 3 | List works; create/edit minimal |
+| Skills tab | partial | local | 3 | List + create (name/slug/description/system-prompt fragment) + delete; tool/path allowlists not editable from the UI yet |
 | Modules tab | partial | server | 3 | Synthesis pipeline mocked |
 | Connectors tab | partial | local | 3 | List works; encrypted credential editor minimal |
 | Agents tab (custom builder) | partial | local | 3 | Currently exposes role/model/tier/autonomy only — needs alignment with HiveGraph spawn |
