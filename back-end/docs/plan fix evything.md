@@ -1,4 +1,16 @@
-# Hive Fix Plan
+# Hive Fix Plan  *(historical — mostly delivered)*
+
+> **Status:** this was the original 6-phase cleanup plan. Phases 1–5 and most of
+> 6 have shipped (truthful UI, the spec→plan pipeline, the Chat Central rework
+> incl. interleaved streaming and `/compact`, HiveGraph wires + interactivity +
+> cycle prevention, the Hive Mind / agent-management / spec / git agent tools,
+> the real launch sequence, the doc updates, the `FEATURE_STATUS.md` matrix, a
+> fuzzy modular command palette). For the *current* status of everything see
+> [`../../docs/FEATURE_STATUS.md`](../../docs/FEATURE_STATUS.md); for the *next*
+> set of work see [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md). The original
+> plan is kept below verbatim. (`.lovable/plan.md` is a byte-identical copy.)
+
+---
 
 Your request covers ~40 distinct issues spanning UI, navigation, onboarding, chat behavior, graph semantics, agent tools, and local-vs-server scoping. Tackling all in one shot would be unsafe (high regression risk, no way to verify each change). I'll batch them into 5 phases. After each phase you confirm before I move on.
 

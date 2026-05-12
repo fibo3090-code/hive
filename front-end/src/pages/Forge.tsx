@@ -17,14 +17,14 @@
  * sidebar / command-palette deep-link, and old `/modules` and
  * `/agent-forge` routes redirect here with the matching tab pre-selected.
  */
-import { lazy, Suspense, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useCallback, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Boxes, Plug, Sparkles, Wand2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useHiveData } from '@/api/queries/useHiveData';
-import { useSkills } from '@/api/skills';
-import { useConnectors } from '@/api/connectors';
+import { useSkills, useCreateSkill, useDeleteSkill } from '@/api/skills';
+import { useConnectors, useCreateConnector, useDeleteConnector, type ConnectorKind, type ConnectorAuthKind } from '@/api/connectors';
 import { Button } from '@/components/ui/button';
-import { DisabledFeature } from '@/components/shared/DisabledFeature';
 import { cn } from '@/lib/utils';
 
 const ModulesPage = lazy(() => import('./Modules'));
@@ -102,35 +102,94 @@ export default function Forge() {
 
 // ─── Skills tab ────────────────────────────────────────────────────────
 
+function slugify(s: string): string {
+  return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+}
+
 function SkillsTab() {
   const { activeProject } = useHiveData();
-  const skills = useSkills(activeProject?.id);
+  const projectId = activeProject?.id ?? null;
+  const skills = useSkills(projectId);
+  const createSkill = useCreateSkill(projectId);
+  const deleteSkill = useDeleteSkill(projectId);
   const items = skills.data ?? [];
 
-  if (!items.length) {
-    return (
-      <div className="rounded-lg border border-dashed border-border p-8 text-center">
-        <h3 className="text-sm font-semibold">No skills yet</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          A skill is a small reusable package — system-prompt fragment +
-          allowed tools + allowed paths — that an agent can mount. Coming
-          to this UI: a builder; for now POST to <code>/v1/projects/:id/skills</code>.
-        </p>
-      </div>
-    );
-  }
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [slug, setSlug] = useState('');
+  const [description, setDescription] = useState('');
+  const [promptFragment, setPromptFragment] = useState('');
+  const slugTouched = useRef(false);
+
+  const submit = async () => {
+    if (!projectId) { toast.error('No active project.'); return; }
+    if (!name.trim()) { toast.error('Name is required.'); return; }
+    const finalSlug = (slug.trim() || slugify(name)) || 'skill';
+    try {
+      await createSkill.mutateAsync({
+        projectId,
+        slug: finalSlug,
+        name: name.trim(),
+        description: description.trim(),
+        systemPromptFragment: promptFragment.trim() || undefined,
+      });
+      toast.success(`Skill "${name.trim()}" created.`);
+      setOpen(false);
+      setName(''); setSlug(''); setDescription(''); setPromptFragment(''); slugTouched.current = false;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to create skill.');
+    }
+  };
 
   return (
-    <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-      {items.map((s) => (
-        <li
-          key={s.id}
-          className="rounded-lg border border-border bg-card p-4"
-        >
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold">{s.name}</h3>
-            <code className="text-[10px] text-muted-foreground">{s.slug}</code>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          A skill is a reusable package — system-prompt fragment + allowed tools + allowed paths — an agent can mount.
+        </p>
+        <Button size="sm" variant="outline" onClick={() => setOpen((v) => !v)}>{open ? 'Cancel' : '+ New skill'}</Button>
+      </div>
+
+      {open && (
+        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label htmlFor="skill-name" className="text-[10px] font-medium uppercase text-muted-foreground">Name</label>
+              <input id="skill-name" value={name} onChange={(e) => { setName(e.target.value); if (!slugTouched.current) setSlug(slugify(e.target.value)); }} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm" placeholder="e.g. Rust reviewer" />
+            </div>
+            <div>
+              <label htmlFor="skill-slug" className="text-[10px] font-medium uppercase text-muted-foreground">Slug</label>
+              <input id="skill-slug" value={slug} onChange={(e) => { slugTouched.current = true; setSlug(slugify(e.target.value)); }} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm font-mono" placeholder="rust-reviewer" />
+            </div>
           </div>
+          <div>
+            <label htmlFor="skill-desc" className="text-[10px] font-medium uppercase text-muted-foreground">Description</label>
+            <input id="skill-desc" value={description} onChange={(e) => setDescription(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm" placeholder="What this skill does" />
+          </div>
+          <div>
+            <label htmlFor="skill-prompt" className="text-[10px] font-medium uppercase text-muted-foreground">System-prompt fragment <span className="font-normal lowercase text-muted-foreground">(optional)</span></label>
+            <textarea id="skill-prompt" value={promptFragment} onChange={(e) => setPromptFragment(e.target.value)} className="mt-1 h-20 w-full rounded-md border border-border bg-surface-2 p-3 text-xs resize-none scrollbar-thin" placeholder="Instructions injected when an agent mounts this skill" />
+          </div>
+          <div className="flex justify-end">
+            <Button size="sm" onClick={() => { void submit(); }} disabled={createSkill.isPending || !name.trim()}>
+              {createSkill.isPending ? 'Creating…' : 'Create skill'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {!items.length ? (
+        <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+          No skills yet. Use “+ New skill” above to create one.
+        </div>
+      ) : (
+        <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+          {items.map((s) => (
+            <li key={s.id} className="rounded-lg border border-border bg-card p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold">{s.name}</h3>
+                <code className="text-[10px] text-muted-foreground">{s.slug}</code>
+              </div>
           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
             {s.description || 'No description.'}
           </p>
@@ -146,77 +205,170 @@ function SkillsTab() {
               ))}
             </ul>
           )}
-          <div className="mt-3 flex gap-2 text-[10px] text-muted-foreground">
-            {s.allowedToolsJson?.length > 0 && (
-              <span>{s.allowedToolsJson.length} tools</span>
-            )}
-            {s.requiresConnectorIdsJson?.length > 0 && (
-              <span>· {s.requiresConnectorIdsJson.length} connector(s) needed</span>
-            )}
-            {s.projectId === null && (
-              <span className="text-info">· global</span>
-            )}
+          <div className="mt-3 flex items-center justify-between text-[10px] text-muted-foreground">
+            <span className="flex gap-2">
+              {s.allowedToolsJson?.length > 0 && <span>{s.allowedToolsJson.length} tools</span>}
+              {s.requiresConnectorIdsJson?.length > 0 && <span>· {s.requiresConnectorIdsJson.length} connector(s) needed</span>}
+              {s.projectId === null && <span className="text-info">· global</span>}
+            </span>
+            <button
+              onClick={() => {
+                if (!window.confirm(`Delete skill "${s.name}"?`)) return;
+                deleteSkill.mutate(s.id, {
+                  onSuccess: () => toast.success('Skill deleted'),
+                  onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed'),
+                });
+              }}
+              className="text-destructive hover:underline"
+            >
+              Delete
+            </button>
           </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-// ─── Connectors tab ────────────────────────────────────────────────────
-
-function ConnectorsTab() {
-  const { activeProject } = useHiveData();
-  const connectors = useConnectors(activeProject?.id);
-  const items = connectors.data ?? [];
-  const grouped = useMemo(() => {
-    const data = connectors.data ?? [];
-    const apis = data.filter((c) => c.kind === 'api');
-    const mcps = data.filter((c) => c.kind === 'mcp');
-    return { apis, mcps };
-  }, [connectors.data]);
-
-  if (!items.length) {
-    return (
-      <div className="rounded-lg border border-dashed border-border p-8 text-center">
-        <h3 className="text-sm font-semibold">No connectors yet</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Connect an external HTTP API (with encrypted credentials) or an MCP
-          server. The auto-spawn pipeline reuses these before falling back to
-          synthesis.
-        </p>
-        <div className="mt-4">
-          <DisabledFeature kind="planned" reason="The connector editor (HTTP API + encrypted credentials, MCP server config) is not built yet.">
-            <Button variant="outline">+ New connector</Button>
-          </DisabledFeature>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      {grouped.apis.length > 0 && (
-        <section>
-          <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-            HTTP APIs
-          </h3>
-          <ConnectorList items={grouped.apis} />
-        </section>
-      )}
-      {grouped.mcps.length > 0 && (
-        <section>
-          <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-            MCP Servers
-          </h3>
-          <ConnectorList items={grouped.mcps} />
-        </section>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
 }
 
-function ConnectorList({ items }: { items: ReturnType<typeof useConnectors>['data'] }) {
+// ─── Connectors tab ────────────────────────────────────────────────────
+
+const AUTH_KINDS: ConnectorAuthKind[] = ['none', 'bearer', 'basic', 'oauth2', 'mcp_handshake'];
+
+function ConnectorsTab() {
+  const { activeProject } = useHiveData();
+  const projectId = activeProject?.id ?? null;
+  const connectors = useConnectors(projectId);
+  const createConnector = useCreateConnector(projectId);
+  const deleteConnector = useDeleteConnector(projectId);
+  const items = connectors.data ?? [];
+  const apis = items.filter((c) => c.kind === 'api');
+  const mcps = items.filter((c) => c.kind === 'mcp');
+
+  const [open, setOpen] = useState(false);
+  const [kind, setKind] = useState<ConnectorKind>('api');
+  const [name, setName] = useState('');
+  const [slug, setSlug] = useState('');
+  const slugTouched = useRef(false);
+  const [baseUrl, setBaseUrl] = useState('');
+  const [authKind, setAuthKind] = useState<ConnectorAuthKind>('bearer');
+  const [credential, setCredential] = useState('');
+
+  const reset = () => { setOpen(false); setKind('api'); setName(''); setSlug(''); slugTouched.current = false; setBaseUrl(''); setAuthKind('bearer'); setCredential(''); };
+
+  const submit = async () => {
+    if (!projectId) { toast.error('No active project.'); return; }
+    if (!name.trim()) { toast.error('Name is required.'); return; }
+    if (!baseUrl.trim()) { toast.error(kind === 'mcp' ? 'MCP server URL is required.' : 'Base URL is required.'); return; }
+    const effAuth: ConnectorAuthKind = kind === 'mcp' ? 'mcp_handshake' : authKind;
+    if (effAuth !== 'none' && effAuth !== 'mcp_handshake' && !credential.trim()) {
+      toast.error('Credential is required for the selected auth kind.'); return;
+    }
+    try {
+      await createConnector.mutateAsync({
+        kind,
+        slug: (slug.trim() || slugify(name)) || 'connector',
+        name: name.trim(),
+        baseUrl: baseUrl.trim(),
+        authKind: effAuth,
+        credential: credential.trim() || undefined,
+      });
+      toast.success(`Connector "${name.trim()}" created.`);
+      reset();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to create connector.');
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          Connect an external HTTP API (with an encrypted credential) or an MCP server. Credentials encrypt at rest like LLM provider keys.
+        </p>
+        <Button size="sm" variant="outline" onClick={() => (open ? reset() : setOpen(true))}>{open ? 'Cancel' : '+ New connector'}</Button>
+      </div>
+
+      {open && (
+        <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+          <div className="flex gap-1.5">
+            {(['api', 'mcp'] as const).map((k) => (
+              <button key={k} type="button" onClick={() => setKind(k)}
+                className={cn('rounded-md border px-3 py-1 text-xs transition-colors', kind === k ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground')}>
+                {k === 'api' ? 'HTTP API' : 'MCP server'}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label htmlFor="conn-name" className="text-[10px] font-medium uppercase text-muted-foreground">Name</label>
+              <input id="conn-name" value={name} onChange={(e) => { setName(e.target.value); if (!slugTouched.current) setSlug(slugify(e.target.value)); }} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm" placeholder={kind === 'mcp' ? 'e.g. GitHub MCP' : 'e.g. Stripe API'} />
+            </div>
+            <div>
+              <label htmlFor="conn-slug" className="text-[10px] font-medium uppercase text-muted-foreground">Slug</label>
+              <input id="conn-slug" value={slug} onChange={(e) => { slugTouched.current = true; setSlug(slugify(e.target.value)); }} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm font-mono" />
+            </div>
+          </div>
+          <div>
+            <label htmlFor="conn-url" className="text-[10px] font-medium uppercase text-muted-foreground">{kind === 'mcp' ? 'MCP server URL' : 'Base URL'}</label>
+            <input id="conn-url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm font-mono" placeholder="https://api.example.com" />
+          </div>
+          {kind === 'api' && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="conn-auth" className="text-[10px] font-medium uppercase text-muted-foreground">Auth</label>
+                <select id="conn-auth" value={authKind} onChange={(e) => setAuthKind(e.target.value as ConnectorAuthKind)} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-2 text-sm">
+                  {AUTH_KINDS.filter((a) => a !== 'mcp_handshake').map((a) => <option key={a} value={a}>{a}</option>)}
+                </select>
+              </div>
+              {authKind !== 'none' && (
+                <div>
+                  <label htmlFor="conn-cred" className="text-[10px] font-medium uppercase text-muted-foreground">Credential</label>
+                  <input id="conn-cred" type="password" value={credential} onChange={(e) => setCredential(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm" placeholder="token / password — encrypted at rest" />
+                </div>
+              )}
+            </div>
+          )}
+          <div className="flex justify-end">
+            <Button size="sm" onClick={() => { void submit(); }} disabled={createConnector.isPending || !name.trim()}>
+              {createConnector.isPending ? 'Creating…' : 'Create connector'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {!items.length ? (
+        <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+          No connectors yet. Use “+ New connector” above. The auto-spawn pipeline reuses these before falling back to MCP synthesis.
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {apis.length > 0 && (
+            <section>
+              <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">HTTP APIs</h3>
+              <ConnectorList items={apis} onDelete={(id, name) => {
+                if (!window.confirm(`Delete connector "${name}"?`)) return;
+                deleteConnector.mutate(id, { onSuccess: () => toast.success('Connector deleted'), onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed') });
+              }} />
+            </section>
+          )}
+          {mcps.length > 0 && (
+            <section>
+              <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">MCP Servers</h3>
+              <ConnectorList items={mcps} onDelete={(id, name) => {
+                if (!window.confirm(`Delete connector "${name}"?`)) return;
+                deleteConnector.mutate(id, { onSuccess: () => toast.success('Connector deleted'), onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed') });
+              }} />
+            </section>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConnectorList({ items, onDelete }: { items: ReturnType<typeof useConnectors>['data']; onDelete: (id: string, name: string) => void }) {
   if (!items) return null;
   const statusColor: Record<string, string> = {
     connected: 'text-success',
@@ -226,10 +378,7 @@ function ConnectorList({ items }: { items: ReturnType<typeof useConnectors>['dat
   return (
     <ul className="space-y-2">
       {items.map((c) => (
-        <li
-          key={c.id}
-          className="flex items-center justify-between rounded-lg border border-border bg-card p-3"
-        >
+        <li key={c.id} className="flex items-center justify-between rounded-lg border border-border bg-card p-3">
           <div>
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold">{c.name}</span>
@@ -240,9 +389,10 @@ function ConnectorList({ items }: { items: ReturnType<typeof useConnectors>['dat
               {c.maskedKey && <> · key {c.maskedKey}</>}
             </div>
           </div>
-          <span className={cn('text-[11px] font-semibold', statusColor[c.status])}>
-            {c.status}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className={cn('text-[11px] font-semibold', statusColor[c.status])}>{c.status}</span>
+            <button onClick={() => onDelete(c.id, c.name)} className="text-[11px] text-destructive hover:underline">Delete</button>
+          </div>
         </li>
       ))}
     </ul>

@@ -1,10 +1,10 @@
 # Hive Feature Status
 
-Living matrix mapping every promised feature to its current implementation state and dependency profile. Update whenever a feature ships, gets disabled, or moves between local/server scopes.
+Living matrix mapping every promised feature to its current implementation state and dependency profile. Update whenever a feature ships, gets disabled, or moves between local/server scopes. (How the built parts work → [`architecture.md`](architecture.md); the forward plan → [`ROADMAP.md`](ROADMAP.md).)
 
 Legend
 - **Status**: `done` · `partial` · `mock` (UI exists, no backend) · `planned` · `removed`
-- **Dep**: `local` (works fully offline) · `server` (needs Hive central server, not yet built) · `cloud-llm` (needs configured LLM provider) · `git-remote` (needs GitHub/GitLab token)
+- **Dep**: `local` (works fully offline) · `server` (needs the Hive central server — planned, not built) · `cloud-llm` (needs a configured LLM provider) · `git-remote` (needs a GitHub/GitLab token)
 - **Phase**: which redesign phase delivered/will deliver this
 
 ## Onboarding
@@ -25,14 +25,14 @@ Legend
 | Describe step (import spec) | partial | local | 3 | Spec text becomes description; not yet decomposed into per-agent task tree |
 | Team mode toggle | partial | cloud-llm | 3 | Persisted; runtime side reads on `/coordinator/converse` |
 | Plan review | partial | cloud-llm | 3 | Calls `/v1/projects/genesis/preview`; phases shown but not editable yet |
-| Real launch sequence (DB migrate ping, search probe, sandbox provision) | planned | local | 2 | Currently navigates straight to dashboard after `addProject` |
+| Real launch sequence (sandbox provision, git init, migrate ping, search probe) | done | local | 2 | `POST /v1/projects/:id/launch` runs the steps and returns a per-step report; onboarding shows it before navigating to the dashboard |
 
 ## Chat Central
 
 | Feature | Status | Dep | Phase | Notes |
 |---|---|---|---|---|
 | Sidebar threads grouped by agent | done | local | 3 | |
-| Thread title from first user message | partial | local | 3 | Defaults to "Thread N" or agent name; auto-rename pending |
+| Thread title from first user message | done | local | 3 | On the first user message the thread is renamed to a (single-spaced, 60-char) truncation of it; emits chat.thread.created so the sidebar updates live |
 | Per-project thread scoping | done | local | 3 | Threads filtered by `projectId` |
 | Delete thread | done | local | 3 | Trash icon on hover |
 | Slash commands `/help /clear /new /model` | done | local | 3 | Implemented client-side |
@@ -53,7 +53,7 @@ Legend
 | Agent detail drawer | done | local | 1 | |
 | Pause / Resume agent | partial | server | 1 | Wired to backend; executor support varies |
 | Delete agent | done | server | 1 | Renamed from "Terminate", added confirm dialog |
-| Spawn agent (modal) | partial | server | 4 | Modal now actually creates the agent (`POST /v1/projects/:id/agents`) with name/role/model/provider/system-prompt; hybrid tier removed, Cloud tier disabled. Still thinner than the Forge `AgentConfigDialog` (no tool allowlist) |
+| Spawn agent (modal) | done | local | 4 | Uses the shared `AgentFormFields` component (name, role + presets, model, system prompt, tool allowlist grouped by category) — identical to the Forge builder and the HiveGraph config dialog. POSTs `/v1/projects/:id/agents` |
 | Wires (parent→child authority + comm) | done | local | 4 | `agent_wires` table + `GET/POST /v1/projects/:pid/wires`, `DELETE /v1/wires/:id`. `spawn_agent` records a wire automatically; agent visibility (`message_agent` / `list_visible_agents` / `request_relay`) walks this graph |
 | Wire creation by drag | done | local | 4 | Drag node→node in HiveGraph (`onConnect` → `POST …/wires`) |
 | Wire deletion (left-click) | done | local | 4 | Click a wire edge → confirm → `DELETE /v1/wires/:id` (lineage edges are not deletable) |
@@ -68,7 +68,7 @@ Legend
 |---|---|---|---|---|
 | Spec doc list | partial | local | 2 | Read-only |
 | Import multiple spec docs | planned | local | 2 | Currently one-at-a-time via onboarding only |
-| Spec → roadmap → per-agent tasks | planned | cloud-llm | 2 | Spec decomposition pipeline missing |
+| Spec → roadmap → per-agent tasks | done | cloud-llm | 2 | Onboarding `/launch` decomposes the brief into `sprints` + `tasks` (per-task assignee role → matched to an existing agent), and Planning → Spec → "Decompose Spec" runs the same via `POST /v1/spec-documents/:id/auto-decompose`. Section-anchored decomposition (`/v1/spec-documents/:id/decompose`) is the alternate path |
 | Tech debt board (Planning) | partial | local | 1 | Move + create supported; fine-grained edit/delete still missing |
 | Hive Mind notes (Planning) | partial | local | 1 | Create + filter in the UI; agents read/write via `hive_mind_*` tools. UI edit/delete still missing |
 | Drift visualization | partial | local | 5 | UI panel present; agents can write events via `record_drift`, but the runtime does not auto-detect drift yet |
@@ -84,7 +84,8 @@ Legend
 | Session replay | partial | server | 1 | Empty until runtime emits replay events |
 | Live SSE updates on dashboards | partial | local | 5 | The global `/v1/events` stream already drives query invalidation for cost/task/agent changes (see `realtime/useSse.ts`). A dedicated `GET /v1/projects/:pid/events` multiplexed stream is still planned, as is the eval-leaderboard data source |
 | Runtime drift auto-detection | planned | local | 5 | `hive-runtime/src/drift.rs` has scoring fns but the turn loop doesn't call them yet; agents can write events via the `record_drift` tool |
-| Interleaved persistence of assistant narration | planned | local | 3 | Intra-round text is streamed live over SSE but only the final round's text is persisted; persisting the full transcript is pending |
+| Budget enforcement | done | local | 5 | `chat::run_turn` refuses to start a turn (chat or agent dispatch) once the project's cumulative `cost_events` spend reaches `budget_total_cents`; emits a `budget_exceeded` error. `budget_total_cents <= 0` = unlimited |
+| Interleaved persistence of assistant narration | done | local | 3 | The full per-round transcript is persisted (rounds joined by blank lines), so a reload matches the live stream |
 
 ## Code & Versioning
 
@@ -115,16 +116,16 @@ Legend
 | `git_status` / `git_diff` / `git_log` / `git_commit` | done | local | 5 | `hive-runtime::git_tools` — operate on the project workspace repo |
 | `git_pull` / `git_push` | done | git-remote | 5 | `hive-runtime::git_tools` — rejected on `local`-tier projects |
 | `message_agent` (wire-derived visibility) / `list_visible_agents` / `request_relay` | done | local | 4 | `message_agent` now enforces the visibility rule (self + direct parents + descendants; falls back to "same project" if the project has no wires). `list_visible_agents` lists reachable peers; `request_relay` routes a message through a parent that can see a more distant agent |
-| `delete_agent` / `monitor_agent` / `delegate_task` | planned | local | 5 | Agent-management primitives beyond `spawn_agent` |
+| `delete_agent` / `monitor_agent` / `delegate_task` | done | local | 5 | `hive-runtime::agent_tools`. `delete_agent` retires a direct sub-agent (cancel subtree + terminate + status=deprecated); `monitor_agent` reads status/runtime-state/recent inbox; `delegate_task` creates a tracked task assigned to a visible agent and dispatches it |
 
 ## Forge
 
 | Feature | Status | Dep | Phase | Notes |
 |---|---|---|---|---|
-| Skills tab | partial | local | 3 | List works; create/edit minimal |
+| Skills tab | partial | local | 3 | List + create (name/slug/description/system-prompt fragment) + delete; tool/path allowlists not editable from the UI yet |
 | Modules tab | partial | server | 3 | Synthesis pipeline mocked |
-| Connectors tab | partial | local | 3 | List works; encrypted credential editor minimal |
-| Agents tab (custom builder) | partial | local | 3 | Currently exposes role/model/tier/autonomy only — needs alignment with HiveGraph spawn |
+| Connectors tab | done | local | 3 | List + create (HTTP API with auth kind + encrypted credential, or MCP server) + delete, via `/v1/projects/:id/connectors` / `DELETE /v1/connectors/:id` |
+| Agents tab (custom builder) | done | local | 3 | Uses the shared `AgentFormFields` (name/role/model/system-prompt/tool-allowlist); the unused tier/autonomy inputs were removed; Blueprints sub-tab pre-fills the form |
 | Marketplace download | planned | server | — | Disabled; needs Hive central server |
 | Publish to public registry | planned | server | — | Same dependency |
 

@@ -1,4 +1,26 @@
-# Backend TODO — Phases 2–5
+# Backend TODO — Phases 2–5  *(historical — mostly delivered)*
+
+> **Status:** this was the original list of backend changes the Phase-2–5
+> frontend work depended on. Most of it has shipped:
+> - ✅ Streaming interleave — done (and the full per-round transcript is now persisted, not just the final block).
+> - ✅ `/compact` — done: `POST /v1/chat-threads/:id/compact` (LLM summary, mechanical fallback).
+> - ✅ A2A messaging + `agent_wires` — done: `message_agent` now enforces wire-derived visibility; `list_visible_agents`, `request_relay`, `delete_agent`, `monitor_agent`, `delegate_task` exist; `agent_wires` table + `GET/POST /v1/projects/:pid/wires`, `DELETE /v1/wires/:id`, cycle-rejecting insert.
+> - ✅ Hive Mind tools — done: `hive_mind_write/read/list/delete` (backed by `hive_mind_notes`; `topic` = `category`).
+> - ✅ Spec / tech-debt / drift tools — done: `list_spec_docs`, `read_spec_doc`, `add_task`, `add_tech_debt`, `update_tech_debt`, `record_drift`.
+> - ✅ Git tools — done: `git_status/diff/log/commit` + sovereignty-gated `git_pull/git_push`.
+> - ✅ Real launch sequence — done: `POST /v1/projects/:id/launch` (provision workspace + git init, migrate ping, search probe, spec doc, brief decomposition into sprints+tasks).
+> - ✅ Project genesis decomposition — done (via `/launch` and `POST /v1/spec-documents/:id/auto-decompose`).
+> - ✅ Connect-LLMs model listing — done: `GET /v1/llm-providers/:id/models`.
+> - ✅ `chat_threads(project_id, agent_id)` index — done (`m20260612_000001`).
+> - ⏳ Live-metrics SSE (`GET /v1/projects/:pid/events`) — *not done* (the global `/v1/events` + `useSse` invalidation already keeps dashboards live; a dedicated per-project stream is still nice-to-have).
+> - ⏳ The auto-MCP-synthesis pipeline (`spawn/`) and an agent tool to trigger it — *partly done* (state machine + REST exist; finishing + exposing it is in [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md)).
+> - ⏳ `interleave_chat_text` feature flag — *not done* (interleave shipped unconditionally; no flag).
+>
+> Current status of every feature → [`../../docs/FEATURE_STATUS.md`](../../docs/FEATURE_STATUS.md).
+> Forward plan → [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md).
+> The original list is kept below verbatim for reference.
+
+---
 
 Companion to `docs/FEATURE_STATUS.md`. Concrete Rust changes the frontend Phase work depends on. Group by crate.
 

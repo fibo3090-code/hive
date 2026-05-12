@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use futures_util::StreamExt;
 use hive_db::{
-    repos::{chat_messages, chat_threads, cost_events},
+    repos::{chat_messages, chat_threads, cost_events, projects},
     Db,
 };
 use hive_llm::{
@@ -524,6 +524,43 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         .await?
         .ok_or_else(|| ChatError::NotFound(thread_id.clone()))?;
 
+    // Budget enforcement: refuse to start a turn once the project's cumulative
+    // spend has reached its budget. (`budget_total_cents <= 0` = unlimited.)
+    if let Ok(Some(project)) = projects::get(db.conn(), &project_id).await {
+        if project.budget_total_cents > 0 {
+            let spent = cost_events::total_cost_cents_for_project(db.conn(), &project_id)
+                .await
+                .unwrap_or(0);
+            if spent >= project.budget_total_cents {
+                let detail = format!(
+                    "This project has reached its budget (${:.2} of ${:.2}). Raise the budget in Settings → project, or wait for the next cycle. No more agent turns will run until then.",
+                    spent as f64 / 100.0,
+                    project.budget_total_cents as f64 / 100.0,
+                );
+                let _ = chat_messages::finalize(
+                    db.conn(),
+                    &assistant_message_id,
+                    &format!("[budget] {detail}"),
+                    0,
+                    0,
+                    0,
+                    "error",
+                )
+                .await;
+                bus.emit(
+                    format!("chat.{thread_id}.error"),
+                    json!({
+                        "threadId": thread_id,
+                        "messageId": assistant_message_id,
+                        "error": detail,
+                        "kind": "budget_exceeded",
+                    }),
+                );
+                return Ok(());
+            }
+        }
+    }
+
     let mut history = chat_messages::list_by_thread(db.conn(), &thread_id).await?;
     history
         .retain(|m| m.id != assistant_message_id && m.status != "cancelled" && m.status != "error");
@@ -667,6 +704,10 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     // (tool-budget / loop-guard / "empty response") are not streamed, so they
     // still need the post-loop chunk emit.
     let mut final_answer_was_streamed = true;
+    // Full assistant narration across every tool round, joined with blank lines.
+    // This (not just the last round's text) is what gets persisted, so a reload
+    // shows the same interleaved narration the user saw stream live.
+    let mut transcript = String::new();
     let mut total_tokens_in: u32 = 0;
     let mut total_tokens_out: u32 = 0;
     let mut total_cost: i64 = 0;
@@ -769,6 +810,10 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         let trimmed = outcome.accumulated.trim();
         if !trimmed.is_empty() {
             last_non_empty_assistant_text = Some(outcome.accumulated.clone());
+            if !transcript.is_empty() {
+                transcript.push_str("\n\n");
+            }
+            transcript.push_str(trimmed);
         }
 
         // If cancellation flipped during streaming, stop here.
@@ -1004,6 +1049,10 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     // synthetic fallback message that nobody has seen yet — otherwise the
     // client would render the final block twice.
     if !final_answer_was_streamed {
+        if !transcript.is_empty() {
+            transcript.push_str("\n\n");
+        }
+        transcript.push_str(&final_answer);
         for chunk in final_answer.as_bytes().chunks(48) {
             let delta = String::from_utf8_lossy(chunk).into_owned();
             bus.emit(
@@ -1017,10 +1066,17 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         }
     }
 
+    // Persist the full narration (every round), falling back to `final_answer`
+    // only when nothing was accumulated (e.g. an immediate empty response).
+    let persisted_body: &str = if transcript.trim().is_empty() {
+        &final_answer
+    } else {
+        transcript.trim()
+    };
     let _ = chat_messages::finalize(
         db.conn(),
         &assistant_message_id,
-        &final_answer,
+        persisted_body,
         total_tokens_in as i32,
         total_tokens_out as i32,
         total_cost,

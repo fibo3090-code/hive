@@ -605,6 +605,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/projects/genesis/preview",
             post(post_project_genesis_preview),
         )
+        .route("/v1/projects/:project_id/launch", post(launch_project))
         .route("/v1/projects/:project_id/modules", get(list_modules))
         .route("/v1/modules/:module_id", get(get_module))
         .route(
@@ -753,6 +754,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route(
             "/v1/spec-documents/:spec_document_id/decompose",
             post(decompose_spec_document),
+        )
+        .route(
+            "/v1/spec-documents/:spec_document_id/auto-decompose",
+            post(auto_decompose_spec_document),
         )
         // Agent task assignments (the Skill-Sprint planning view)
         .route(
@@ -2125,6 +2130,9 @@ fn coordinator_tools(team_mode: Option<bool>) -> Vec<String> {
         "message_agent".to_owned(),
         "list_visible_agents".to_owned(),
         "request_relay".to_owned(),
+        "delete_agent".to_owned(),
+        "monitor_agent".to_owned(),
+        "delegate_task".to_owned(),
     ];
     match team_mode {
         Some(true) => {
@@ -2280,7 +2288,8 @@ fn tool_category(name: &str) -> &'static str {
         "web_search" | "web_fetch" => "research",
         "fs_read" | "fs_write" | "fs_list" => "filesystem",
         "shell_exec" => "execution",
-        "spawn_agent" | "message_agent" | "list_visible_agents" | "request_relay" => "coordination",
+        "spawn_agent" | "message_agent" | "list_visible_agents" | "request_relay" | "delete_agent"
+        | "monitor_agent" | "delegate_task" => "coordination",
         "hive_mind_write" | "hive_mind_read" | "hive_mind_list" | "hive_mind_delete" => "memory",
         "list_spec_docs" | "read_spec_doc" | "add_task" | "add_tech_debt" | "update_tech_debt"
         | "record_drift" => "planning",
@@ -3185,6 +3194,300 @@ async fn post_project_genesis_preview(
         "estimatedDurationDays": (agent_count as u32) * 3,
         "sourceCharacters": source_text.chars().count(),
     })))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct LaunchProjectBody {
+    /// Free-text project brief — persisted as a spec document and (if
+    /// `decompose`) fed to the planner.
+    #[serde(default)]
+    description: Option<String>,
+    /// Generate a phased task tree from the description and persist it as
+    /// `sprints` + `tasks`. Defaults to true when a non-empty description is
+    /// supplied.
+    #[serde(default)]
+    decompose: Option<bool>,
+}
+
+fn launch_step(name: &str, status: &str, detail: impl Into<String>) -> Value {
+    json!({ "name": name, "status": status, "detail": detail.into() })
+}
+
+/// `POST /v1/projects/:project_id/launch` — run the real launch sequence for a
+/// freshly-created project: provision its sandbox workspace + git repo, probe
+/// the configured search backend, persist the brief as a spec document, and
+/// (optionally) decompose the brief into sprints + tasks via the planner LLM.
+/// Returns a per-step report so the onboarding UI can show real progress.
+async fn launch_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    body: Option<Json<LaunchProjectBody>>,
+) -> Result<Json<Value>, AppError> {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let database = db(&state).await;
+    projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id}")))?;
+
+    let mut steps: Vec<Value> = Vec::new();
+
+    // 1. Provision the per-project workspace + git repo.
+    let workspace_root = sandbox_root_for_project(&state, &project_id).await?;
+    match GitRepo::new(&workspace_root).init() {
+        Ok(()) => steps.push(launch_step(
+            "provision-workspace",
+            "ok",
+            format!("workspace at {} (git initialised)", workspace_root.display()),
+        )),
+        Err(e) => steps.push(launch_step(
+            "provision-workspace",
+            "warn",
+            format!("workspace at {} (git init failed: {e})", workspace_root.display()),
+        )),
+    }
+
+    // 2. Migrations — applied at startup; this is a confirmation step.
+    steps.push(launch_step("migrate-db", "ok", "schema up to date"));
+
+    // 3. Probe the configured search backend.
+    let search_settings = current_tools_sandbox_settings(&state).await?;
+    let provider = search_settings
+        .get("searchProvider")
+        .and_then(Value::as_str)
+        .unwrap_or("searxng");
+    if provider == "tavily" {
+        let configured = search_settings
+            .get("tavilyMaskedKey")
+            .map(|v| !v.is_null())
+            .unwrap_or(false);
+        steps.push(launch_step(
+            "probe-search",
+            if configured { "ok" } else { "warn" },
+            if configured { "Tavily key configured" } else { "Tavily selected but no API key set" },
+        ));
+    } else {
+        let url = search_settings
+            .get("searxngUrl")
+            .and_then(Value::as_str)
+            .unwrap_or("http://localhost:8888")
+            .to_owned();
+        let probe = async {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .ok()?;
+            client.get(&url).send().await.ok().map(|r| r.status().is_success() || r.status().is_redirection() || r.status().as_u16() == 403)
+        }
+        .await;
+        match probe {
+            Some(true) => steps.push(launch_step("probe-search", "ok", format!("SearXNG reachable at {url}"))),
+            Some(false) => steps.push(launch_step("probe-search", "warn", format!("SearXNG at {url} responded with an error"))),
+            None => steps.push(launch_step("probe-search", "warn", format!("SearXNG at {url} not reachable — web_search will be unavailable until it's running"))),
+        }
+    }
+
+    // 4. Persist the brief as a spec document.
+    let description = body.description.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let mut spec_document_id: Option<String> = None;
+    if let Some(desc) = description {
+        let doc = spec_documents::create(
+            database.conn(),
+            spec_documents::CreateSpecDocument {
+                project_id: project_id.clone(),
+                title: "Project brief".into(),
+                source: "onboarding".into(),
+                markdown: desc.to_owned(),
+            },
+        )
+        .await?;
+        spec_document_id = Some(doc.id);
+        steps.push(launch_step("spec-document", "ok", "brief saved as a spec document"));
+    } else {
+        steps.push(launch_step("spec-document", "skipped", "no project brief provided"));
+    }
+
+    // 5. Decompose the brief into sprints + tasks.
+    let want_decompose = body.decompose.unwrap_or(description.is_some());
+    let mut sprint_ids: Vec<String> = Vec::new();
+    let mut task_ids: Vec<String> = Vec::new();
+    if want_decompose {
+        if let Some(desc) = description {
+            match decompose_brief(&state, &project_id, desc).await {
+                Ok((sprints, tasks)) => {
+                    sprint_ids = sprints;
+                    task_ids = tasks;
+                    steps.push(launch_step(
+                        "decompose-plan",
+                        "ok",
+                        format!("created {} sprint(s) and {} task(s)", sprint_ids.len(), task_ids.len()),
+                    ));
+                }
+                Err(detail) => steps.push(launch_step("decompose-plan", "warn", detail)),
+            }
+        } else {
+            steps.push(launch_step("decompose-plan", "skipped", "no brief to decompose"));
+        }
+    } else {
+        steps.push(launch_step("decompose-plan", "skipped", "decomposition not requested"));
+    }
+
+    let _ = project_workspaces::mark_started(database.conn(), &project_id).await;
+    emit(
+        &state,
+        "project.updated",
+        json!({ "id": project_id, "launched": true }),
+    )
+    .await;
+
+    Ok(Json(json!({
+        "projectId": project_id,
+        "steps": steps,
+        "specDocumentId": spec_document_id,
+        "sprintIds": sprint_ids,
+        "taskIds": task_ids,
+        "taskCount": task_ids.len(),
+    })))
+}
+
+/// Ask the planner LLM to break `description` into phases with per-task assignee
+/// roles, then persist each phase as a `sprints` row and each task as a `tasks`
+/// row (round-robin assigned to existing agents whose role matches, else
+/// unassigned). On any failure returns a human-readable reason.
+async fn decompose_brief(
+    state: &AppState,
+    project_id: &str,
+    description: &str,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let database = db(state).await;
+    let agents_list = agents::list_by_project(database.conn(), project_id)
+        .await
+        .map_err(|e| format!("list agents: {e}"))?;
+
+    let (provider_id, model_id) = resolve_chat_target(state, None)
+        .await
+        .map_err(|e| format!("no planner model: {e}"))?;
+    let provider_row = llm_providers::get(database.conn(), &provider_id)
+        .await
+        .map_err(|e| format!("provider lookup: {e}"))?
+        .ok_or_else(|| "planner provider not found".to_owned())?;
+    let config = build_provider_config(state, &provider_row)
+        .await
+        .map_err(|e| format!("provider config: {e}"))?;
+    let client = client_for(config);
+
+    let roles_hint = if agents_list.is_empty() {
+        "There are no agents yet — leave \"assignee\" empty.".to_owned()
+    } else {
+        format!(
+            "Existing agent roles you may assign tasks to (use the role string verbatim, or \"\" to leave unassigned): {}",
+            agents_list.iter().map(|a| a.role.clone()).collect::<Vec<_>>().join(", ")
+        )
+    };
+    let prompt = format!(
+        "You are the Hive project planner. Break the project brief into 3-5 phases. \
+         Each phase has a short name and 3-6 tasks; each task has a title, a priority \
+         (low|medium|high), and an assignee role. {roles_hint}\n\
+         Respond ONLY with JSON, no markdown fences, no prose:\n\
+         {{ \"phases\": [ {{ \"name\": \"...\", \"tasks\": [ {{ \"title\": \"...\", \"priority\": \"medium\", \"assignee\": \"\" }} ] }} ] }}"
+    );
+    let req = hive_llm::chat::ChatRequest::new(
+        model_id,
+        vec![
+            hive_llm::chat::ChatMessage::system(prompt),
+            hive_llm::chat::ChatMessage::user(description.to_owned()),
+        ],
+    );
+    let resp = client.chat(req).await.map_err(|e| format!("planner call failed: {e}"))?;
+    let cleaned = resp
+        .text
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    let parsed: Value = serde_json::from_str(cleaned).map_err(|e| format!("planner returned invalid JSON: {e}"))?;
+    let phases = parsed
+        .get("phases")
+        .and_then(Value::as_array)
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| "planner returned no phases".to_owned())?;
+
+    let role_to_agent: std::collections::HashMap<String, String> = agents_list
+        .iter()
+        .map(|a| (a.role.to_lowercase(), a.id.clone()))
+        .collect();
+
+    let mut sprint_ids = Vec::new();
+    let mut task_ids = Vec::new();
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    for (i, phase) in phases.iter().enumerate() {
+        let name = phase
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("Phase {}", i + 1));
+        let sprint = sprints::create(
+            database.conn(),
+            sprints::CreateSprint {
+                project_id: project_id.to_owned(),
+                name: name.clone(),
+                status: if i == 0 { "active".into() } else { "planned".into() },
+                start_date: today.clone(),
+                end_date: today.clone(),
+                velocity: None,
+                points: 0,
+                position: i as i32,
+            },
+        )
+        .await
+        .map_err(|e| format!("create sprint: {e}"))?;
+        sprint_ids.push(sprint.id.clone());
+
+        let tasks_arr = phase.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
+        for t in tasks_arr {
+            let title = t.get("title").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+            let Some(title) = title else { continue };
+            let priority = t
+                .get("priority")
+                .and_then(Value::as_str)
+                .map(|p| p.to_lowercase())
+                .filter(|p| ["low", "medium", "high"].contains(&p.as_str()))
+                .unwrap_or_else(|| "medium".to_owned());
+            let agent_id = t
+                .get("assignee")
+                .and_then(Value::as_str)
+                .map(|r| r.trim().to_lowercase())
+                .filter(|r| !r.is_empty())
+                .and_then(|r| role_to_agent.get(&r).cloned());
+            let task = tasks::create(
+                database.conn(),
+                tasks::CreateTask {
+                    project_id: project_id.to_owned(),
+                    title: title.to_owned(),
+                    status: "pending".into(),
+                    phase: Some(name.clone()),
+                    priority,
+                    estimated_tokens: 0,
+                    agent_id,
+                    sprint_id: Some(sprint.id.clone()),
+                    spec_section_id: None,
+                    due_at: None,
+                },
+            )
+            .await
+            .map_err(|e| format!("create task: {e}"))?;
+            task_ids.push(task.id);
+        }
+    }
+    emit(
+        state,
+        "task.status",
+        json!({ "projectId": project_id, "decomposed": true }),
+    )
+    .await;
+    Ok((sprint_ids, task_ids))
 }
 
 async fn list_modules(
@@ -4644,6 +4947,26 @@ async fn send_chat_message(
     )
     .await;
 
+    // Auto-name the thread from its first user message (titled threads get a
+    // default like "Thread N" or the agent's name at creation time).
+    if let Ok(msgs) = chat_messages::list_by_thread(database.conn(), &thread.id).await {
+        if msgs.len() == 1 {
+            let mut title: String = body.content.split_whitespace().collect::<Vec<_>>().join(" ");
+            if title.chars().count() > 60 {
+                title = title.chars().take(57).collect::<String>() + "…";
+            }
+            if !title.is_empty() && title != thread.title {
+                let _ = chat_threads::rename(database.conn(), &thread.id, &title).await;
+                emit(
+                    &state,
+                    "chat.thread.created",
+                    json!({ "threadId": thread.id, "projectId": thread.project_id, "title": title }),
+                )
+                .await;
+            }
+        }
+    }
+
     // Insert the pending assistant row so the frontend can render a placeholder.
     let assistant_row = chat_messages::insert(
         database.conn(),
@@ -5478,6 +5801,7 @@ Your role is `{role}`. Your display name is `{name}`.\n\
 - Delegate only when parallel specialist work materially improves speed or quality.\n\
 - Use `spawn_agent` with a concrete role, bounded task, expected output, and file or responsibility ownership.\n\
 - Do not spawn agents that would edit the same files or resources in parallel.\n\
+- Use `delegate_task` to hand a bounded unit of work to an agent you can see (creates a tracked task and dispatches it); `monitor_agent` to check a sub-agent's status and recent inbox; `delete_agent` to retire one of your direct sub-agents when it's done.\n\
 - Use `message_agent` for short coordination updates, handoffs, or clarifying facts. You may only message your direct parents and your own descendants — call `list_visible_agents` to see who that is, and `request_relay` to route a message through a parent that can see a more distant agent.\n\
 - Integrate delegated results critically; verify before treating them as complete.\n\
 </delegation>\n\
@@ -5799,6 +6123,38 @@ struct DecomposeBody {
     /// Optional offset for sprint position to chain with existing rows.
     #[serde(default)]
     starting_position: i32,
+}
+
+/// `POST /v1/spec-documents/:id/auto-decompose` — generate a phased task tree
+/// from the document's markdown via the planner LLM and persist it as
+/// `sprints` + `tasks` (same logic as the onboarding `/launch` decompose step).
+async fn auto_decompose_spec_document(
+    State(state): State<AppState>,
+    Path(spec_document_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let doc = spec_documents::get(database.conn(), &spec_document_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("spec document {spec_document_id}")))?;
+    if doc.markdown.trim().is_empty() {
+        return Err(AppError::BadRequest("spec document is empty".into()));
+    }
+    let (sprint_ids, task_ids) = decompose_brief(&state, &doc.project_id, &doc.markdown)
+        .await
+        .map_err(AppError::BadRequest)?;
+    emit(
+        &state,
+        "spec_document.decomposed",
+        json!({ "specDocumentId": spec_document_id, "projectId": doc.project_id, "sprintIds": sprint_ids, "taskIds": task_ids }),
+    )
+    .await;
+    Ok(Json(json!({
+        "specDocumentId": spec_document_id,
+        "projectId": doc.project_id,
+        "sprintIds": sprint_ids,
+        "taskIds": task_ids,
+        "taskCount": task_ids.len(),
+    })))
 }
 
 async fn decompose_spec_document(

@@ -1,6 +1,12 @@
-# Future: workspace todo tool (design sketch)
+# Future: richer workspace todo tools (design sketch)
 
-This is **not implemented** in `hive-tools` yet. The chat system prompt refers to an internal checklist until these tools exist.
+> **Status:** a *simpler* `todo` tool already ships — a single tool with an
+> `action` enum (`add` / `complete` / `remove` / `list`) backed by a
+> `.hive/todo.json` file in the project sandbox (`hive-tools/src/builtins/todo.rs`).
+> This document is the sketch for the *richer* multi-tool surface
+> (`todo_create` / `todo_update` / … with `priority`, `depends_on`,
+> `in_progress` / `blocked` states, optional persisted store). It is **not**
+> implemented and is a nice-to-have, not on the near-term roadmap.
 
 ## Goals
 

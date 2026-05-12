@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Bot, Check, Dna, Hexagon, Loader2, Plus, Sparkles } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -7,7 +7,7 @@ import { useHiveData } from '@/api/queries/useHiveData';
 import { useAgentBlueprintsData } from '@/api/queries/useServerData';
 import { api } from '@/api/client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
+import { AgentFormFields, type AgentFormValue, EMPTY_AGENT_FORM } from '@/components/shared/AgentFormFields';
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { toast } from 'sonner';
 import type { AgentBlueprint } from '@/types/domain';
@@ -59,10 +59,6 @@ function DNAViewer({
   );
 }
 
-const roles = ['Frontend', 'Backend', 'Testing', 'DevOps', 'Security', 'Documentation', 'Custom'] as const;
-const tiers = [{ id: 'Local', label: 'Local' }, { id: 'Cloud', label: 'Cloud (Coming Soon)' }] as const;
-const autonomyLevels = ['Low', 'Medium', 'High'] as const;
-
 export default function AgentForge() {
   const queryClient = useQueryClient();
   const { activeProject } = useHiveData();
@@ -71,81 +67,49 @@ export default function AgentForge() {
 
   const [tab, setTab] = useState<'blueprints' | 'create'>('blueprints');
   const [dnaTarget, setDnaTarget] = useState<AgentBlueprint | null>(null);
-  const [created, setCreated] = useState(false);
-  const [agentName, setAgentName] = useState('');
-  const [role, setRole] = useState<string>(roles[0]);
-  const [model, setModel] = useState<ModelSelection | null>(defaultModel);
-  const [tier, setTier] = useState<string>(tiers[0].id);
-  const [autonomy, setAutonomy] = useState<string>(autonomyLevels[1]);
+  const [created, setCreated] = useState<string | null>(null);
+  const [form, setForm] = useState<AgentFormValue>({ ...EMPTY_AGENT_FORM, model: defaultModel });
 
   useEffect(() => {
-    if (!model?.modelId && defaultModel?.modelId) {
-      setModel(defaultModel);
-    }
-  }, [defaultModel, model]);
+    if (!form.model?.modelId && defaultModel?.modelId) setForm((f) => ({ ...f, model: defaultModel }));
+  }, [defaultModel, form.model?.modelId]);
 
   const createAgent = useMutation({
-    mutationFn: (body: { name: string; role: string; model: string; status?: string }) =>
-      api(`/v1/projects/${activeProject?.id}/agents`, {
-        method: 'POST',
-        body: JSON.stringify(body),
-      }),
+    mutationFn: (body: Record<string, unknown>) =>
+      api(`/v1/projects/${activeProject?.id}/agents`, { method: 'POST', body: JSON.stringify(body) }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['agents', activeProject?.id] });
     },
   });
 
-  const createdAgentSummary = useMemo(
-    () =>
-      created
-        ? {
-            role,
-            model: model?.modelId ?? 'Unknown',
-            tier,
-            autonomy,
-          }
-        : null,
-    [autonomy, created, model?.modelId, role, tier]
-  );
-
   const resetCreator = () => {
-    setCreated(false);
-    setAgentName('');
-    setRole(roles[0]);
-    setModel(defaultModel);
-    setTier(tiers[0].id);
-    setAutonomy(autonomyLevels[1]);
+    setCreated(null);
+    setForm({ ...EMPTY_AGENT_FORM, model: defaultModel });
   };
 
   const applyBlueprint = (blueprint: AgentBlueprint) => {
     setTab('create');
-    setCreated(false);
-    setAgentName(blueprint.name);
-    setRole(blueprint.role);
-    setModel(defaultModel);
-    setTier('Local');
-    setAutonomy('Medium');
+    setCreated(null);
+    setForm({ ...EMPTY_AGENT_FORM, name: blueprint.name, role: blueprint.role, model: defaultModel });
   };
 
   const handleCreate = async () => {
-    if (!agentName.trim()) {
-      toast.error('Agent name is required');
-      return;
-    }
-    if (!model?.modelId) {
-      toast.error('Select a model');
-      return;
-    }
-
+    if (!activeProject) { toast.error('No active project'); return; }
+    if (!form.name.trim()) { toast.error('Agent name is required'); return; }
+    if (!form.model?.modelId) { toast.error('Select a model'); return; }
     try {
       await createAgent.mutateAsync({
-        name: agentName.trim(),
-        role,
-        model: model.modelId,
+        name: form.name.trim(),
+        role: form.role.trim() || 'Generalist',
+        model: form.model.modelId,
         status: 'idle',
+        modelProviderId: form.model.providerId,
+        modelId: form.model.modelId,
+        systemPrompt: form.systemPrompt.trim() || undefined,
+        enabledTools: form.enabledTools.length ? form.enabledTools : undefined,
       });
-      toast.success(`${agentName.trim()} has been forged`);
-      setCreated(true);
+      setCreated(form.name.trim());
+      toast.success(`${form.name.trim()} has been forged`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Unable to forge agent');
     }
@@ -180,7 +144,7 @@ export default function AgentForge() {
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Agent Blueprints</h2>
-              <button onClick={() => setTab('create')} className="flex items-center gap-1 text-xs text-primary hover:underline">
+              <button onClick={() => { setTab('create'); resetCreator(); }} className="flex items-center gap-1 text-xs text-primary hover:underline">
                 <Plus className="h-3.5 w-3.5" /> Create Custom
               </button>
             </div>
@@ -226,92 +190,22 @@ export default function AgentForge() {
           <div className="max-w-2xl space-y-6">
             <div>
               <h2 className="text-lg font-semibold">Create Agent</h2>
-              <p className="text-sm text-muted-foreground">Configure the role, live model target, sovereignty tier, and autonomy in one pass.</p>
+              <p className="text-sm text-muted-foreground">Same form the HiveGraph spawn modal and the agent-config dialog use — name, role, live model target, system prompt, and tool allowlist.</p>
             </div>
 
             <div className="rounded-xl border border-border bg-card p-5 space-y-5">
-              <div>
-                <label htmlFor="agent-name" className="text-xs font-medium mb-1.5 block">Agent Name</label>
-                <input
-                  id="agent-name"
-                  value={agentName}
-                  onChange={(event) => setAgentName(event.target.value)}
-                  placeholder="Agent name (e.g. Widget Builder)"
-                  className="w-full h-10 rounded-md border border-border bg-surface-2 px-3 text-sm"
-                />
-              </div>
-
-              <div>
-                <span className="text-xs font-medium mb-1.5 block">Role</span>
-                <div className="flex flex-wrap gap-2">
-                  {roles.map((option) => (
-                    <button
-                      key={option}
-                      onClick={() => setRole(option)}
-                      className={cn(
-                        'rounded-md border px-3 py-1.5 text-xs transition-colors',
-                        role === option ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      {option}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <span className="text-xs font-medium mb-1.5 block">Model</span>
-                <ModelPicker value={model} onChange={setModel} />
-              </div>
-
-              <div>
-                <span className="text-xs font-medium mb-1.5 block">Sovereignty Tier</span>
-                <div className="flex flex-wrap gap-2">
-                  {tiers.map((option) => (
-                    <button
-                      key={option.id}
-                      disabled={option.id === 'Cloud'}
-                      onClick={() => setTier(option.id)}
-                      className={cn(
-                        'rounded-md border px-3 py-1.5 text-xs transition-colors',
-                        tier === option.id ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground',
-                        option.id === 'Cloud' ? 'opacity-50 cursor-not-allowed' : 'hover:text-foreground'
-                      )}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <span className="text-xs font-medium mb-1.5 block">Autonomy</span>
-                <div className="flex flex-wrap gap-2">
-                  {autonomyLevels.map((option) => (
-                    <button
-                      key={option}
-                      onClick={() => setAutonomy(option)}
-                      className={cn(
-                        'rounded-md border px-3 py-1.5 text-xs transition-colors',
-                        autonomy === option ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      {option}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <AgentFormFields value={form} onChange={setForm} idPrefix="forge" />
 
               <div className="rounded-lg border border-border bg-surface-2 p-3 text-xs text-muted-foreground">
-                Provider: <span className="font-mono text-foreground">{model?.providerId ?? 'unselected'}</span>
+                Provider: <span className="font-mono text-foreground">{form.model?.providerId || 'unselected'}</span>
                 {' · '}
-                Model: <span className="font-mono text-foreground">{model?.modelId ?? 'unselected'}</span>
+                Model: <span className="font-mono text-foreground">{form.model?.modelId || 'unselected'}</span>
               </div>
 
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => void handleCreate()}
-                  disabled={!agentName.trim() || !model?.modelId || createAgent.isPending || !activeProject}
+                  disabled={!form.name.trim() || !form.model?.modelId || createAgent.isPending || !activeProject}
                   className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
                   {createAgent.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
@@ -323,15 +217,13 @@ export default function AgentForge() {
               </div>
             </div>
 
-            {created && createdAgentSummary && (
+            {created && (
               <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="rounded-lg border border-success/40 bg-success/5 p-4">
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-1">
                   <Check className="h-5 w-5 text-success" />
-                  <span className="text-sm font-semibold text-success">{agentName} has been forged</span>
+                  <span className="text-sm font-semibold text-success">{created} has been forged</span>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Role: {createdAgentSummary.role} · Model: {createdAgentSummary.model} · Tier: {createdAgentSummary.tier} · Autonomy: {createdAgentSummary.autonomy}
-                </p>
+                <p className="text-xs text-muted-foreground">It now appears in HiveGraph and the Chat Central sidebar. Forge another, or reset the form.</p>
               </motion.div>
             )}
           </div>
