@@ -437,7 +437,10 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     let runtime = bootstrap_runtime(&workspace_root).await?;
-    let (events, _) = broadcast::channel(256);
+    // Larger buffer than strictly needed so slow consumers (backgrounded
+    // browser tabs, throttled mobile) survive without lagging. On lag the
+    // SSE handler still emits `sync.required` so the frontend re-fetches.
+    let (events, _) = broadcast::channel(4096);
     let crypto = Crypto::load_or_init(Some(&runtime.data_dir))?;
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -1678,7 +1681,19 @@ async fn events_stream(
                     }
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::warn!(skipped, "sse subscriber lagged");
+                    // A slow consumer (background tab, throttled mobile) fell
+                    // behind the broadcast buffer. We've lost `skipped`
+                    // events; tell the client to invalidate all caches and
+                    // re-fetch authoritative state. Without this, the UI
+                    // would silently desync.
+                    tracing::warn!(skipped, "sse subscriber lagged — emitting sync.required");
+                    let payload = serde_json::json!({ "skipped": skipped });
+                    match Event::default().event("sync.required").json_data(&payload) {
+                        Ok(event) => yield Ok(event),
+                        Err(err) => {
+                            tracing::warn!(error = %err, "failed to encode sync.required");
+                        }
+                    }
                     continue;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
