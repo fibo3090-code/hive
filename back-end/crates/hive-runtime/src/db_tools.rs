@@ -8,7 +8,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use hive_db::{
-    repos::{drift_events, notes, spec_document_sections, spec_documents, tasks, tech_debt},
+    repos::{
+        agent_skill_bindings, drift_events, notes, spec_document_sections, spec_documents, tasks,
+        tech_debt,
+    },
     Db,
 };
 use hive_tools::{Tool, ToolContext, ToolError, ToolManifest, ToolRegistry, ToolResult};
@@ -35,6 +38,8 @@ pub const RUNTIME_TOOL_NAMES: &[&str] = &[
     "add_tech_debt",
     "update_tech_debt",
     "record_drift",
+    "list_skills",
+    "read_skill",
 ];
 
 /// The subset of [`RUNTIME_TOOL_NAMES`] that is safe to enable for every agent
@@ -50,6 +55,8 @@ pub const RUNTIME_DEFAULT_TOOL_NAMES: &[&str] = &[
     "add_tech_debt",
     "update_tech_debt",
     "record_drift",
+    "list_skills",
+    "read_skill",
 ];
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> ToolResult<&'a str> {
@@ -459,7 +466,95 @@ impl Tool for RecordDrift {
     }
 }
 
-/// Register the DB-backed agent tools (Hive Mind, spec, task, tech-debt, drift).
+// ── Skills ──────────────────────────────────────────────────────────────────
+
+pub struct ListSkills {
+    db: Db,
+}
+#[async_trait]
+impl Tool for ListSkills {
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "list_skills".into(),
+            description:
+                "List the skills bound to this agent. Returns slug, name, and a short \
+                 description; call `read_skill` with the slug to get the full playbook."
+                    .into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+            side_effects: false,
+        }
+    }
+    async fn invoke(&self, _args: Value, ctx: &ToolContext) -> ToolResult<Value> {
+        let Some(agent_id) = ctx.agent_id.as_deref() else {
+            return Ok(json!({ "skills": [] }));
+        };
+        let bound = agent_skill_bindings::list_skills_for_agent(self.db.conn(), agent_id)
+            .await
+            .map_err(|e| ToolError::Other(format!("list skills: {e}")))?;
+        let items: Vec<Value> = bound
+            .into_iter()
+            .map(|s| {
+                json!({
+                    "slug": s.slug,
+                    "name": s.name,
+                    "description": s.description,
+                })
+            })
+            .collect();
+        Ok(json!({ "skills": items }))
+    }
+}
+
+pub struct ReadSkill {
+    db: Db,
+}
+#[async_trait]
+impl Tool for ReadSkill {
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "read_skill".into(),
+            description:
+                "Fetch a bound skill's full playbook (system prompt fragment, allowed tools \
+                 / paths, required connectors, capability tags, and the markdown body). \
+                 Pass the `slug` returned by `list_skills`."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": { "slug": { "type": "string" } },
+                "required": ["slug"]
+            }),
+            side_effects: false,
+        }
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
+        let slug = str_arg(&args, "slug")?;
+        let agent_id = ctx
+            .agent_id
+            .as_deref()
+            .ok_or_else(|| ToolError::Other("read_skill: caller has no agent_id".into()))?;
+        // Reject reads of skills the caller isn't bound to. Without this an
+        // agent could enumerate the whole project skill catalogue at will.
+        let bound = agent_skill_bindings::list_skills_for_agent(self.db.conn(), agent_id)
+            .await
+            .map_err(|e| ToolError::Other(format!("list bound skills: {e}")))?;
+        let skill = bound.into_iter().find(|s| s.slug == slug).ok_or_else(|| {
+            ToolError::Other(format!("skill `{slug}` is not bound to this agent"))
+        })?;
+        Ok(json!({
+            "slug": skill.slug,
+            "name": skill.name,
+            "description": skill.description,
+            "systemPromptFragment": skill.system_prompt_fragment,
+            "allowedTools": skill.allowed_tools_json,
+            "allowedPaths": skill.allowed_paths_json,
+            "requiresConnectorIds": skill.requires_connector_ids_json,
+            "capabilities": skill.capabilities_json,
+            "markdownBody": skill.markdown_body,
+        }))
+    }
+}
+
+/// Register the DB-backed agent tools (Hive Mind, spec, task, tech-debt, drift, skills).
 pub fn register_db_tools(registry: &mut ToolRegistry, db: Db) {
     registry.insert(Arc::new(HiveMindWrite { db: db.clone() }));
     registry.insert(Arc::new(HiveMindList { db: db.clone() }));
@@ -470,5 +565,7 @@ pub fn register_db_tools(registry: &mut ToolRegistry, db: Db) {
     registry.insert(Arc::new(AddTask { db: db.clone() }));
     registry.insert(Arc::new(AddTechDebt { db: db.clone() }));
     registry.insert(Arc::new(UpdateTechDebt { db: db.clone() }));
-    registry.insert(Arc::new(RecordDrift { db }));
+    registry.insert(Arc::new(RecordDrift { db: db.clone() }));
+    registry.insert(Arc::new(ListSkills { db: db.clone() }));
+    registry.insert(Arc::new(ReadSkill { db }));
 }

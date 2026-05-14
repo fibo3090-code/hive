@@ -32,6 +32,12 @@ pub struct Model {
     /// Capability tags used by the spawn-pipeline matcher.
     #[sea_orm(column_type = "Json")]
     pub capabilities_json: serde_json::Value,
+    /// Full markdown body — the long-form playbook. Surfaced lazily to
+    /// agents via the `read_skill` tool so the always-spliced prompt
+    /// stays short.
+    #[sea_orm(column_type = "Text")]
+    #[serde(default)]
+    pub markdown_body: String,
     pub created_at: String,
     pub updated_at: String,
 }

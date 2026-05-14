@@ -806,6 +806,7 @@ mod tests {
                 allowed_paths_json: json!([]),
                 requires_connector_ids_json: json!([]),
                 capabilities_json: json!(["weather"]),
+                markdown_body: String::new(),
             },
         )
         .await

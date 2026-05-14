@@ -22,8 +22,9 @@ use clap::{Parser, Subcommand};
 use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
-        agent_mcp_bindings, agent_messages, agent_spawn_requests, agent_task_assignments,
-        agent_wires, agents, alerts, audit, chat_attachments, chat_messages, chat_threads,
+        agent_mcp_bindings, agent_messages, agent_skill_bindings, agent_spawn_requests,
+        agent_task_assignments, agent_wires, agents, alerts, audit, chat_attachments,
+        chat_messages, chat_threads,
         connectors, cost_events,
         custom_mcp_servers, drift_events, llm_providers, notes, notifications,
         project_workspaces, projects, sessions, settings, skills, spec_document_sections,
@@ -831,6 +832,15 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route(
             "/v1/agents/:agent_id/mcp-bindings",
             get(list_mcp_bindings_for_agent),
+        )
+        // Agent ↔ Skill bindings
+        .route(
+            "/v1/agents/:agent_id/skills",
+            get(list_agent_skill_bindings).post(create_agent_skill_binding),
+        )
+        .route(
+            "/v1/agents/:agent_id/skills/:skill_id",
+            delete(delete_agent_skill_binding),
         )
         .with_state(state)
         .layer(axum::middleware::from_fn(request_id_middleware))
@@ -2486,6 +2496,7 @@ fn tool_category(name: &str) -> &'static str {
         "hive_mind_write" | "hive_mind_read" | "hive_mind_list" | "hive_mind_delete" => "memory",
         "list_spec_docs" | "read_spec_doc" | "add_task" | "add_tech_debt" | "update_tech_debt"
         | "record_drift" => "planning",
+        "list_skills" | "read_skill" => "skills",
         "todo" => "planning",
         "git_status" | "git_diff" | "git_log" | "git_commit" | "git_pull" | "git_push" => "git",
         _ => "other",
@@ -6113,6 +6124,7 @@ Your role is `{role}`. Your display name is `{name}`.\n\
 <project_memory>\n\
 - Use `hive_mind_write` to record durable decisions, conventions, and facts other agents should know; `hive_mind_list` / `hive_mind_read` to recall them; `hive_mind_delete` to prune.\n\
 - Use `list_spec_docs` / `read_spec_doc` to ground your work in the project's spec; `add_task` to file follow-up work; `add_tech_debt` / `update_tech_debt` to track shortcuts; `record_drift` when your work, the code, or behaviour has diverged from its intent.\n\
+- Skills bound to you are listed in the prompt header. Call `list_skills` to enumerate them and `read_skill('slug')` to pull the full playbook (system prompt fragment, allowed tools / paths, capability tags, and markdown body) before applying it.\n\
 - Use `git_status` / `git_diff` / `git_log` to inspect the working tree, and `git_commit` to checkpoint coherent units of work. `git_pull` / `git_push` only work on cloud-tier projects.\n\
 </project_memory>\n\
 \n\
@@ -6792,4 +6804,54 @@ async fn list_mcp_bindings_for_agent(
     Ok(Json(json!(
         agent_mcp_bindings::list_for_agent(database.conn(), &agent_id).await?
     )))
+}
+
+// Agent ↔ Skill bindings ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateAgentSkillBindingBody {
+    skill_id: String,
+}
+
+/// Lists the skill rows bound to an agent (joined for the UI's convenience).
+async fn list_agent_skill_bindings(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        agent_skill_bindings::list_skills_for_agent(database.conn(), &agent_id).await?
+    )))
+}
+
+async fn create_agent_skill_binding(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<CreateAgentSkillBindingBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    // Need the project id to scope the binding. Pull from the agent row.
+    let agent = agents::get(database.conn(), &agent_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
+    let row = agent_skill_bindings::bind(
+        database.conn(),
+        agent_skill_bindings::CreateBinding {
+            project_id: agent.project_id,
+            agent_id,
+            skill_id: body.skill_id,
+        },
+    )
+    .await?;
+    Ok(Json(json!(row)))
+}
+
+async fn delete_agent_skill_binding(
+    State(state): State<AppState>,
+    Path((agent_id, skill_id)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let removed = agent_skill_bindings::unbind(database.conn(), &agent_id, &skill_id).await?;
+    Ok(Json(json!({ "ok": true, "removed": removed })))
 }
