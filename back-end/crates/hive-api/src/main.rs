@@ -921,6 +921,10 @@ async fn bootstrap_runtime(workspace_root: &StdPath) -> anyhow::Result<RuntimeSt
         seed_demo(db.conn()).await?;
     }
 
+    // Best-effort sweep: drop on-disk attachments whose rows were deleted by
+    // an earlier (pre-cleanup) thread/project delete.
+    cleanup_orphan_attachments(&db, &data_dir).await;
+
     Ok(RuntimeState {
         db,
         database_url,
@@ -1686,6 +1690,19 @@ async fn delete_project(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
 
+    // Purge attachment rows + on-disk files for every thread before the cascade
+    // deletes the threads/messages and orphans them.
+    let thread_ids: Vec<String> = chat_threads::list_by_project(database.conn(), &project_id)
+        .await?
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    let data_dir = state.inner.read().await.data_dir.clone();
+    purge_attachments_for_threads(&database, &data_dir, &thread_ids).await;
+    // Best-effort: also nuke the project's attachments directory in case any
+    // files were never registered or had drifted relative paths.
+    let _ = tokio::fs::remove_dir_all(attachments_root(&data_dir, &project_id)).await;
+
     projects::delete(database.conn(), &project_id).await?;
 
     audit::append(
@@ -1799,6 +1816,15 @@ async fn clear_chat_history(
     let _project = projects::get(database.conn(), &project_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    // Snapshot thread ids before the cascade deletes them so we can purge
+    // their attachment files from disk.
+    let thread_ids: Vec<String> = chat_threads::list_by_project(database.conn(), &project_id)
+        .await?
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    let data_dir = state.inner.read().await.data_dir.clone();
+    purge_attachments_for_threads(&database, &data_dir, &thread_ids).await;
     let thread_count = chat_threads::clear_for_project(database.conn(), &project_id).await?;
     audit::append(
         database.conn(),
@@ -1845,11 +1871,18 @@ async fn create_agent(
     Json(body): Json<CreateAgentBody>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    // ULID-suffixed slug: collision-resistant across the same-second-mod-1000
+    // window that the old `timestamp() % 1000` format could collide on.
     let slug = body.slug.unwrap_or_else(|| {
         format!(
             "{}-{}",
             body.role.to_lowercase().chars().take(2).collect::<String>(),
-            chrono::Utc::now().timestamp() % 1000
+            ulid::Ulid::new()
+                .to_string()
+                .to_lowercase()
+                .chars()
+                .take(8)
+                .collect::<String>(),
         )
     });
     let agent = agents::create(
@@ -4757,6 +4790,8 @@ async fn delete_chat_thread(
     Path(thread_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    let data_dir = state.inner.read().await.data_dir.clone();
+    purge_attachments_for_threads(&database, &data_dir, std::slice::from_ref(&thread_id)).await;
     chat_threads::delete(database.conn(), &thread_id).await?;
     Ok(Json(json!({ "success": true })))
 }
@@ -5207,6 +5242,85 @@ const ATTACHMENT_MAX_PER_MESSAGE: u64 = 5;
 
 fn attachments_root(data_dir: &StdPath, project_id: &str) -> PathBuf {
     data_dir.join("attachments").join(project_id)
+}
+
+/// Best-effort: delete every attachment row attached to any message in
+/// `thread_ids`, then `unlink` the corresponding files under
+/// `<data_dir>/attachments/`. Errors are logged and swallowed — losing track of
+/// a file shouldn't block the project/thread delete.
+async fn purge_attachments_for_threads(
+    database: &Db,
+    data_dir: &StdPath,
+    thread_ids: &[String],
+) {
+    let mut message_ids: Vec<String> = Vec::new();
+    for tid in thread_ids {
+        match chat_messages::list_by_thread(database.conn(), tid).await {
+            Ok(rows) => message_ids.extend(rows.into_iter().map(|m| m.id)),
+            Err(err) => tracing::warn!(thread = %tid, error = %err, "list messages for attachment purge failed"),
+        }
+    }
+    if message_ids.is_empty() {
+        return;
+    }
+    match chat_attachments::delete_for_message_ids(database.conn(), &message_ids).await {
+        Ok(paths) => {
+            for relative in paths {
+                let abs = data_dir.join("attachments").join(&relative);
+                if let Err(err) = tokio::fs::remove_file(&abs).await {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::warn!(path = %abs.display(), error = %err, "unlink attachment failed");
+                    }
+                }
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "delete attachment rows failed"),
+    }
+}
+
+/// Startup orphan sweep: walk `<data_dir>/attachments/<project_id>/*` and
+/// delete files whose `storage_path` is no longer in
+/// `chat_message_attachments`. Cheap and bounded; logs but never fails.
+async fn cleanup_orphan_attachments(database: &Db, data_dir: &StdPath) {
+    let known: std::collections::HashSet<String> =
+        match chat_attachments::list_all_storage_paths(database.conn()).await {
+            Ok(rows) => rows.into_iter().collect(),
+            Err(err) => {
+                tracing::warn!(error = %err, "orphan attachment sweep: list_all_storage_paths failed");
+                return;
+            }
+        };
+    let root = data_dir.join("attachments");
+    let mut project_dirs = match tokio::fs::read_dir(&root).await {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+    while let Ok(Some(project_entry)) = project_dirs.next_entry().await {
+        if !project_entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let project_dir = project_entry.path();
+        let Some(project_id) = project_dir.file_name().and_then(|s| s.to_str()).map(str::to_owned)
+        else {
+            continue;
+        };
+        let Ok(mut files) = tokio::fs::read_dir(&project_dir).await else { continue };
+        while let Ok(Some(file_entry)) = files.next_entry().await {
+            if !file_entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let Some(file_name) = file_entry.file_name().to_str().map(str::to_owned) else { continue };
+            let relative = format!("{project_id}/{file_name}");
+            if !known.contains(&relative) {
+                let path = file_entry.path();
+                if let Err(err) = tokio::fs::remove_file(&path).await {
+                    tracing::warn!(path = %path.display(), error = %err, "orphan attachment unlink failed");
+                } else {
+                    tracing::info!(path = %path.display(), "orphan attachment removed");
+                }
+            }
+        }
+    }
 }
 
 fn attachment_to_json(row: &hive_db::entities::chat_attachment::Model) -> Value {
