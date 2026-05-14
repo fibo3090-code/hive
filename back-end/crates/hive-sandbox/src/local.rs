@@ -14,6 +14,69 @@ use tokio::process::Command;
 
 use crate::{Entry, ExecOutput, Sandbox, SandboxError, SandboxKind};
 
+/// Per-process resource caps applied to `shell_exec` children via `setrlimit`
+/// on Unix. Defends against fork-bombs / runaway memory / endless CPU before
+/// the wall-clock timeout fires. (`libc::rlim_t` is `u64` on most Unix
+/// targets; the cast in `apply_shell_rlimits` keeps it portable.)
+const SHELL_RLIMIT_CPU_SECS: u64 = 300;
+const SHELL_RLIMIT_AS_BYTES: u64 = 1 << 30; // 1 GiB
+const SHELL_RLIMIT_NOFILE: u64 = 1024;
+const SHELL_RLIMIT_NPROC: u64 = 64;
+
+/// Cap captured stdout/stderr so a chatty command doesn't dump megabytes back
+/// into the LLM's context window.
+const SHELL_STDOUT_CAP: usize = 256 * 1024;
+const SHELL_STDERR_CAP: usize = 64 * 1024;
+
+/// Hard ceiling on any single `fs_read`. Files above this are refused outright
+/// (not truncated) — preventing the loader from materialising a multi-GB blob
+/// in RAM. The `fs_read` tool layers its own soft cap on top.
+const FS_READ_HARD_CAP: usize = 16 * 1024 * 1024; // 16 MiB
+
+/// Hard ceiling on any single `fs_write`. Stops an agent from filling the
+/// disk with one absurd write.
+const FS_WRITE_HARD_CAP: usize = 32 * 1024 * 1024; // 32 MiB
+
+#[cfg(unix)]
+fn apply_shell_rlimits() -> std::io::Result<()> {
+    // SAFETY: runs in the forked child between `fork()` and `execve()`; only
+    // async-signal-safe libc fns are called here. Each `setrlimit` is
+    // best-effort — any failure is non-fatal (the wall-clock timeout still
+    // applies above). The casts let us share one helper across targets where
+    // `__rlimit_resource_t` is `u32` (Linux) vs `c_int` (BSD/macOS) and where
+    // `rlim_t` is `u64` vs `u32`.
+    unsafe {
+        let set = |what: libc::c_int, val: u64| {
+            #[allow(clippy::cast_possible_truncation, clippy::useless_conversion)]
+            let r = libc::rlimit {
+                rlim_cur: val as libc::rlim_t,
+                rlim_max: val as libc::rlim_t,
+            };
+            #[allow(clippy::cast_possible_truncation, clippy::useless_conversion)]
+            libc::setrlimit(what as _, &r);
+        };
+        set(libc::RLIMIT_CPU as libc::c_int, SHELL_RLIMIT_CPU_SECS);
+        set(libc::RLIMIT_AS as libc::c_int, SHELL_RLIMIT_AS_BYTES);
+        set(libc::RLIMIT_NOFILE as libc::c_int, SHELL_RLIMIT_NOFILE);
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        set(libc::RLIMIT_NPROC as libc::c_int, SHELL_RLIMIT_NPROC);
+    }
+    Ok(())
+}
+
+fn truncate_output(bytes: &[u8], cap: usize) -> (String, bool) {
+    if bytes.len() <= cap {
+        return (String::from_utf8_lossy(bytes).into_owned(), false);
+    }
+    let mut s = String::from_utf8_lossy(&bytes[..cap]).into_owned();
+    s.push_str(&format!(
+        "\n…[truncated; {} of {} bytes shown]\n",
+        cap,
+        bytes.len()
+    ));
+    (s, true)
+}
+
 pub struct LocalFsSandbox {
     root: PathBuf,
 }
@@ -151,6 +214,25 @@ impl Sandbox for LocalFsSandbox {
 
     async fn read(&self, path: &str) -> Result<Vec<u8>, SandboxError> {
         let resolved = self.resolve(path, false)?;
+        // Stat first so a 1 GB log file doesn't OOM the runner before the
+        // tool's own truncate logic runs. Hard cap at FS_READ_HARD_CAP; the
+        // caller (`fs_read` tool) applies a soft cap inside that.
+        match tokio::fs::metadata(&resolved).await {
+            Ok(meta) if meta.is_file() => {
+                if meta.len() as usize > FS_READ_HARD_CAP {
+                    return Err(SandboxError::Io(std::io::Error::other(format!(
+                        "file is {} bytes — refused (hard cap {} bytes); read a smaller slice or split it",
+                        meta.len(),
+                        FS_READ_HARD_CAP
+                    ))));
+                }
+            }
+            Ok(_) => return Err(SandboxError::Io(std::io::Error::other("not a regular file"))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SandboxError::NotFound(resolved));
+            }
+            Err(e) => return Err(SandboxError::Io(e)),
+        }
         match tokio::fs::read(&resolved).await {
             Ok(bytes) => Ok(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -161,6 +243,13 @@ impl Sandbox for LocalFsSandbox {
     }
 
     async fn write(&self, path: &str, contents: &[u8]) -> Result<(), SandboxError> {
+        if contents.len() > FS_WRITE_HARD_CAP {
+            return Err(SandboxError::Io(std::io::Error::other(format!(
+                "write of {} bytes refused (hard cap {} bytes)",
+                contents.len(),
+                FS_WRITE_HARD_CAP
+            ))));
+        }
         let resolved = self.resolve(path, false)?;
         // Refuse if the target itself is a symlink — an attacker who
         // could plant one could then redirect a later read/write.
@@ -266,18 +355,36 @@ impl Sandbox for LocalFsSandbox {
         // (npm, cargo, git config) from writing into the operator's home.
         command.env("HOME", &self.root);
 
+        // Apply per-process resource caps (CPU, AS, NOFILE, NPROC on Linux)
+        // via `pre_exec` so a runaway agent can't fork-bomb / leak GB / open
+        // a thousand fds before the wall-clock timeout fires. Best-effort:
+        // any individual setrlimit failure is silent inside the child.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: pre_exec runs in the forked child between fork() and
+            // execve(); only async-signal-safe libc calls happen here.
+            unsafe {
+                command.as_std_mut().pre_exec(apply_shell_rlimits);
+            }
+        }
+
         let child = command
             .spawn()
             .map_err(|e| SandboxError::Exec(format!("spawn {cmd}: {e}")))?;
 
         let wait = child.wait_with_output();
         match tokio::time::timeout(timeout, wait).await {
-            Ok(Ok(output)) => Ok(ExecOutput {
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                exit_code: output.status.code(),
-                timed_out: false,
-            }),
+            Ok(Ok(output)) => {
+                let (stdout, _truncated_out) = truncate_output(&output.stdout, SHELL_STDOUT_CAP);
+                let (stderr, _truncated_err) = truncate_output(&output.stderr, SHELL_STDERR_CAP);
+                Ok(ExecOutput {
+                    stdout,
+                    stderr,
+                    exit_code: output.status.code(),
+                    timed_out: false,
+                })
+            }
             Ok(Err(e)) => Err(SandboxError::Exec(e.to_string())),
             Err(_) => Err(SandboxError::Timeout(timeout)),
         }
