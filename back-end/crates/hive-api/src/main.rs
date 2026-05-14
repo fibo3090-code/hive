@@ -1062,12 +1062,39 @@ async fn read_tavily_ciphertext(state: &AppState) -> Result<Option<Vec<u8>>, App
     Ok(serde_json::from_value::<Vec<u8>>(raw).ok())
 }
 
-async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppError> {
+async fn current_tools_sandbox_settings(
+    state: &AppState,
+    project_id: Option<&str>,
+) -> Result<Value, AppError> {
     let stored = read_setting_json(state, "global", "settingsState", json!({})).await?;
     let stored_tools = stored
         .get("toolsSandbox")
         .cloned()
         .unwrap_or_else(|| json!({}));
+
+    // Per-project override (W1-A3): if the active project has its own
+    // `settingsState.toolsSandbox.enabledTools`, that wins over the global
+    // one. Other fields (searchProvider, searxngUrl, tavily key) stay global —
+    // they're host-level, not per-project.
+    let project_enabled_tools: Option<Vec<String>> = match project_id {
+        Some(pid) => {
+            let project_settings =
+                read_setting_json(state, &project_scope(pid), "settingsState", json!({})).await?;
+            project_settings
+                .get("toolsSandbox")
+                .and_then(|v| v.get("enabledTools"))
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .filter(|items| !items.is_empty())
+        }
+        None => None,
+    };
 
     // Prefer the dedicated `search.*` settings rows (seeded by
     // m20260518_search_config) over the JSON blob. The blob path stays
@@ -1101,17 +1128,20 @@ async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppEr
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "http://localhost:8888".into());
-    let enabled_tools = stored_tools
-        .get("enabledTools")
-        .and_then(|value| value.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
+    let enabled_tools = project_enabled_tools
+        .or_else(|| {
+            stored_tools
+                .get("enabledTools")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .filter(|items| !items.is_empty())
         })
-        .filter(|items| !items.is_empty())
         .unwrap_or_else(|| {
             let mut defaults = default_tool_names();
             defaults.insert(0, "web_search".into());
@@ -1181,8 +1211,11 @@ async fn github_status_for_project(
     Ok(Some((GitHubClient::new(owner, repo, token), masked)))
 }
 
-async fn enabled_tools_for_turn(state: &AppState) -> Result<Vec<String>, AppError> {
-    let settings = current_tools_sandbox_settings(state).await?;
+async fn enabled_tools_for_turn(
+    state: &AppState,
+    project_id: Option<&str>,
+) -> Result<Vec<String>, AppError> {
+    let settings = current_tools_sandbox_settings(state, project_id).await?;
     Ok(settings
         .get("enabledTools")
         .and_then(Value::as_array)
@@ -1203,7 +1236,7 @@ async fn build_tooling(
     message_id: &str,
     thread_id: &str,
 ) -> Result<Option<(ToolRegistry, ToolContext)>, AppError> {
-    let global_enabled = enabled_tools_for_turn(state).await?;
+    let global_enabled = enabled_tools_for_turn(state, Some(project_id)).await?;
     if global_enabled.is_empty() {
         return Ok(None);
     }
@@ -1245,7 +1278,7 @@ async fn build_tooling(
     let mut registry = ToolRegistry::new();
     register_defaults(&mut registry);
 
-    let search_settings = current_tools_sandbox_settings(state).await?;
+    let search_settings = current_tools_sandbox_settings(state, Some(project_id)).await?;
     let provider = search_settings
         .get("searchProvider")
         .and_then(Value::as_str)
@@ -2328,7 +2361,7 @@ async fn list_tool_manifests(State(state): State<AppState>) -> Result<Json<Value
     hive_runtime::register_db_tools(&mut registry, database.clone());
     hive_runtime::register_git_tools(&mut registry, database.clone());
 
-    let global = enabled_tools_for_turn(&state).await.unwrap_or_default();
+    let global = enabled_tools_for_turn(&state, None).await.unwrap_or_default();
     let manifests = registry.manifests();
     let payload: Vec<Value> = manifests
         .into_iter()
@@ -3313,7 +3346,7 @@ async fn launch_project(
     steps.push(launch_step("migrate-db", "ok", "schema up to date"));
 
     // 3. Probe the configured search backend.
-    let search_settings = current_tools_sandbox_settings(&state).await?;
+    let search_settings = current_tools_sandbox_settings(&state, Some(&project_id)).await?;
     let provider = search_settings
         .get("searchProvider")
         .and_then(Value::as_str)
@@ -4307,7 +4340,7 @@ async fn get_settings(State(state): State<AppState>) -> Result<Json<Value>, AppE
         .await?
         .unwrap_or_else(|| json!({}));
     let default_model = stored_default_model(&state).await?;
-    let tools_sandbox = current_tools_sandbox_settings(&state).await?;
+    let tools_sandbox = current_tools_sandbox_settings(&state, None).await?;
     {
         let settings_object = ensure_object(&mut settings_state)?;
         settings_object.insert("defaultModel".to_owned(), default_model);
@@ -4343,7 +4376,7 @@ async fn update_settings(
         .get("defaultModel")
         .cloned()
         .unwrap_or(Value::Null);
-    let existing_tools = current_tools_sandbox_settings(&state).await?;
+    let existing_tools = current_tools_sandbox_settings(&state, None).await?;
     let mut pending_tavily_key = None::<String>;
     {
         let settings_object = ensure_object(&mut next_settings)?;
@@ -6467,7 +6500,7 @@ async fn list_spawn_requests(
 
 async fn build_pipeline_deps(
     state: &AppState,
-    _project_id: &str,
+    project_id: &str,
 ) -> Result<Arc<LlmPipelineDeps>, AppError> {
     let database = db(state).await;
 
@@ -6480,7 +6513,7 @@ async fn build_pipeline_deps(
     let provider = Arc::from(client_for(config));
 
     // Build search provider
-    let search_settings = current_tools_sandbox_settings(state).await?;
+    let search_settings = current_tools_sandbox_settings(state, Some(project_id)).await?;
     let provider_kind = search_settings
         .get("searchProvider")
         .and_then(Value::as_str)
