@@ -438,7 +438,7 @@ async fn main() -> anyhow::Result<()> {
 async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     let runtime = bootstrap_runtime(&workspace_root).await?;
     let (events, _) = broadcast::channel(256);
-    let crypto = Crypto::load_or_init()?;
+    let crypto = Crypto::load_or_init(Some(&runtime.data_dir))?;
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()?;
@@ -834,11 +834,33 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http());
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8787));
-    info!("listening on http://{}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // Bind precedence: `HIVE_BIND` env var (`host:port`) > 127.0.0.1:8787.
+    // The API has no auth and tools execute shell commands, so by default
+    // we bind to loopback only. Operators who put HIVE behind a reverse
+    // proxy / Tailscale can opt into another address explicitly.
+    let bind_addr = resolve_bind_addr()?;
+    info!("listening on http://{}", bind_addr);
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn resolve_bind_addr() -> anyhow::Result<SocketAddr> {
+    use std::net::ToSocketAddrs;
+    match std::env::var("HIVE_BIND") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(SocketAddr::from(([127, 0, 0, 1], 8787)));
+            }
+            let mut iter = trimmed
+                .to_socket_addrs()
+                .map_err(|e| anyhow::anyhow!("HIVE_BIND `{trimmed}` is not a valid host:port: {e}"))?;
+            iter.next()
+                .ok_or_else(|| anyhow::anyhow!("HIVE_BIND `{trimmed}` resolved to no addresses"))
+        }
+        Err(_) => Ok(SocketAddr::from(([127, 0, 0, 1], 8787))),
+    }
 }
 
 /// Initialise tracing. Filter from `HIVE_LOG` (same syntax as `RUST_LOG`,
@@ -931,12 +953,53 @@ fn cors_layer() -> CorsLayer {
         .expose_headers([axum::http::header::HeaderName::from_static("x-request-id")])
 }
 
+/// Data directory precedence: `HIVE_DATA_DIR` env > `<workspace_root>/data`.
+/// `~` (and `~/...`) are expanded against `$HOME`. The SQLite DB, per-project
+/// workspaces, attachments, and the master key all live under this root.
+fn resolve_data_dir(workspace_root: &StdPath) -> PathBuf {
+    if let Ok(raw) = std::env::var("HIVE_DATA_DIR") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return expand_home(trimmed);
+        }
+    }
+    workspace_root.join("data")
+}
+
+fn expand_home(raw: &str) -> PathBuf {
+    if raw == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(raw)
+}
+
 async fn bootstrap_runtime(workspace_root: &StdPath) -> anyhow::Result<RuntimeState> {
     let config_path = workspace_root.join("config").join("local.toml");
-    let data_dir = workspace_root.join("data");
+    let data_dir = resolve_data_dir(workspace_root);
     fs::create_dir_all(&data_dir)?;
 
-    let (database_url, engine, needs_setup) = if config_path.exists() {
+    // Database URL precedence: `HIVE_DATABASE_URL` env (non-empty) >
+    // `[database] url` in `config/local.toml` > SQLite at `<data_dir>/hive.db`.
+    let env_database_url = std::env::var("HIVE_DATABASE_URL")
+        .ok()
+        .map(|raw| raw.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    let (database_url, engine, needs_setup) = if let Some(url) = env_database_url {
+        let engine = if url.starts_with("postgres") {
+            "postgres"
+        } else if url.starts_with("mysql") {
+            "mysql"
+        } else {
+            "sqlite"
+        }
+        .to_owned();
+        (url, engine, false)
+    } else if config_path.exists() {
         let raw = fs::read_to_string(&config_path)?;
         let value: toml::Value = toml::from_str(&raw)?;
         let url = value
@@ -947,6 +1010,8 @@ async fn bootstrap_runtime(workspace_root: &StdPath) -> anyhow::Result<RuntimeSt
             .to_owned();
         let engine = if url.starts_with("postgres") {
             "postgres"
+        } else if url.starts_with("mysql") {
+            "mysql"
         } else {
             "sqlite"
         }
@@ -4717,8 +4782,18 @@ async fn fetch_and_cache_models(state: &AppState, id: &str) -> Result<Json<Value
 }
 
 async fn probe_ollama(db: &Db, http: &reqwest::Client) {
-    let url = "http://localhost:11434/api/tags";
-    let req = http.get(url).timeout(Duration::from_secs(1)).send().await;
+    // `HIVE_OLLAMA_URL` overrides the default base URL for the probe. Strip
+    // any trailing `/` so we don't end up double-slashing the `/api/tags`
+    // suffix. The provider-level setting (per-LLM URL configured in the
+    // LLM Providers UI) still wins at request time — this just decides
+    // where the boot-time "is Ollama up?" probe looks.
+    let base = std::env::var("HIVE_OLLAMA_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "http://localhost:11434".to_owned());
+    let url = format!("{base}/api/tags");
+    let req = http.get(&url).timeout(Duration::from_secs(1)).send().await;
     match req {
         Ok(r) if r.status().is_success() => {
             info!("Ollama: detected at {url}");

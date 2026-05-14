@@ -1035,6 +1035,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "dirs",
  "dotenvy",
  "futures-core",
  "hive-crypto",
