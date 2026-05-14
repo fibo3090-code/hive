@@ -895,15 +895,33 @@ async fn request_id_middleware(
 
 fn cors_layer() -> CorsLayer {
     use axum::http::HeaderValue;
-    let dev_origins = [
+    // Default to the two dev origins (Vite on :8080 and :5173). Override via
+    // `HIVE_CORS_ORIGINS` (comma-separated list, e.g.
+    // `https://hive.lan,http://localhost:3000`). Always include `127.0.0.1`
+    // and `localhost` variants of the same scheme/port for ergonomics.
+    let env_origins: Vec<String> = std::env::var("HIVE_CORS_ORIGINS")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let default_origins: &[&str] = &[
         "http://127.0.0.1:8080",
         "http://localhost:8080",
         "http://127.0.0.1:5173",
         "http://localhost:5173",
     ];
+    let origins: Vec<String> = if env_origins.is_empty() {
+        default_origins.iter().map(|s| (*s).to_owned()).collect()
+    } else {
+        env_origins
+    };
     CorsLayer::new()
         .allow_origin(
-            dev_origins
+            origins
                 .iter()
                 .filter_map(|o| HeaderValue::from_str(o).ok())
                 .collect::<Vec<_>>(),
