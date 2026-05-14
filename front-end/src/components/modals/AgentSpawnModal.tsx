@@ -8,6 +8,10 @@ import { AgentFormFields, type AgentFormValue, EMPTY_AGENT_FORM } from '@/compon
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { useHiveData } from '@/api/queries/useHiveData';
 
+interface SpawnedAgent {
+  id: string;
+}
+
 interface AgentSpawnModalProps {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
@@ -25,7 +29,7 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
 
   const createAgent = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      api(`/v1/projects/${activeProject?.id}/agents`, { method: 'POST', body: JSON.stringify(body) }),
+      api<SpawnedAgent>(`/v1/projects/${activeProject?.id}/agents`, { method: 'POST', body: JSON.stringify(body) }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agents', activeProject?.id] }),
   });
 
@@ -34,7 +38,7 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
     if (!form.name.trim()) { toast.error('Agent name required'); return; }
     if (!form.model?.modelId) { toast.error('Select a model'); return; }
     try {
-      await createAgent.mutateAsync({
+      const created = await createAgent.mutateAsync({
         name: form.name.trim(),
         role: form.role.trim() || 'Generalist',
         model: form.model.modelId,
@@ -44,6 +48,20 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
         systemPrompt: form.systemPrompt.trim() || undefined,
         enabledTools: form.enabledTools.length ? form.enabledTools : undefined,
       });
+      // Bind selected skills now that we have the new agent id. Failures
+      // here aren't fatal to the spawn — surface a toast and keep going.
+      if (created?.id && form.skillIds.length > 0) {
+        const results = await Promise.allSettled(
+          form.skillIds.map((skillId) =>
+            api(`/v1/agents/${created.id}/skills`, {
+              method: 'POST',
+              body: JSON.stringify({ skillId }),
+            }),
+          ),
+        );
+        const failed = results.filter((r) => r.status === 'rejected').length;
+        if (failed > 0) toast.warning(`${failed} skill binding(s) failed.`);
+      }
       toast.success(`Agent "${form.name.trim()}" spawned`);
       onOpenChange(false);
     } catch (error) {
@@ -59,7 +77,7 @@ export function AgentSpawnModal({ open, onOpenChange }: AgentSpawnModalProps) {
           <DialogDescription>Configure and deploy a new agent to the hive</DialogDescription>
         </DialogHeader>
 
-        <AgentFormFields value={form} onChange={setForm} idPrefix="spawn" />
+        <AgentFormFields value={form} onChange={setForm} idPrefix="spawn" projectId={activeProject?.id} />
 
         <DialogFooter>
           <button onClick={() => onOpenChange(false)} className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground hover:text-foreground">Cancel</button>
