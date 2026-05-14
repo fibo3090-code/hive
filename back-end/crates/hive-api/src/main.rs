@@ -467,6 +467,34 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         executors: executors.clone(),
     };
 
+    // W1-A2: audit_log retention purge. Reads `audit.retention_days` (default
+    // 90; 0 = keep forever) from settings and deletes rows older than that,
+    // once at startup and every 24 h. Cheap and idempotent.
+    {
+        let purge_db = state.inner.read().await.db.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+            loop {
+                let days = settings::get_value(purge_db.conn(), "global", "audit.retention_days")
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(90);
+                if days > 0 {
+                    let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+                    let cutoff_iso = cutoff.to_rfc3339();
+                    match audit::delete_before(purge_db.conn(), &cutoff_iso).await {
+                        Ok(n) if n > 0 => tracing::info!(removed = n, cutoff = %cutoff_iso, "audit_log purge"),
+                        Ok(_) => {}
+                        Err(err) => tracing::warn!(error = %err, "audit_log purge failed"),
+                    }
+                }
+                tick.tick().await;
+            }
+        });
+    }
+
     // Install the per-agent turn driver now that AppState exists. Every
     // future inbox item will run a real LLM turn via this driver.
     executors
@@ -479,6 +507,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route("/v1/setup/status", get(setup_status))
         .route("/v1/setup/database", post(setup_database))
         .route("/v1/setup/seed", post(seed_database))
+        .route("/v1/audit-log", get(list_audit_log))
         .route("/v1/events", get(events_stream))
         .route("/v1/openapi.json", get(openapi_json))
         .route("/v1/projects", get(list_projects).post(create_project))
@@ -4783,6 +4812,26 @@ async fn get_chat_thread(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("chat thread {thread_id} not found")))?;
     Ok(Json(chat_thread_json(&thread)))
+}
+
+/// `GET /v1/audit-log?limit=&offset=` — paginated audit-log feed for the
+/// (planned) inspector UI. Defaults: limit 100 (capped 500), offset 0.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct AuditLogQuery {
+    limit: Option<u64>,
+    offset: Option<u64>,
+}
+
+async fn list_audit_log(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<AuditLogQuery>,
+) -> Result<Json<Value>, AppError> {
+    let limit = q.limit.unwrap_or(100).min(500);
+    let offset = q.offset.unwrap_or(0);
+    let database = db(&state).await;
+    let rows = audit::list(database.conn(), limit, offset).await?;
+    Ok(Json(json!({ "items": rows, "limit": limit, "offset": offset })))
 }
 
 async fn delete_chat_thread(
