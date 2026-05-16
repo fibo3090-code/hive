@@ -314,13 +314,6 @@ struct SettingsPatchBody {
     settings: Value,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EntityAuditQuery {
-    entity_type: Option<String>,
-    entity_id: Option<String>,
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkspaceInfo {
@@ -647,7 +640,6 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         )
         .route("/v1/agent-blueprints", get(get_agent_blueprints))
         .route("/v1/settings", get(get_settings).patch(update_settings))
-        .route("/v1/audit-log", get(get_audit_log))
         .route("/v1/llm-providers", get(list_llm_providers))
         .route("/v1/llm-providers/:id", patch(update_llm_provider))
         .route("/v1/llm-providers/:id/test", post(test_llm_provider))
@@ -4884,20 +4876,6 @@ async fn probe_ollama(db: &Db, http: &reqwest::Client) {
     }
 }
 
-async fn get_audit_log(
-    State(state): State<AppState>,
-    axum::extract::Query(query): axum::extract::Query<EntityAuditQuery>,
-) -> Result<Json<Value>, AppError> {
-    let database = db(&state).await;
-    let payload = if let (Some(entity_type), Some(entity_id)) = (query.entity_type, query.entity_id)
-    {
-        json!(audit::list_for_entity(database.conn(), &entity_type, &entity_id).await?)
-    } else {
-        json!([])
-    };
-    Ok(Json(payload))
-}
-
 // ── Chat (Sprint 1) ──────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -5013,22 +4991,31 @@ async fn get_chat_thread(
     Ok(Json(chat_thread_json(&thread)))
 }
 
-/// `GET /v1/audit-log?limit=&offset=` — paginated audit-log feed for the
-/// (planned) inspector UI. Defaults: limit 100 (capped 500), offset 0.
+/// `GET /v1/audit-log` — audit-log feed. Two modes:
+/// - With `entity_type` and `entity_id`: returns the per-entity history as
+///   a flat array (used by entity detail panels).
+/// - Otherwise: paginated list. Defaults limit 100 (capped 500), offset 0,
+///   envelope `{ items, limit, offset }` for the inspector UI.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct AuditLogQuery {
     limit: Option<u64>,
     offset: Option<u64>,
+    entity_type: Option<String>,
+    entity_id: Option<String>,
 }
 
 async fn list_audit_log(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<AuditLogQuery>,
 ) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    if let (Some(entity_type), Some(entity_id)) = (q.entity_type, q.entity_id) {
+        let rows = audit::list_for_entity(database.conn(), &entity_type, &entity_id).await?;
+        return Ok(Json(json!(rows)));
+    }
     let limit = q.limit.unwrap_or(100).min(500);
     let offset = q.offset.unwrap_or(0);
-    let database = db(&state).await;
     let rows = audit::list(database.conn(), limit, offset).await?;
     Ok(Json(json!({ "items": rows, "limit": limit, "offset": offset })))
 }

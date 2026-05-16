@@ -18,9 +18,17 @@ use crate::{Entry, ExecOutput, Sandbox, SandboxError, SandboxKind};
 /// on Unix. Defends against fork-bombs / runaway memory / endless CPU before
 /// the wall-clock timeout fires. (`libc::rlim_t` is `u64` on most Unix
 /// targets; the cast in `apply_shell_rlimits` keeps it portable.)
+///
+/// Windows has no `setrlimit` equivalent — `apply_shell_rlimits` and these
+/// constants are skipped there. The wall-clock timeout plus `kill_on_drop`
+/// stays in force on every platform.
+#[cfg(unix)]
 const SHELL_RLIMIT_CPU_SECS: u64 = 300;
+#[cfg(unix)]
 const SHELL_RLIMIT_AS_BYTES: u64 = 1 << 30; // 1 GiB
+#[cfg(unix)]
 const SHELL_RLIMIT_NOFILE: u64 = 1024;
+#[cfg(unix)]
 const SHELL_RLIMIT_NPROC: u64 = 64;
 
 /// Cap captured stdout/stderr so a chatty command doesn't dump megabytes back

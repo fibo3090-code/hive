@@ -984,6 +984,11 @@ pub async fn seed_demo(db: &DatabaseConnection) -> Result<(), DbErr> {
     )
     .await?;
 
+    // W1-A2: surface the audit retention so the operator can edit it from
+    // Settings. Default 90 days; set to 0 to keep forever. Without seeding
+    // this key the runtime falls back to 90 but no UI control would persist.
+    settings::put_value(db, "global", "audit.retention_days", json!(90)).await?;
+
     if audit::list_for_entity(db, "project", &project_ids[0])
         .await?
         .is_empty()

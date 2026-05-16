@@ -32,6 +32,7 @@ impl Db {
         }
 
         if auto_migrate {
+            repair_renamed_migrations(&conn).await?;
             info!("Running migrations");
             migration::Migrator::up(&conn, None).await?;
             info!("Migrations complete");
@@ -44,6 +45,51 @@ impl Db {
     pub fn conn(&self) -> &DatabaseConnection {
         &self.conn
     }
+}
+
+/// Rename rows in `seaql_migrations` whose version no longer matches a
+/// migration file on disk. We only patch known renames — never anything
+/// the user might have authored. Without this, SeaORM aborts startup with
+/// "Migration file of version 'X' is missing" on any DB created before
+/// the rename landed.
+async fn repair_renamed_migrations(conn: &DatabaseConnection) -> Result<(), DbErr> {
+    use sea_orm::ConnectionTrait;
+
+    // (old_name, new_name) pairs. Add an entry every time a migration is
+    // renamed in `migration/src/lib.rs`.
+    const RENAMES: &[(&str, &str)] = &[(
+        "m20260606_000001_repair_chat_attachments",
+        "m20260606_000002_repair_chat_attachments",
+    )];
+
+    // No-op when seaql_migrations doesn't exist yet (first boot).
+    let probe = conn
+        .execute_unprepared(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='seaql_migrations' \
+             UNION ALL SELECT 1 FROM information_schema.tables WHERE table_name='seaql_migrations'",
+        )
+        .await;
+    if probe.is_err() {
+        return Ok(());
+    }
+
+    for (old, new) in RENAMES {
+        let stmt = format!(
+            "UPDATE seaql_migrations SET version = '{}' WHERE version = '{}'",
+            new, old
+        );
+        if let Ok(res) = conn.execute_unprepared(&stmt).await {
+            if res.rows_affected() > 0 {
+                info!(
+                    rows = res.rows_affected(),
+                    from = old,
+                    to = new,
+                    "Repaired renamed migration row"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Redact credentials from the database URL for logging.
