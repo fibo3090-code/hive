@@ -1,9 +1,16 @@
 //! Key-at-rest encryption for HIVE secrets (LLM API keys, PATs, etc.).
 //!
-//! Uses ChaCha20-Poly1305 with a master key stored at `~/.hive/master.key`
-//! (mode 600 on unix). If the file is absent it is generated on first use.
+//! Uses ChaCha20-Poly1305 with a master key stored under the HIVE data
+//! directory (`<data_dir>/master.key`, mode 600 on unix). For legacy
+//! installs we still read `~/.hive/master.key` if the new path is empty,
+//! so existing deployments keep working without re-encrypting secrets.
+//! If neither file exists, a fresh key is generated at the new path.
 
-use std::{fs, io::Write, path::PathBuf};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use chacha20poly1305::{
     aead::{Aead, KeyInit, OsRng},
@@ -43,23 +50,46 @@ pub struct Crypto {
 }
 
 impl Crypto {
-    /// Load or create the master key at `~/.hive/master.key`.
-    pub fn load_or_init() -> Result<Self, CryptoError> {
-        let path = master_key_path()?;
-        let key_bytes = if path.exists() {
-            let bytes = fs::read(&path)?;
-            if bytes.len() != KEY_LEN {
-                return Err(CryptoError::BadKeyLength(bytes.len()));
+    /// Load or create the master key. Resolution order:
+    /// 1. `<data_dir>/master.key` (preferred — keeps all HIVE state in one tree).
+    /// 2. `~/.hive/master.key` (legacy path, kept readable for upgrades).
+    /// 3. Generate a fresh key at the preferred path.
+    ///
+    /// Pass `None` for `data_dir` to skip step 1 (matches the old
+    /// behaviour for callers that haven't been threaded with a data dir).
+    pub fn load_or_init(data_dir: Option<&Path>) -> Result<Self, CryptoError> {
+        let preferred = data_dir.map(|d| d.join("master.key"));
+        let legacy = legacy_master_key_path()?;
+
+        let key_bytes = if let Some(ref path) = preferred {
+            if path.exists() {
+                read_key_bytes(path)?
+            } else if legacy.exists() {
+                tracing::info!(
+                    legacy = %legacy.display(),
+                    preferred = %path.display(),
+                    "using legacy master key at $HOME/.hive/master.key; \
+                     to consolidate, move it under your HIVE_DATA_DIR"
+                );
+                read_key_bytes(&legacy)?
+            } else {
+                let bytes = generate_key_bytes();
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                write_key_file(path, &bytes)?;
+                tracing::info!(path = %path.display(), "generated new HIVE master key");
+                bytes
             }
-            bytes
+        } else if legacy.exists() {
+            read_key_bytes(&legacy)?
         } else {
-            let mut bytes = vec![0u8; KEY_LEN];
-            OsRng.fill_bytes(&mut bytes);
-            if let Some(parent) = path.parent() {
+            let bytes = generate_key_bytes();
+            if let Some(parent) = legacy.parent() {
                 fs::create_dir_all(parent)?;
             }
-            write_key_file(&path, &bytes)?;
-            tracing::info!(path = %path.display(), "generated new HIVE master key");
+            write_key_file(&legacy, &bytes)?;
+            tracing::info!(path = %legacy.display(), "generated new HIVE master key");
             bytes
         };
 
@@ -129,9 +159,23 @@ pub fn mask_key(plaintext: &str) -> String {
     format!("{prefix}…{suffix}")
 }
 
-fn master_key_path() -> Result<PathBuf, CryptoError> {
+fn legacy_master_key_path() -> Result<PathBuf, CryptoError> {
     let home = dirs::home_dir().ok_or(CryptoError::NoHome)?;
     Ok(home.join(".hive").join("master.key"))
+}
+
+fn read_key_bytes(path: &Path) -> Result<Vec<u8>, CryptoError> {
+    let bytes = fs::read(path)?;
+    if bytes.len() != KEY_LEN {
+        return Err(CryptoError::BadKeyLength(bytes.len()));
+    }
+    Ok(bytes)
+}
+
+fn generate_key_bytes() -> Vec<u8> {
+    let mut bytes = vec![0u8; KEY_LEN];
+    OsRng.fill_bytes(&mut bytes);
+    bytes
 }
 
 #[cfg(unix)]

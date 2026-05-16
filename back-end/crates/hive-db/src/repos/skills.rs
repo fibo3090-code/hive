@@ -22,6 +22,8 @@ pub struct CreateSkill {
     pub requires_connector_ids_json: serde_json::Value,
     #[serde(default = "json_empty_array")]
     pub capabilities_json: serde_json::Value,
+    #[serde(default)]
+    pub markdown_body: String,
 }
 
 fn json_empty_array() -> serde_json::Value {
@@ -41,11 +43,28 @@ pub async fn create(db: &DatabaseConnection, input: CreateSkill) -> Result<Model
         allowed_paths_json: Set(input.allowed_paths_json),
         requires_connector_ids_json: Set(input.requires_connector_ids_json),
         capabilities_json: Set(input.capabilities_json),
+        markdown_body: Set(input.markdown_body),
         created_at: Set(now.clone()),
         updated_at: Set(now),
     }
     .insert(db)
     .await
+}
+
+pub async fn get_by_slug(
+    db: &DatabaseConnection,
+    project_id: &str,
+    slug: &str,
+) -> Result<Option<Model>, DbErr> {
+    Entity::find()
+        .filter(
+            Condition::any()
+                .add(Column::ProjectId.eq(project_id))
+                .add(Column::ProjectId.is_null()),
+        )
+        .filter(Column::Slug.eq(slug))
+        .one(db)
+        .await
 }
 
 pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbErr> {
@@ -79,6 +98,7 @@ pub struct UpdateSkill {
     pub allowed_paths_json: Option<serde_json::Value>,
     pub requires_connector_ids_json: Option<serde_json::Value>,
     pub capabilities_json: Option<serde_json::Value>,
+    pub markdown_body: Option<String>,
 }
 
 pub async fn update(
@@ -111,6 +131,9 @@ pub async fn update(
     }
     if let Some(v) = patch.capabilities_json {
         model.capabilities_json = Set(v);
+    }
+    if let Some(v) = patch.markdown_body {
+        model.markdown_body = Set(v);
     }
     model.updated_at = Set(now_rfc3339());
     model.update(db).await

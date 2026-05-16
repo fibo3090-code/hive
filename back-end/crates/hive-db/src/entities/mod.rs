@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod agent_mcp_binding;
 pub mod agent_message;
+pub mod agent_skill_binding;
 pub mod agent_spawn_request;
 pub mod agent_task_assignment;
 pub mod agent_wire;

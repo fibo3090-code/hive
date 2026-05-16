@@ -19,6 +19,8 @@ export interface Skill {
   allowedPathsJson: string[];
   requiresConnectorIdsJson: string[];
   capabilitiesJson: string[];
+  /** Long-form playbook. The agent pulls it on demand via `read_skill`. */
+  markdownBody: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -34,6 +36,7 @@ export interface CreateSkillInput {
   allowedPathsJson?: string[];
   requiresConnectorIdsJson?: string[];
   capabilitiesJson?: string[];
+  markdownBody?: string;
 }
 
 export interface UpdateSkillInput {
@@ -44,6 +47,7 @@ export interface UpdateSkillInput {
   allowedPathsJson?: string[];
   requiresConnectorIdsJson?: string[];
   capabilitiesJson?: string[];
+  markdownBody?: string;
 }
 
 const skillsKey = (projectId: string | null | undefined) =>

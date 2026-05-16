@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
+import type { Skill } from '@/api/skills';
 
 export interface AgentMessageLog {
   id: string;
@@ -148,5 +149,42 @@ export function useToolCatalog() {
     queryKey: ['tools'],
     queryFn: () => api<ToolDescriptor[]>('/v1/tools'),
     staleTime: 5 * 60 * 1000,
+  });
+}
+
+// ── Agent ↔ Skill bindings ─────────────────────────────────────────────
+
+const agentSkillsKey = (agentId: string | null | undefined) =>
+  ['agent-skills', agentId] as const;
+
+/** Skills bound to a given agent (joined server-side for convenience). */
+export function useAgentSkills(agentId: string | null | undefined) {
+  return useQuery({
+    queryKey: agentSkillsKey(agentId),
+    queryFn: () => api<Skill[]>(`/v1/agents/${agentId}/skills`),
+    enabled: Boolean(agentId),
+  });
+}
+
+export function useBindAgentSkill(agentId: string | null | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (skillId: string) =>
+      api<{ id: string }>(`/v1/agents/${agentId}/skills`, {
+        method: 'POST',
+        body: JSON.stringify({ skillId }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: agentSkillsKey(agentId) }),
+  });
+}
+
+export function useUnbindAgentSkill(agentId: string | null | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (skillId: string) =>
+      api<{ ok: true; removed: number }>(`/v1/agents/${agentId}/skills/${skillId}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: agentSkillsKey(agentId) }),
   });
 }

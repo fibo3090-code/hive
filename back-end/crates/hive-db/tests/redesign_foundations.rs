@@ -166,6 +166,7 @@ async fn skills_round_trip_global_and_project_scoped() {
             allowed_paths_json: serde_json::json!(["**/*.md"]),
             requires_connector_ids_json: serde_json::json!([]),
             capabilities_json: serde_json::json!(["docs"]),
+            markdown_body: String::new(),
         },
     )
     .await
@@ -183,6 +184,7 @@ async fn skills_round_trip_global_and_project_scoped() {
             allowed_paths_json: serde_json::json!([]),
             requires_connector_ids_json: serde_json::json!([]),
             capabilities_json: serde_json::json!([]),
+            markdown_body: String::new(),
         },
     )
     .await

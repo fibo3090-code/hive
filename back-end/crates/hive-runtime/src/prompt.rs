@@ -1,13 +1,17 @@
 //! Layered system-prompt composer.
 //!
 //! Phase 0c of the redesign: replace the ad-hoc `system_prompt + 2-line
-//! blurb + tool dump` with a deterministic four-layer composer. The first
+//! blurb + tool dump` with a deterministic five-layer composer. The first
 //! two layers (immutable agent prompt + tool catalog) are byte-identical
 //! across turns when nothing about the agent changes, which makes
 //! provider prompt caching effective. The third layer is project memory
 //! walked from `~/.config/hive/HIVE.md` outward, pattern-matching what
 //! Codex does with `AGENTS.md` and Claude Code does with `CLAUDE.md`.
-//! The fourth layer is live reminders that may change every turn (current
+//! The fourth layer is the skill index for the agent — slug + short
+//! description for each bound skill, so the agent knows what playbooks
+//! it can pull on demand via `read_skill`. It sits in front of the
+//! reminders so the agent prompt cache survives turn-local churn. The
+//! fifth layer is live reminders that may change every turn (current
 //! task, open drift events, etc.) — placed last so the cache prefix
 //! upstream survives.
 //!
@@ -40,7 +44,11 @@ pub struct PromptComposer {
     /// Layer 3 — concatenated `HIVE.md` snippets (root → project → cwd
     /// order, with `.override.md` semantics applied per directory).
     project_memory: Option<String>,
-    /// Layer 4 — turn-local reminders. Multiple chunks are joined with
+    /// Layer 4 — skill index for this agent. Empty when no skills are
+    /// bound; the prompt drops the layer entirely so the prefix shape
+    /// stays clean.
+    skills_index: Option<String>,
+    /// Layer 5 — turn-local reminders. Multiple chunks are joined with
     /// blank lines so they read as a bullet list.
     reminders: Vec<String>,
 }
@@ -101,7 +109,27 @@ impl PromptComposer {
         self
     }
 
-    /// Layer 4. Each call appends one reminder block; final composition
+    /// Layer 4 — skill index. Each entry is rendered as
+    /// `- <slug>: <description>` and joined with newlines under a fixed
+    /// header. Pass an empty slice to drop the layer.
+    pub fn with_skills(mut self, skills: &[(String, String)]) -> Self {
+        if skills.is_empty() {
+            return self;
+        }
+        let mut block = String::from("Skills bound to this agent (call `read_skill` for the full playbook):\n");
+        for (slug, description) in skills {
+            let desc = description.trim();
+            if desc.is_empty() {
+                block.push_str(&format!("- {slug}\n"));
+            } else {
+                block.push_str(&format!("- {slug}: {desc}\n"));
+            }
+        }
+        self.skills_index = Some(block);
+        self
+    }
+
+    /// Layer 5. Each call appends one reminder block; final composition
     /// joins them with a blank line. Empty strings are ignored.
     pub fn add_reminder(mut self, s: impl Into<String>) -> Self {
         let s = s.into();
@@ -122,6 +150,9 @@ impl PromptComposer {
             parts.push(s);
         }
         if let Some(s) = self.project_memory {
+            parts.push(s);
+        }
+        if let Some(s) = self.skills_index {
             parts.push(s);
         }
         if !self.reminders.is_empty() {
@@ -315,6 +346,33 @@ mod tests {
         assert!(out.contains("AGENT"));
         // Nothing about hive.md leaks when the file isn't there.
         assert!(!out.contains("HIVE.md"));
+    }
+
+    #[test]
+    fn skills_layer_renders_when_present_and_drops_when_empty() {
+        let with = PromptComposer::new()
+            .with_agent_prompt(Some("AGENT".into()))
+            .with_skills(&[
+                ("git-flow".into(), "Branch-cut → PR → review workflow".into()),
+                ("lint-fix".into(), "".into()),
+            ])
+            .add_reminder("REM")
+            .build()
+            .unwrap();
+        assert!(with.contains("Skills bound to this agent"));
+        assert!(with.contains("- git-flow: Branch-cut → PR → review workflow"));
+        assert!(with.contains("- lint-fix\n"));
+        // Order: skills before reminders.
+        let skills_idx = with.find("Skills bound").unwrap();
+        let rem_idx = with.find("REM").unwrap();
+        assert!(skills_idx < rem_idx);
+
+        let without = PromptComposer::new()
+            .with_agent_prompt(Some("AGENT".into()))
+            .with_skills(&[])
+            .build()
+            .unwrap();
+        assert!(!without.contains("Skills bound"));
     }
 
     #[test]

@@ -2,10 +2,12 @@
 //! `web_search` (delegates to a `hive_search::SearchProvider` the runtime
 //! supplies via the `ToolContext` when the tool is constructed).
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use hive_search::{SearchProvider, SearchQuery};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -14,6 +16,85 @@ use crate::{Tool, ToolContext, ToolError, ToolManifest, ToolResult};
 
 const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_MAX_BODY: usize = 256 * 1024;
+/// Hard ceiling on bytes read from the wire, regardless of the LLM-supplied
+/// `maxBytes`. Protects against multi-GB downloads.
+const FETCH_HARD_CAP_BYTES: usize = 5 * 1024 * 1024;
+
+/// Reject any IP a remote-fetching tool shouldn't touch: loopback, RFC1918
+/// private, link-local (incl. 169.254.169.254 — AWS/GCP metadata),
+/// unspecified, broadcast, multicast, and (IPv6) unique-local + link-local.
+/// Defends against SSRF / DNS-rebinding / self-recursion into the local API
+/// (which has no auth).
+fn is_private_or_internal(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || *v4 == Ipv4Addr::new(255, 255, 255, 255)
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // Unique-local (fc00::/7)
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                // Link-local (fe80::/10)
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                // IPv4-mapped — re-classify the mapped v4
+                || v6
+                    .to_ipv4_mapped()
+                    .map(|m| is_private_or_internal(&IpAddr::V4(m)))
+                    .unwrap_or(false)
+        }
+    }
+}
+
+/// Resolve the URL's host (literal IP or hostname) to IPs and reject if any
+/// resolved IP is private/internal. Returns the resolved IPs on success so the
+/// caller could pin them (we don't yet — `reqwest` re-resolves — but if a DNS
+/// rebinder flips the answer between this resolve and reqwest's, the second
+/// answer would also need to win a race, which is rare in practice).
+async fn validate_url_destination(url: &reqwest::Url) -> ToolResult<()> {
+    let Some(host) = url.host_str() else {
+        return Err(ToolError::InvalidArgs("url has no host".into()));
+    };
+    let port = url.port_or_known_default().unwrap_or(80);
+
+    // IP literal? Validate directly without DNS.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_private_or_internal(&ip) {
+            return Err(ToolError::Other(format!(
+                "refusing to fetch private/internal address {ip}"
+            )));
+        }
+        return Ok(());
+    }
+
+    // Hostname → resolve and check every answer.
+    let target = format!("{host}:{port}");
+    let mut any_resolved = false;
+    let addrs = tokio::net::lookup_host(&target)
+        .await
+        .map_err(|e| ToolError::Other(format!("dns lookup for {host}: {e}")))?;
+    for sock in addrs {
+        any_resolved = true;
+        if is_private_or_internal(&sock.ip()) {
+            return Err(ToolError::Other(format!(
+                "refusing to fetch {host} — resolves to a private/internal address ({})",
+                sock.ip()
+            )));
+        }
+    }
+    if !any_resolved {
+        return Err(ToolError::Other(format!("could not resolve {host}")));
+    }
+    Ok(())
+}
 
 // ── web_fetch ────────────────────────────────────────────────────────────
 
@@ -80,14 +161,20 @@ impl Tool for WebFetchTool {
     async fn invoke(&self, args: Value, _ctx: &ToolContext) -> ToolResult<Value> {
         let args: WebFetchArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
-        if !(args.url.starts_with("http://") || args.url.starts_with("https://")) {
-            return Err(ToolError::InvalidArgs(
-                "url must be absolute http(s)".into(),
-            ));
+        let url = reqwest::Url::parse(&args.url)
+            .map_err(|e| ToolError::InvalidArgs(format!("invalid url: {e}")))?;
+        match url.scheme() {
+            "http" | "https" => {}
+            _ => return Err(ToolError::InvalidArgs("url must be http or https".into())),
         }
+
+        // SSRF / metadata / self-recursion guard: refuse private IPs, loopback,
+        // link-local (incl. cloud metadata endpoints), unique-local IPv6, etc.
+        validate_url_destination(&url).await?;
+
         let response = self
             .http
-            .get(&args.url)
+            .get(url.clone())
             .send()
             .await
             .map_err(|e| ToolError::Other(format!("request: {e}")))?;
@@ -98,10 +185,22 @@ impl Tool for WebFetchTool {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_owned();
-        let raw = response
-            .text()
-            .await
-            .map_err(|e| ToolError::Other(format!("body: {e}")))?;
+
+        // Stream the body and stop as soon as we cross the hard cap, so a
+        // malicious server can't push a multi-GB body before we react.
+        let mut buf: Vec<u8> = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| ToolError::Other(format!("body chunk: {e}")))?;
+            let take = chunk
+                .len()
+                .min(FETCH_HARD_CAP_BYTES.saturating_sub(buf.len()));
+            buf.extend_from_slice(&chunk[..take]);
+            if buf.len() >= FETCH_HARD_CAP_BYTES {
+                break;
+            }
+        }
+        let raw = String::from_utf8_lossy(&buf).into_owned();
 
         let limit = args.max_bytes.unwrap_or(DEFAULT_MAX_BODY);
         let cleaned = if content_type.contains("text/html") {
@@ -119,6 +218,8 @@ impl Tool for WebFetchTool {
             "text": truncated_text,
             "chars": total_chars,
             "truncated": total_chars > limit,
+            "bytesRead": buf.len(),
+            "hardCapped": buf.len() >= FETCH_HARD_CAP_BYTES,
         }))
     }
 }
