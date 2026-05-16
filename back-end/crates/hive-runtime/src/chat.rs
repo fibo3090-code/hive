@@ -591,10 +591,24 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
             ))
         }
     });
+    // Skill index for this agent (slug + 1-line description). The full
+    // body is pulled lazily via `read_skill`. Empty when no skills are
+    // bound or when there's no agent (operator-driven thread).
+    let bound_skills: Vec<(String, String)> = if let Some(ref aid) = agent_id {
+        hive_db::repos::agent_skill_bindings::list_skills_for_agent(db.conn(), aid)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| (s.slug, s.description))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let composed = crate::prompt::PromptComposer::new()
         .with_agent_prompt(system_prompt)
         .with_tool_catalog(tool_catalog_block)
         .with_hive_memory(Some(&project_root))
+        .with_skills(&bound_skills)
         .build();
     if let Some(s) = composed {
         messages.push(ChatMessage::system(s));

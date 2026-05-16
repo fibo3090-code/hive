@@ -123,10 +123,17 @@ impl Tool for SpawnAgent {
             .and_then(Value::as_str)
             .map(str::to_owned);
 
+        // ULID-suffixed slug: collision-resistant across the same-second-mod-1000
+        // window that the old `timestamp() % 1000` format could collide on.
         let slug = format!(
             "{}-{}",
             role.to_lowercase().chars().take(2).collect::<String>(),
-            chrono::Utc::now().timestamp() % 1000
+            ulid::Ulid::new()
+                .to_string()
+                .to_lowercase()
+                .chars()
+                .take(8)
+                .collect::<String>(),
         );
 
         let created = agents::create(

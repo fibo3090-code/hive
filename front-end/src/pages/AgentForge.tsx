@@ -76,7 +76,7 @@ export default function AgentForge() {
 
   const createAgent = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      api(`/v1/projects/${activeProject?.id}/agents`, { method: 'POST', body: JSON.stringify(body) }),
+      api<{ id: string }>(`/v1/projects/${activeProject?.id}/agents`, { method: 'POST', body: JSON.stringify(body) }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['agents', activeProject?.id] });
     },
@@ -98,7 +98,7 @@ export default function AgentForge() {
     if (!form.name.trim()) { toast.error('Agent name is required'); return; }
     if (!form.model?.modelId) { toast.error('Select a model'); return; }
     try {
-      await createAgent.mutateAsync({
+      const created = await createAgent.mutateAsync({
         name: form.name.trim(),
         role: form.role.trim() || 'Generalist',
         model: form.model.modelId,
@@ -108,6 +108,18 @@ export default function AgentForge() {
         systemPrompt: form.systemPrompt.trim() || undefined,
         enabledTools: form.enabledTools.length ? form.enabledTools : undefined,
       });
+      if (created?.id && form.skillIds.length > 0) {
+        const results = await Promise.allSettled(
+          form.skillIds.map((skillId) =>
+            api(`/v1/agents/${created.id}/skills`, {
+              method: 'POST',
+              body: JSON.stringify({ skillId }),
+            }),
+          ),
+        );
+        const failed = results.filter((r) => r.status === 'rejected').length;
+        if (failed > 0) toast.warning(`${failed} skill binding(s) failed.`);
+      }
       setCreated(form.name.trim());
       toast.success(`${form.name.trim()} has been forged`);
     } catch (error) {
@@ -194,7 +206,7 @@ export default function AgentForge() {
             </div>
 
             <div className="rounded-xl border border-border bg-card p-5 space-y-5">
-              <AgentFormFields value={form} onChange={setForm} idPrefix="forge" />
+              <AgentFormFields value={form} onChange={setForm} idPrefix="forge" projectId={activeProject?.id} />
 
               <div className="rounded-lg border border-border bg-surface-2 p-3 text-xs text-muted-foreground">
                 Provider: <span className="font-mono text-foreground">{form.model?.providerId || 'unselected'}</span>

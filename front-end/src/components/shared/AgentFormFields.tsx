@@ -3,6 +3,7 @@ import { useMemo } from 'react';
 import { cn } from '@/lib/utils';
 import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
 import { useToolCatalog, type ToolDescriptor } from '@/api/agents';
+import { useSkills } from '@/api/skills';
 
 export interface AgentFormValue {
   name: string;
@@ -11,6 +12,8 @@ export interface AgentFormValue {
   systemPrompt: string;
   /** Tool names this agent may use. Empty array = inherit the project default. */
   enabledTools: string[];
+  /** Skill ids the agent will be bound to on save. */
+  skillIds: string[];
 }
 
 export const EMPTY_AGENT_FORM: AgentFormValue = {
@@ -19,6 +22,7 @@ export const EMPTY_AGENT_FORM: AgentFormValue = {
   model: null,
   systemPrompt: '',
   enabledTools: [],
+  skillIds: [],
 };
 
 const DEFAULT_ROLE_PRESETS = [
@@ -54,6 +58,10 @@ interface Props {
   readonly systemPromptHint?: string;
   /** Hide the tool allowlist section (e.g. quick-spawn flows). */
   readonly hideTools?: boolean;
+  /** Hide the skills section. */
+  readonly hideSkills?: boolean;
+  /** Project the agent belongs to — required to load the skill catalog. */
+  readonly projectId?: string | null;
 }
 
 /**
@@ -61,10 +69,18 @@ interface Props {
  * config dialog, and the Forge agent builder. Keeping it in one place is what
  * makes "spawn an agent" and "edit an agent" consistent.
  */
-export function AgentFormFields({ value, onChange, idPrefix, rolePresets = DEFAULT_ROLE_PRESETS, systemPromptHint, hideTools }: Props) {
+export function AgentFormFields({ value, onChange, idPrefix, rolePresets = DEFAULT_ROLE_PRESETS, systemPromptHint, hideTools, hideSkills, projectId }: Props) {
   const toolsQuery = useToolCatalog();
   const tools: ToolDescriptor[] = useMemo(() => toolsQuery.data ?? [], [toolsQuery.data]);
+  const skillsQuery = useSkills(hideSkills ? null : projectId);
   const set = <K extends keyof AgentFormValue>(key: K, v: AgentFormValue[K]) => onChange({ ...value, [key]: v });
+  const selectedSkills = new Set(value.skillIds);
+  const toggleSkill = (id: string) => {
+    const next = new Set(selectedSkills);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    set('skillIds', [...next]);
+  };
 
   const grouped = useMemo<Array<[string, ToolDescriptor[]]>>(() => {
     const byCat = new Map<string, ToolDescriptor[]>();
@@ -124,6 +140,36 @@ export function AgentFormFields({ value, onChange, idPrefix, rolePresets = DEFAU
           placeholder="Extra instructions prepended to every turn for this agent…"
           className="w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-xs font-mono resize-y" />
       </div>
+
+      {!hideSkills && projectId && (
+        <div>
+          <span className="text-xs font-medium mb-2 block">
+            Skills{' '}
+            <span className="text-muted-foreground font-normal">
+              ({selectedSkills.size === 0 ? 'none bound' : `${selectedSkills.size} bound`})
+            </span>
+          </span>
+          {skillsQuery.isLoading ? (
+            <div className="text-xs text-muted-foreground">Loading skills…</div>
+          ) : (skillsQuery.data?.length ?? 0) === 0 ? (
+            <div className="text-xs text-muted-foreground">No skills in this project yet. Create one in Forge → Skills.</div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {(skillsQuery.data ?? []).map((s) => {
+                const on = selectedSkills.has(s.id);
+                return (
+                  <button key={s.id} type="button" onClick={() => toggleSkill(s.id)} aria-pressed={on}
+                    title={s.description}
+                    className={cn('rounded-md border px-2 py-1 text-[11px] transition',
+                      on ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/30')}>
+                    {s.name} <code className="ml-1 text-[10px] opacity-70">{s.slug}</code>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {!hideTools && (
         <div>

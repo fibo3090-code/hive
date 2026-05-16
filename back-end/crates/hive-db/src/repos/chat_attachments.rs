@@ -93,3 +93,40 @@ pub async fn count_for_message(db: &DatabaseConnection, message_id: &str) -> Res
         .count(db)
         .await
 }
+
+/// Delete every attachment row whose `message_id` is in `message_ids` and
+/// return their `storage_path`s so the caller can `unlink` the files. Returns
+/// an empty vec if `message_ids` is empty.
+pub async fn delete_for_message_ids(
+    db: &DatabaseConnection,
+    message_ids: &[String],
+) -> Result<Vec<String>, DbErr> {
+    if message_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = Entity::find()
+        .filter(Column::MessageId.is_in(message_ids.iter().cloned()))
+        .all(db)
+        .await?;
+    let paths: Vec<String> = rows.iter().map(|r| r.storage_path.clone()).collect();
+    if !paths.is_empty() {
+        let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        Entity::delete_many()
+            .filter(Column::Id.is_in(ids))
+            .exec(db)
+            .await?;
+    }
+    Ok(paths)
+}
+
+/// Every storage_path currently referenced by an attachment row — used by the
+/// startup orphan sweep to find files on disk without a matching row.
+pub async fn list_all_storage_paths(db: &DatabaseConnection) -> Result<Vec<String>, DbErr> {
+    let rows = Entity::find()
+        .select_only()
+        .column(Column::StoragePath)
+        .into_tuple::<String>()
+        .all(db)
+        .await?;
+    Ok(rows)
+}

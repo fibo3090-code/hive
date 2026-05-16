@@ -22,8 +22,9 @@ use clap::{Parser, Subcommand};
 use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
-        agent_mcp_bindings, agent_messages, agent_spawn_requests, agent_task_assignments,
-        agent_wires, agents, alerts, audit, chat_attachments, chat_messages, chat_threads,
+        agent_mcp_bindings, agent_messages, agent_skill_bindings, agent_spawn_requests,
+        agent_task_assignments, agent_wires, agents, alerts, audit, chat_attachments,
+        chat_messages, chat_threads,
         connectors, cost_events,
         custom_mcp_servers, drift_events, llm_providers, notes, notifications,
         project_workspaces, projects, sessions, settings, skills, spec_document_sections,
@@ -437,8 +438,11 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     let runtime = bootstrap_runtime(&workspace_root).await?;
-    let (events, _) = broadcast::channel(256);
-    let crypto = Crypto::load_or_init()?;
+    // Larger buffer than strictly needed so slow consumers (backgrounded
+    // browser tabs, throttled mobile) survive without lagging. On lag the
+    // SSE handler still emits `sync.required` so the frontend re-fetches.
+    let (events, _) = broadcast::channel(4096);
+    let crypto = Crypto::load_or_init(Some(&runtime.data_dir))?;
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()?;
@@ -467,6 +471,34 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         executors: executors.clone(),
     };
 
+    // W1-A2: audit_log retention purge. Reads `audit.retention_days` (default
+    // 90; 0 = keep forever) from settings and deletes rows older than that,
+    // once at startup and every 24 h. Cheap and idempotent.
+    {
+        let purge_db = state.inner.read().await.db.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+            loop {
+                let days = settings::get_value(purge_db.conn(), "global", "audit.retention_days")
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(90);
+                if days > 0 {
+                    let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+                    let cutoff_iso = cutoff.to_rfc3339();
+                    match audit::delete_before(purge_db.conn(), &cutoff_iso).await {
+                        Ok(n) if n > 0 => tracing::info!(removed = n, cutoff = %cutoff_iso, "audit_log purge"),
+                        Ok(_) => {}
+                        Err(err) => tracing::warn!(error = %err, "audit_log purge failed"),
+                    }
+                }
+                tick.tick().await;
+            }
+        });
+    }
+
     // Install the per-agent turn driver now that AppState exists. Every
     // future inbox item will run a real LLM turn via this driver.
     executors
@@ -479,6 +511,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route("/v1/setup/status", get(setup_status))
         .route("/v1/setup/database", post(setup_database))
         .route("/v1/setup/seed", post(seed_database))
+        .route("/v1/audit-log", get(list_audit_log))
         .route("/v1/events", get(events_stream))
         .route("/v1/openapi.json", get(openapi_json))
         .route("/v1/projects", get(list_projects).post(create_project))
@@ -800,16 +833,47 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/agents/:agent_id/mcp-bindings",
             get(list_mcp_bindings_for_agent),
         )
+        // Agent ↔ Skill bindings
+        .route(
+            "/v1/agents/:agent_id/skills",
+            get(list_agent_skill_bindings).post(create_agent_skill_binding),
+        )
+        .route(
+            "/v1/agents/:agent_id/skills/:skill_id",
+            delete(delete_agent_skill_binding),
+        )
         .with_state(state)
         .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http());
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8787));
-    info!("listening on http://{}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // Bind precedence: `HIVE_BIND` env var (`host:port`) > 127.0.0.1:8787.
+    // The API has no auth and tools execute shell commands, so by default
+    // we bind to loopback only. Operators who put HIVE behind a reverse
+    // proxy / Tailscale can opt into another address explicitly.
+    let bind_addr = resolve_bind_addr()?;
+    info!("listening on http://{}", bind_addr);
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn resolve_bind_addr() -> anyhow::Result<SocketAddr> {
+    use std::net::ToSocketAddrs;
+    match std::env::var("HIVE_BIND") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(SocketAddr::from(([127, 0, 0, 1], 8787)));
+            }
+            let mut iter = trimmed
+                .to_socket_addrs()
+                .map_err(|e| anyhow::anyhow!("HIVE_BIND `{trimmed}` is not a valid host:port: {e}"))?;
+            iter.next()
+                .ok_or_else(|| anyhow::anyhow!("HIVE_BIND `{trimmed}` resolved to no addresses"))
+        }
+        Err(_) => Ok(SocketAddr::from(([127, 0, 0, 1], 8787))),
+    }
 }
 
 /// Initialise tracing. Filter from `HIVE_LOG` (same syntax as `RUST_LOG`,
@@ -866,15 +930,33 @@ async fn request_id_middleware(
 
 fn cors_layer() -> CorsLayer {
     use axum::http::HeaderValue;
-    let dev_origins = [
+    // Default to the two dev origins (Vite on :8080 and :5173). Override via
+    // `HIVE_CORS_ORIGINS` (comma-separated list, e.g.
+    // `https://hive.lan,http://localhost:3000`). Always include `127.0.0.1`
+    // and `localhost` variants of the same scheme/port for ergonomics.
+    let env_origins: Vec<String> = std::env::var("HIVE_CORS_ORIGINS")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let default_origins: &[&str] = &[
         "http://127.0.0.1:8080",
         "http://localhost:8080",
         "http://127.0.0.1:5173",
         "http://localhost:5173",
     ];
+    let origins: Vec<String> = if env_origins.is_empty() {
+        default_origins.iter().map(|s| (*s).to_owned()).collect()
+    } else {
+        env_origins
+    };
     CorsLayer::new()
         .allow_origin(
-            dev_origins
+            origins
                 .iter()
                 .filter_map(|o| HeaderValue::from_str(o).ok())
                 .collect::<Vec<_>>(),
@@ -884,12 +966,53 @@ fn cors_layer() -> CorsLayer {
         .expose_headers([axum::http::header::HeaderName::from_static("x-request-id")])
 }
 
+/// Data directory precedence: `HIVE_DATA_DIR` env > `<workspace_root>/data`.
+/// `~` (and `~/...`) are expanded against `$HOME`. The SQLite DB, per-project
+/// workspaces, attachments, and the master key all live under this root.
+fn resolve_data_dir(workspace_root: &StdPath) -> PathBuf {
+    if let Ok(raw) = std::env::var("HIVE_DATA_DIR") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return expand_home(trimmed);
+        }
+    }
+    workspace_root.join("data")
+}
+
+fn expand_home(raw: &str) -> PathBuf {
+    if raw == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(raw)
+}
+
 async fn bootstrap_runtime(workspace_root: &StdPath) -> anyhow::Result<RuntimeState> {
     let config_path = workspace_root.join("config").join("local.toml");
-    let data_dir = workspace_root.join("data");
+    let data_dir = resolve_data_dir(workspace_root);
     fs::create_dir_all(&data_dir)?;
 
-    let (database_url, engine, needs_setup) = if config_path.exists() {
+    // Database URL precedence: `HIVE_DATABASE_URL` env (non-empty) >
+    // `[database] url` in `config/local.toml` > SQLite at `<data_dir>/hive.db`.
+    let env_database_url = std::env::var("HIVE_DATABASE_URL")
+        .ok()
+        .map(|raw| raw.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    let (database_url, engine, needs_setup) = if let Some(url) = env_database_url {
+        let engine = if url.starts_with("postgres") {
+            "postgres"
+        } else if url.starts_with("mysql") {
+            "mysql"
+        } else {
+            "sqlite"
+        }
+        .to_owned();
+        (url, engine, false)
+    } else if config_path.exists() {
         let raw = fs::read_to_string(&config_path)?;
         let value: toml::Value = toml::from_str(&raw)?;
         let url = value
@@ -900,6 +1023,8 @@ async fn bootstrap_runtime(workspace_root: &StdPath) -> anyhow::Result<RuntimeSt
             .to_owned();
         let engine = if url.starts_with("postgres") {
             "postgres"
+        } else if url.starts_with("mysql") {
+            "mysql"
         } else {
             "sqlite"
         }
@@ -920,6 +1045,10 @@ async fn bootstrap_runtime(workspace_root: &StdPath) -> anyhow::Result<RuntimeSt
     if projects::list(db.conn()).await?.is_empty() {
         seed_demo(db.conn()).await?;
     }
+
+    // Best-effort sweep: drop on-disk attachments whose rows were deleted by
+    // an earlier (pre-cleanup) thread/project delete.
+    cleanup_orphan_attachments(&db, &data_dir).await;
 
     Ok(RuntimeState {
         db,
@@ -1029,12 +1158,39 @@ async fn read_tavily_ciphertext(state: &AppState) -> Result<Option<Vec<u8>>, App
     Ok(serde_json::from_value::<Vec<u8>>(raw).ok())
 }
 
-async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppError> {
+async fn current_tools_sandbox_settings(
+    state: &AppState,
+    project_id: Option<&str>,
+) -> Result<Value, AppError> {
     let stored = read_setting_json(state, "global", "settingsState", json!({})).await?;
     let stored_tools = stored
         .get("toolsSandbox")
         .cloned()
         .unwrap_or_else(|| json!({}));
+
+    // Per-project override (W1-A3): if the active project has its own
+    // `settingsState.toolsSandbox.enabledTools`, that wins over the global
+    // one. Other fields (searchProvider, searxngUrl, tavily key) stay global —
+    // they're host-level, not per-project.
+    let project_enabled_tools: Option<Vec<String>> = match project_id {
+        Some(pid) => {
+            let project_settings =
+                read_setting_json(state, &project_scope(pid), "settingsState", json!({})).await?;
+            project_settings
+                .get("toolsSandbox")
+                .and_then(|v| v.get("enabledTools"))
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .filter(|items| !items.is_empty())
+        }
+        None => None,
+    };
 
     // Prefer the dedicated `search.*` settings rows (seeded by
     // m20260518_search_config) over the JSON blob. The blob path stays
@@ -1068,17 +1224,20 @@ async fn current_tools_sandbox_settings(state: &AppState) -> Result<Value, AppEr
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "http://localhost:8888".into());
-    let enabled_tools = stored_tools
-        .get("enabledTools")
-        .and_then(|value| value.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
+    let enabled_tools = project_enabled_tools
+        .or_else(|| {
+            stored_tools
+                .get("enabledTools")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .filter(|items| !items.is_empty())
         })
-        .filter(|items| !items.is_empty())
         .unwrap_or_else(|| {
             let mut defaults = default_tool_names();
             defaults.insert(0, "web_search".into());
@@ -1148,8 +1307,11 @@ async fn github_status_for_project(
     Ok(Some((GitHubClient::new(owner, repo, token), masked)))
 }
 
-async fn enabled_tools_for_turn(state: &AppState) -> Result<Vec<String>, AppError> {
-    let settings = current_tools_sandbox_settings(state).await?;
+async fn enabled_tools_for_turn(
+    state: &AppState,
+    project_id: Option<&str>,
+) -> Result<Vec<String>, AppError> {
+    let settings = current_tools_sandbox_settings(state, project_id).await?;
     Ok(settings
         .get("enabledTools")
         .and_then(Value::as_array)
@@ -1170,7 +1332,7 @@ async fn build_tooling(
     message_id: &str,
     thread_id: &str,
 ) -> Result<Option<(ToolRegistry, ToolContext)>, AppError> {
-    let global_enabled = enabled_tools_for_turn(state).await?;
+    let global_enabled = enabled_tools_for_turn(state, Some(project_id)).await?;
     if global_enabled.is_empty() {
         return Ok(None);
     }
@@ -1212,7 +1374,7 @@ async fn build_tooling(
     let mut registry = ToolRegistry::new();
     register_defaults(&mut registry);
 
-    let search_settings = current_tools_sandbox_settings(state).await?;
+    let search_settings = current_tools_sandbox_settings(state, Some(project_id)).await?;
     let provider = search_settings
         .get("searchProvider")
         .and_then(Value::as_str)
@@ -1529,7 +1691,19 @@ async fn events_stream(
                     }
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::warn!(skipped, "sse subscriber lagged");
+                    // A slow consumer (background tab, throttled mobile) fell
+                    // behind the broadcast buffer. We've lost `skipped`
+                    // events; tell the client to invalidate all caches and
+                    // re-fetch authoritative state. Without this, the UI
+                    // would silently desync.
+                    tracing::warn!(skipped, "sse subscriber lagged — emitting sync.required");
+                    let payload = serde_json::json!({ "skipped": skipped });
+                    match Event::default().event("sync.required").json_data(&payload) {
+                        Ok(event) => yield Ok(event),
+                        Err(err) => {
+                            tracing::warn!(error = %err, "failed to encode sync.required");
+                        }
+                    }
                     continue;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -1633,9 +1807,56 @@ async fn create_project(
     if active_project_id(&state).await?.is_none() {
         projects::activate(database.conn(), &project.id).await?;
     }
+    // Auto-spawn the Coordinator (CEO) so every project starts with a
+    // chat partner that can decompose briefs and delegate work. Failures
+    // log and continue — a project without a Coordinator is recoverable
+    // via `POST /v1/projects/:id/coordinator/ensure`.
+    if let Err(err) = ensure_coordinator_inline(&state, &database, &project.id, None).await {
+        tracing::warn!(
+            project_id = %project.id,
+            error = %err,
+            "auto-spawn coordinator failed (caller can retry via /coordinator/ensure)"
+        );
+    }
     let payload = project_payload(&database, project).await?;
     emit(&state, "project.updated", payload.clone()).await;
     Ok(Json(payload))
+}
+
+/// Pure-logic core of [`ensure_coordinator`] so [`create_project`] can call it
+/// without an [`axum`] extractor round-trip. Returns the (re)used coordinator
+/// agent.
+async fn ensure_coordinator_inline(
+    state: &AppState,
+    database: &Db,
+    project_id: &str,
+    team_mode: Option<bool>,
+) -> Result<hive_db::entities::agent::Model, AppError> {
+    let existing = agents::list_by_project(database.conn(), project_id).await?;
+    if let Some(coord) = existing.into_iter().find(|a| a.role == "Coordinator") {
+        let _ = state.executors.ensure(&coord.id, project_id).await;
+        return Ok(coord);
+    }
+    let created = agents::create(
+        database.conn(),
+        agents::CreateAgent {
+            project_id: project_id.to_owned(),
+            slug: "coordinator".into(),
+            name: "Coordinator".into(),
+            role: "Coordinator".into(),
+            model: "auto".into(),
+            status: "idle".into(),
+            parent_agent_id: None,
+            spawned_by_message_id: None,
+            enabled_tools: Some(coordinator_tools(team_mode)),
+            system_prompt: Some(coordinator_system_prompt(team_mode)),
+            model_provider_id: None,
+            model_id: None,
+        },
+    )
+    .await?;
+    let _ = state.executors.ensure(&created.id, project_id).await;
+    Ok(created)
 }
 
 async fn update_project(
@@ -1685,6 +1906,19 @@ async fn delete_project(
     let project = projects::get(database.conn(), &project_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+
+    // Purge attachment rows + on-disk files for every thread before the cascade
+    // deletes the threads/messages and orphans them.
+    let thread_ids: Vec<String> = chat_threads::list_by_project(database.conn(), &project_id)
+        .await?
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    let data_dir = state.inner.read().await.data_dir.clone();
+    purge_attachments_for_threads(&database, &data_dir, &thread_ids).await;
+    // Best-effort: also nuke the project's attachments directory in case any
+    // files were never registered or had drifted relative paths.
+    let _ = tokio::fs::remove_dir_all(attachments_root(&data_dir, &project_id)).await;
 
     projects::delete(database.conn(), &project_id).await?;
 
@@ -1799,6 +2033,15 @@ async fn clear_chat_history(
     let _project = projects::get(database.conn(), &project_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+    // Snapshot thread ids before the cascade deletes them so we can purge
+    // their attachment files from disk.
+    let thread_ids: Vec<String> = chat_threads::list_by_project(database.conn(), &project_id)
+        .await?
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    let data_dir = state.inner.read().await.data_dir.clone();
+    purge_attachments_for_threads(&database, &data_dir, &thread_ids).await;
     let thread_count = chat_threads::clear_for_project(database.conn(), &project_id).await?;
     audit::append(
         database.conn(),
@@ -1845,11 +2088,18 @@ async fn create_agent(
     Json(body): Json<CreateAgentBody>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    // ULID-suffixed slug: collision-resistant across the same-second-mod-1000
+    // window that the old `timestamp() % 1000` format could collide on.
     let slug = body.slug.unwrap_or_else(|| {
         format!(
             "{}-{}",
             body.role.to_lowercase().chars().take(2).collect::<String>(),
-            chrono::Utc::now().timestamp() % 1000
+            ulid::Ulid::new()
+                .to_string()
+                .to_lowercase()
+                .chars()
+                .take(8)
+                .collect::<String>(),
         )
     });
     let agent = agents::create(
@@ -2266,7 +2516,7 @@ async fn list_tool_manifests(State(state): State<AppState>) -> Result<Json<Value
     hive_runtime::register_db_tools(&mut registry, database.clone());
     hive_runtime::register_git_tools(&mut registry, database.clone());
 
-    let global = enabled_tools_for_turn(&state).await.unwrap_or_default();
+    let global = enabled_tools_for_turn(&state, None).await.unwrap_or_default();
     let manifests = registry.manifests();
     let payload: Vec<Value> = manifests
         .into_iter()
@@ -2293,6 +2543,7 @@ fn tool_category(name: &str) -> &'static str {
         "hive_mind_write" | "hive_mind_read" | "hive_mind_list" | "hive_mind_delete" => "memory",
         "list_spec_docs" | "read_spec_doc" | "add_task" | "add_tech_debt" | "update_tech_debt"
         | "record_drift" => "planning",
+        "list_skills" | "read_skill" => "skills",
         "todo" => "planning",
         "git_status" | "git_diff" | "git_log" | "git_commit" | "git_pull" | "git_push" => "git",
         _ => "other",
@@ -3251,7 +3502,7 @@ async fn launch_project(
     steps.push(launch_step("migrate-db", "ok", "schema up to date"));
 
     // 3. Probe the configured search backend.
-    let search_settings = current_tools_sandbox_settings(&state).await?;
+    let search_settings = current_tools_sandbox_settings(&state, Some(&project_id)).await?;
     let provider = search_settings
         .get("searchProvider")
         .and_then(Value::as_str)
@@ -4245,7 +4496,7 @@ async fn get_settings(State(state): State<AppState>) -> Result<Json<Value>, AppE
         .await?
         .unwrap_or_else(|| json!({}));
     let default_model = stored_default_model(&state).await?;
-    let tools_sandbox = current_tools_sandbox_settings(&state).await?;
+    let tools_sandbox = current_tools_sandbox_settings(&state, None).await?;
     {
         let settings_object = ensure_object(&mut settings_state)?;
         settings_object.insert("defaultModel".to_owned(), default_model);
@@ -4281,7 +4532,7 @@ async fn update_settings(
         .get("defaultModel")
         .cloned()
         .unwrap_or(Value::Null);
-    let existing_tools = current_tools_sandbox_settings(&state).await?;
+    let existing_tools = current_tools_sandbox_settings(&state, None).await?;
     let mut pending_tavily_key = None::<String>;
     {
         let settings_object = ensure_object(&mut next_settings)?;
@@ -4604,8 +4855,18 @@ async fn fetch_and_cache_models(state: &AppState, id: &str) -> Result<Json<Value
 }
 
 async fn probe_ollama(db: &Db, http: &reqwest::Client) {
-    let url = "http://localhost:11434/api/tags";
-    let req = http.get(url).timeout(Duration::from_secs(1)).send().await;
+    // `HIVE_OLLAMA_URL` overrides the default base URL for the probe. Strip
+    // any trailing `/` so we don't end up double-slashing the `/api/tags`
+    // suffix. The provider-level setting (per-LLM URL configured in the
+    // LLM Providers UI) still wins at request time — this just decides
+    // where the boot-time "is Ollama up?" probe looks.
+    let base = std::env::var("HIVE_OLLAMA_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "http://localhost:11434".to_owned());
+    let url = format!("{base}/api/tags");
+    let req = http.get(&url).timeout(Duration::from_secs(1)).send().await;
     match req {
         Ok(r) if r.status().is_success() => {
             info!("Ollama: detected at {url}");
@@ -4752,11 +5013,33 @@ async fn get_chat_thread(
     Ok(Json(chat_thread_json(&thread)))
 }
 
+/// `GET /v1/audit-log?limit=&offset=` — paginated audit-log feed for the
+/// (planned) inspector UI. Defaults: limit 100 (capped 500), offset 0.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct AuditLogQuery {
+    limit: Option<u64>,
+    offset: Option<u64>,
+}
+
+async fn list_audit_log(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<AuditLogQuery>,
+) -> Result<Json<Value>, AppError> {
+    let limit = q.limit.unwrap_or(100).min(500);
+    let offset = q.offset.unwrap_or(0);
+    let database = db(&state).await;
+    let rows = audit::list(database.conn(), limit, offset).await?;
+    Ok(Json(json!({ "items": rows, "limit": limit, "offset": offset })))
+}
+
 async fn delete_chat_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    let data_dir = state.inner.read().await.data_dir.clone();
+    purge_attachments_for_threads(&database, &data_dir, std::slice::from_ref(&thread_id)).await;
     chat_threads::delete(database.conn(), &thread_id).await?;
     Ok(Json(json!({ "success": true })))
 }
@@ -5207,6 +5490,85 @@ const ATTACHMENT_MAX_PER_MESSAGE: u64 = 5;
 
 fn attachments_root(data_dir: &StdPath, project_id: &str) -> PathBuf {
     data_dir.join("attachments").join(project_id)
+}
+
+/// Best-effort: delete every attachment row attached to any message in
+/// `thread_ids`, then `unlink` the corresponding files under
+/// `<data_dir>/attachments/`. Errors are logged and swallowed — losing track of
+/// a file shouldn't block the project/thread delete.
+async fn purge_attachments_for_threads(
+    database: &Db,
+    data_dir: &StdPath,
+    thread_ids: &[String],
+) {
+    let mut message_ids: Vec<String> = Vec::new();
+    for tid in thread_ids {
+        match chat_messages::list_by_thread(database.conn(), tid).await {
+            Ok(rows) => message_ids.extend(rows.into_iter().map(|m| m.id)),
+            Err(err) => tracing::warn!(thread = %tid, error = %err, "list messages for attachment purge failed"),
+        }
+    }
+    if message_ids.is_empty() {
+        return;
+    }
+    match chat_attachments::delete_for_message_ids(database.conn(), &message_ids).await {
+        Ok(paths) => {
+            for relative in paths {
+                let abs = data_dir.join("attachments").join(&relative);
+                if let Err(err) = tokio::fs::remove_file(&abs).await {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::warn!(path = %abs.display(), error = %err, "unlink attachment failed");
+                    }
+                }
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "delete attachment rows failed"),
+    }
+}
+
+/// Startup orphan sweep: walk `<data_dir>/attachments/<project_id>/*` and
+/// delete files whose `storage_path` is no longer in
+/// `chat_message_attachments`. Cheap and bounded; logs but never fails.
+async fn cleanup_orphan_attachments(database: &Db, data_dir: &StdPath) {
+    let known: std::collections::HashSet<String> =
+        match chat_attachments::list_all_storage_paths(database.conn()).await {
+            Ok(rows) => rows.into_iter().collect(),
+            Err(err) => {
+                tracing::warn!(error = %err, "orphan attachment sweep: list_all_storage_paths failed");
+                return;
+            }
+        };
+    let root = data_dir.join("attachments");
+    let mut project_dirs = match tokio::fs::read_dir(&root).await {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+    while let Ok(Some(project_entry)) = project_dirs.next_entry().await {
+        if !project_entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let project_dir = project_entry.path();
+        let Some(project_id) = project_dir.file_name().and_then(|s| s.to_str()).map(str::to_owned)
+        else {
+            continue;
+        };
+        let Ok(mut files) = tokio::fs::read_dir(&project_dir).await else { continue };
+        while let Ok(Some(file_entry)) = files.next_entry().await {
+            if !file_entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let Some(file_name) = file_entry.file_name().to_str().map(str::to_owned) else { continue };
+            let relative = format!("{project_id}/{file_name}");
+            if !known.contains(&relative) {
+                let path = file_entry.path();
+                if let Err(err) = tokio::fs::remove_file(&path).await {
+                    tracing::warn!(path = %path.display(), error = %err, "orphan attachment unlink failed");
+                } else {
+                    tracing::info!(path = %path.display(), "orphan attachment removed");
+                }
+            }
+        }
+    }
 }
 
 fn attachment_to_json(row: &hive_db::entities::chat_attachment::Model) -> Value {
@@ -5809,6 +6171,7 @@ Your role is `{role}`. Your display name is `{name}`.\n\
 <project_memory>\n\
 - Use `hive_mind_write` to record durable decisions, conventions, and facts other agents should know; `hive_mind_list` / `hive_mind_read` to recall them; `hive_mind_delete` to prune.\n\
 - Use `list_spec_docs` / `read_spec_doc` to ground your work in the project's spec; `add_task` to file follow-up work; `add_tech_debt` / `update_tech_debt` to track shortcuts; `record_drift` when your work, the code, or behaviour has diverged from its intent.\n\
+- Skills bound to you are listed in the prompt header. Call `list_skills` to enumerate them and `read_skill('slug')` to pull the full playbook (system prompt fragment, allowed tools / paths, capability tags, and markdown body) before applying it.\n\
 - Use `git_status` / `git_diff` / `git_log` to inspect the working tree, and `git_commit` to checkpoint coherent units of work. `git_pull` / `git_push` only work on cloud-tier projects.\n\
 </project_memory>\n\
 \n\
@@ -6304,7 +6667,7 @@ async fn list_spawn_requests(
 
 async fn build_pipeline_deps(
     state: &AppState,
-    _project_id: &str,
+    project_id: &str,
 ) -> Result<Arc<LlmPipelineDeps>, AppError> {
     let database = db(state).await;
 
@@ -6317,7 +6680,7 @@ async fn build_pipeline_deps(
     let provider = Arc::from(client_for(config));
 
     // Build search provider
-    let search_settings = current_tools_sandbox_settings(state).await?;
+    let search_settings = current_tools_sandbox_settings(state, Some(project_id)).await?;
     let provider_kind = search_settings
         .get("searchProvider")
         .and_then(Value::as_str)
@@ -6488,4 +6851,54 @@ async fn list_mcp_bindings_for_agent(
     Ok(Json(json!(
         agent_mcp_bindings::list_for_agent(database.conn(), &agent_id).await?
     )))
+}
+
+// Agent ↔ Skill bindings ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateAgentSkillBindingBody {
+    skill_id: String,
+}
+
+/// Lists the skill rows bound to an agent (joined for the UI's convenience).
+async fn list_agent_skill_bindings(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        agent_skill_bindings::list_skills_for_agent(database.conn(), &agent_id).await?
+    )))
+}
+
+async fn create_agent_skill_binding(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<CreateAgentSkillBindingBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    // Need the project id to scope the binding. Pull from the agent row.
+    let agent = agents::get(database.conn(), &agent_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
+    let row = agent_skill_bindings::bind(
+        database.conn(),
+        agent_skill_bindings::CreateBinding {
+            project_id: agent.project_id,
+            agent_id,
+            skill_id: body.skill_id,
+        },
+    )
+    .await?;
+    Ok(Json(json!(row)))
+}
+
+async fn delete_agent_skill_binding(
+    State(state): State<AppState>,
+    Path((agent_id, skill_id)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let removed = agent_skill_bindings::unbind(database.conn(), &agent_id, &skill_id).await?;
+    Ok(Json(json!({ "ok": true, "removed": removed })))
 }

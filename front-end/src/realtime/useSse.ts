@@ -196,7 +196,28 @@ export function useSse() {
       }
     };
 
-    const listeners: Array<[string, EventListener]> = [];
+    // `sync.required` is emitted when the backend's broadcast buffer
+    // skipped events for this consumer (background tab, throttled
+    // mobile). We don't know which queries went stale — invalidate the
+    // entire cache so the UI resyncs in one round-trip.
+    const syncRequiredListener: EventListener = (event) => {
+      const messageEvent = event as MessageEvent;
+      let skipped: number | undefined;
+      try {
+        const parsed = messageEvent.data ? JSON.parse(messageEvent.data) : null;
+        if (parsed && typeof parsed === 'object' && 'skipped' in parsed) {
+          const raw = (parsed as Record<string, unknown>).skipped;
+          if (typeof raw === 'number') skipped = raw;
+        }
+      } catch {
+        // ignore
+      }
+      console.warn('[sse] sync.required — broadcast lagged', skipped ?? '?', 'events; invalidating all queries');
+      qc.invalidateQueries();
+    };
+    source.addEventListener('sync.required', syncRequiredListener);
+
+    const listeners: Array<[string, EventListener]> = [['sync.required', syncRequiredListener]];
     for (const eventName of Object.keys(HANDLERS)) {
       const listener = handle(eventName) as EventListener;
       source.addEventListener(eventName, listener);

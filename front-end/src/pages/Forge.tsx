@@ -22,7 +22,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Boxes, Plug, Sparkles, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useHiveData } from '@/api/queries/useHiveData';
-import { useSkills, useCreateSkill, useDeleteSkill } from '@/api/skills';
+import { useSkills, useCreateSkill, useDeleteSkill, useUpdateSkill, type Skill } from '@/api/skills';
 import { useConnectors, useCreateConnector, useDeleteConnector, type ConnectorKind, type ConnectorAuthKind } from '@/api/connectors';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -119,7 +119,9 @@ function SkillsTab() {
   const [slug, setSlug] = useState('');
   const [description, setDescription] = useState('');
   const [promptFragment, setPromptFragment] = useState('');
+  const [markdownBody, setMarkdownBody] = useState('');
   const slugTouched = useRef(false);
+  const [editing, setEditing] = useState<Skill | null>(null);
 
   const submit = async () => {
     if (!projectId) { toast.error('No active project.'); return; }
@@ -132,10 +134,11 @@ function SkillsTab() {
         name: name.trim(),
         description: description.trim(),
         systemPromptFragment: promptFragment.trim() || undefined,
+        markdownBody: markdownBody.trim() || undefined,
       });
       toast.success(`Skill "${name.trim()}" created.`);
       setOpen(false);
-      setName(''); setSlug(''); setDescription(''); setPromptFragment(''); slugTouched.current = false;
+      setName(''); setSlug(''); setDescription(''); setPromptFragment(''); setMarkdownBody(''); slugTouched.current = false;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to create skill.');
     }
@@ -167,8 +170,12 @@ function SkillsTab() {
             <input id="skill-desc" value={description} onChange={(e) => setDescription(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm" placeholder="What this skill does" />
           </div>
           <div>
-            <label htmlFor="skill-prompt" className="text-[10px] font-medium uppercase text-muted-foreground">System-prompt fragment <span className="font-normal lowercase text-muted-foreground">(optional)</span></label>
+            <label htmlFor="skill-prompt" className="text-[10px] font-medium uppercase text-muted-foreground">System-prompt fragment <span className="font-normal lowercase text-muted-foreground">(always spliced — keep it short)</span></label>
             <textarea id="skill-prompt" value={promptFragment} onChange={(e) => setPromptFragment(e.target.value)} className="mt-1 h-20 w-full rounded-md border border-border bg-surface-2 p-3 text-xs resize-none scrollbar-thin" placeholder="Instructions injected when an agent mounts this skill" />
+          </div>
+          <div>
+            <label htmlFor="skill-body" className="text-[10px] font-medium uppercase text-muted-foreground">Playbook (markdown) <span className="font-normal lowercase text-muted-foreground">(lazy — agents fetch via `read_skill`)</span></label>
+            <textarea id="skill-body" value={markdownBody} onChange={(e) => setMarkdownBody(e.target.value)} className="mt-1 h-40 w-full rounded-md border border-border bg-surface-2 p-3 text-xs resize-none scrollbar-thin font-mono" placeholder="# Steps\n\nFull playbook the agent pulls when it decides to use this skill." />
           </div>
           <div className="flex justify-end">
             <Button size="sm" onClick={() => { void submit(); }} disabled={createSkill.isPending || !name.trim()}>
@@ -211,23 +218,101 @@ function SkillsTab() {
               {s.requiresConnectorIdsJson?.length > 0 && <span>· {s.requiresConnectorIdsJson.length} connector(s) needed</span>}
               {s.projectId === null && <span className="text-info">· global</span>}
             </span>
-            <button
-              onClick={() => {
-                if (!window.confirm(`Delete skill "${s.name}"?`)) return;
-                deleteSkill.mutate(s.id, {
-                  onSuccess: () => toast.success('Skill deleted'),
-                  onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed'),
-                });
-              }}
-              className="text-destructive hover:underline"
-            >
-              Delete
-            </button>
+            <div className="flex gap-3">
+              <button onClick={() => setEditing(s)} className="text-foreground/80 hover:underline">Edit</button>
+              <button
+                onClick={() => {
+                  if (!window.confirm(`Delete skill "${s.name}"?`)) return;
+                  deleteSkill.mutate(s.id, {
+                    onSuccess: () => toast.success('Skill deleted'),
+                    onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed'),
+                  });
+                }}
+                className="text-destructive hover:underline"
+              >
+                Delete
+              </button>
+            </div>
           </div>
             </li>
           ))}
         </ul>
       )}
+
+      {editing && (
+        <SkillEditModal
+          projectId={projectId}
+          skill={editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SkillEditModal({
+  projectId,
+  skill,
+  onClose,
+}: {
+  projectId: string | null;
+  skill: Skill;
+  onClose: () => void;
+}) {
+  const updateSkill = useUpdateSkill(projectId);
+  const [name, setName] = useState(skill.name);
+  const [description, setDescription] = useState(skill.description);
+  const [promptFragment, setPromptFragment] = useState(skill.systemPromptFragment);
+  const [markdownBody, setMarkdownBody] = useState(skill.markdownBody ?? '');
+
+  const save = async () => {
+    try {
+      await updateSkill.mutateAsync({
+        id: skill.id,
+        patch: {
+          name: name.trim() || skill.name,
+          description: description.trim(),
+          systemPromptFragment: promptFragment,
+          markdownBody,
+        },
+      });
+      toast.success(`Skill "${name.trim()}" saved.`);
+      onClose();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Save failed.');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
+      <div className="w-full max-w-2xl space-y-3 rounded-lg border border-border bg-card p-5 shadow-lg">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold">Edit skill <code className="ml-2 text-xs text-muted-foreground">{skill.slug}</code></h3>
+          <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground">Close</button>
+        </div>
+        <div>
+          <label htmlFor="edit-skill-name" className="text-[10px] font-medium uppercase text-muted-foreground">Name</label>
+          <input id="edit-skill-name" value={name} onChange={(e) => setName(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm" />
+        </div>
+        <div>
+          <label htmlFor="edit-skill-desc" className="text-[10px] font-medium uppercase text-muted-foreground">Description</label>
+          <input id="edit-skill-desc" value={description} onChange={(e) => setDescription(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-sm" />
+        </div>
+        <div>
+          <label htmlFor="edit-skill-prompt" className="text-[10px] font-medium uppercase text-muted-foreground">System-prompt fragment</label>
+          <textarea id="edit-skill-prompt" value={promptFragment} onChange={(e) => setPromptFragment(e.target.value)} className="mt-1 h-24 w-full rounded-md border border-border bg-surface-2 p-3 text-xs resize-none scrollbar-thin" />
+        </div>
+        <div>
+          <label htmlFor="edit-skill-body" className="text-[10px] font-medium uppercase text-muted-foreground">Playbook (markdown)</label>
+          <textarea id="edit-skill-body" value={markdownBody} onChange={(e) => setMarkdownBody(e.target.value)} className="mt-1 h-60 w-full rounded-md border border-border bg-surface-2 p-3 text-xs resize-none scrollbar-thin font-mono" />
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={() => { void save(); }} disabled={updateSkill.isPending}>
+            {updateSkill.isPending ? 'Saving…' : 'Save'}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
