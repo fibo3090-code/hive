@@ -1807,9 +1807,56 @@ async fn create_project(
     if active_project_id(&state).await?.is_none() {
         projects::activate(database.conn(), &project.id).await?;
     }
+    // Auto-spawn the Coordinator (CEO) so every project starts with a
+    // chat partner that can decompose briefs and delegate work. Failures
+    // log and continue — a project without a Coordinator is recoverable
+    // via `POST /v1/projects/:id/coordinator/ensure`.
+    if let Err(err) = ensure_coordinator_inline(&state, &database, &project.id, None).await {
+        tracing::warn!(
+            project_id = %project.id,
+            error = %err,
+            "auto-spawn coordinator failed (caller can retry via /coordinator/ensure)"
+        );
+    }
     let payload = project_payload(&database, project).await?;
     emit(&state, "project.updated", payload.clone()).await;
     Ok(Json(payload))
+}
+
+/// Pure-logic core of [`ensure_coordinator`] so [`create_project`] can call it
+/// without an [`axum`] extractor round-trip. Returns the (re)used coordinator
+/// agent.
+async fn ensure_coordinator_inline(
+    state: &AppState,
+    database: &Db,
+    project_id: &str,
+    team_mode: Option<bool>,
+) -> Result<hive_db::entities::agent::Model, AppError> {
+    let existing = agents::list_by_project(database.conn(), project_id).await?;
+    if let Some(coord) = existing.into_iter().find(|a| a.role == "Coordinator") {
+        let _ = state.executors.ensure(&coord.id, project_id).await;
+        return Ok(coord);
+    }
+    let created = agents::create(
+        database.conn(),
+        agents::CreateAgent {
+            project_id: project_id.to_owned(),
+            slug: "coordinator".into(),
+            name: "Coordinator".into(),
+            role: "Coordinator".into(),
+            model: "auto".into(),
+            status: "idle".into(),
+            parent_agent_id: None,
+            spawned_by_message_id: None,
+            enabled_tools: Some(coordinator_tools(team_mode)),
+            system_prompt: Some(coordinator_system_prompt(team_mode)),
+            model_provider_id: None,
+            model_id: None,
+        },
+    )
+    .await?;
+    let _ = state.executors.ensure(&created.id, project_id).await;
+    Ok(created)
 }
 
 async fn update_project(
