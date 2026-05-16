@@ -62,6 +62,20 @@ const HANDLERS: Record<string, Invalidator> = {
   'alert.dismissed': () => [['alerts']],
   'notification.created': () => [['notifications']],
 
+  // W3-B5: drift auto-detection fires this after each agent turn whose
+  // score crosses the record threshold. Invalidates both the open and
+  // all-events drift query caches plus alerts/notifications because the
+  // high-severity path also writes those.
+  'drift.detected': (p) => {
+    const projectId = getString(p, 'projectId');
+    return [
+      ['drift-events', projectId ?? '_none', 'open'],
+      ['drift-events', projectId ?? '_none', 'all'],
+      ['alerts'],
+      ['notifications'],
+    ];
+  },
+
   'session.toggled': () => [['session'], ['projects']],
   'session.closed': () => [['session'], ['session-history']],
 

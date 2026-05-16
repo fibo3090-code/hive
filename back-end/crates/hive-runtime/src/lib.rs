@@ -11,6 +11,7 @@ pub mod agent_tools;
 pub mod chat;
 pub mod db_tools;
 pub mod drift;
+pub mod drift_hook;
 pub mod events;
 pub mod executor;
 pub mod git_tools;

@@ -1133,6 +1133,19 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         json!({ "projectId": project_id, "costCents": total_cost }),
     );
 
+    // W3-B5: drift auto-detection. Only meaningful for agent-driven turns
+    // — a plain user→assistant chat has no task to drift from.
+    if let Some(ref agent_id) = agent_id {
+        crate::drift_hook::record_after_turn(
+            &db,
+            &bus,
+            &project_id,
+            agent_id,
+            &executed_calls,
+        )
+        .await;
+    }
+
     Ok(())
 }
 
