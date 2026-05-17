@@ -86,9 +86,30 @@ pub async fn update(db: &DatabaseConnection, id: &str, input: UpdateNote) -> Res
     model.update(db).await
 }
 
-/// Hard-delete a note.
+/// Hard-delete a note by id. Does NOT enforce project isolation — only
+/// the (REST) handlers that have already authenticated the project should
+/// call this. For agent tool paths, prefer [`delete_for_project`].
 pub async fn delete(db: &DatabaseConnection, id: &str) -> Result<(), DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
+        .one(db)
+        .await?
+        .ok_or(DbErr::RecordNotFound(id.to_owned()))?;
+
+    existing.delete(db).await?;
+    Ok(())
+}
+
+/// Hard-delete a note only when it belongs to the given project. Closes
+/// the TOCTOU window between "fetch list, check membership" and "delete
+/// by bare id" — an agent that smuggles an id from another project will
+/// see `RecordNotFound` instead of silently nuking foreign state.
+pub async fn delete_for_project(
+    db: &DatabaseConnection,
+    id: &str,
+    project_id: &str,
+) -> Result<(), DbErr> {
+    let existing = Entity::find_by_id(id.to_owned())
+        .filter(Column::ProjectId.eq(project_id))
         .one(db)
         .await?
         .ok_or(DbErr::RecordNotFound(id.to_owned()))?;

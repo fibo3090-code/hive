@@ -39,9 +39,6 @@ jobs:
           toolchain: 1.94.1
           components: rustfmt
 
-      - name: Override rust-toolchain.toml with pinned version
-        run: rustup override set 1.94.1
-
       - name: versions
         run: |
           rustc --version
@@ -60,19 +57,16 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      # Pinned to the current latest stable (matches rust-toolchain.toml's
-      # resolved version locally). The Sprint-1 dependency bumps
-      # (reqwest 0.12 with stream feature, futures-util 0.3, bytes) lifted
-      # the effective MSRV above 1.85, so a 1.85 MSRV guard no longer
+      # Toolchain is pinned in `back-end/rust-toolchain.toml` (single
+      # source of truth). The Sprint-1 dependency bumps (reqwest 0.12
+      # with stream feature, futures-util 0.3, bytes) lifted the
+      # effective MSRV above 1.85, so a 1.85 MSRV guard no longer
       # applies to this workspace.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
           toolchain: 1.94.1
           components: clippy
-
-      - name: Override rust-toolchain.toml with pinned version
-        run: rustup override set 1.94.1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -104,9 +98,6 @@ jobs:
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master 2026-03-27
         with:
           toolchain: 1.94.1
-
-      - name: Override rust-toolchain.toml with pinned version
-        run: rustup override set 1.94.1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1

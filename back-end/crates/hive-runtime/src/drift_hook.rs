@@ -311,9 +311,11 @@ mod tests {
 
     #[test]
     fn pause_threshold_is_strictly_above_high_band() {
-        // 0.9 sits inside the High band; "pause" is reserved for
-        // *very* drifted, not merely high.
-        assert!(PAUSE_THRESHOLD > 0.7);
+        // 0.9 sits inside the High band; "pause" is reserved for *very*
+        // drifted, not merely high. The const-comparison is enforced at
+        // compile-time via the const block below; the runtime check uses
+        // the score → severity mapping so any future re-banding is caught.
+        const _: () = assert!(PAUSE_THRESHOLD > 0.7);
         assert!(matches!(
             DriftSeverity::from_score(PAUSE_THRESHOLD),
             DriftSeverity::High

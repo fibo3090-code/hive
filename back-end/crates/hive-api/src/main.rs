@@ -498,6 +498,19 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .set_driver(Arc::new(ApiTurnDriver::new(state.clone())))
         .await;
 
+    // W3-B3: autonomous task scheduler. Polls every 5s for idle agents
+    // with pending assignments and dispatches them — only on projects
+    // whose operator turned the session ON. Handle leaked on purpose: it
+    // lives for the lifetime of the process, never joined.
+    {
+        let scheduler_db = state.inner.read().await.db.clone();
+        let _scheduler_handle = hive_runtime::scheduler::spawn(
+            scheduler_db,
+            EventBus::new(state.events.clone()),
+            executors.clone(),
+        );
+    }
+
     let app = Router::new()
         .route("/v1/healthz", get(healthz))
         .route("/v1/readyz", get(readyz))
@@ -2533,8 +2546,8 @@ fn tool_category(name: &str) -> &'static str {
         "spawn_agent" | "message_agent" | "list_visible_agents" | "request_relay" | "delete_agent"
         | "monitor_agent" | "delegate_task" => "coordination",
         "hive_mind_write" | "hive_mind_read" | "hive_mind_list" | "hive_mind_delete" => "memory",
-        "list_spec_docs" | "read_spec_doc" | "add_task" | "add_tech_debt" | "update_tech_debt"
-        | "record_drift" => "planning",
+        "list_spec_docs" | "read_spec_doc" | "add_task" | "set_task_status" | "add_tech_debt"
+        | "update_tech_debt" | "record_drift" => "planning",
         "list_skills" | "read_skill" => "skills",
         "todo" => "planning",
         "git_status" | "git_diff" | "git_log" | "git_commit" | "git_pull" | "git_push" => "git",
@@ -6157,7 +6170,7 @@ Your role is `{role}`. Your display name is `{name}`.\n\
 \n\
 <project_memory>\n\
 - Use `hive_mind_write` to record durable decisions, conventions, and facts other agents should know; `hive_mind_list` / `hive_mind_read` to recall them; `hive_mind_delete` to prune.\n\
-- Use `list_spec_docs` / `read_spec_doc` to ground your work in the project's spec; `add_task` to file follow-up work; `add_tech_debt` / `update_tech_debt` to track shortcuts; `record_drift` when your work, the code, or behaviour has diverged from its intent.\n\
+- Use `list_spec_docs` / `read_spec_doc` to ground your work in the project's spec; `add_task` to file follow-up work; `set_task_status` (with a short `summary`) to mark your own task `completed` / `blocked` / `in-progress` — this closes the autonomous scheduler loop and stops re-dispatch; `add_tech_debt` / `update_tech_debt` to track shortcuts; `record_drift` when your work, the code, or behaviour has diverged from its intent.\n\
 - Skills bound to you are listed in the prompt header. Call `list_skills` to enumerate them and `read_skill('slug')` to pull the full playbook (system prompt fragment, allowed tools / paths, capability tags, and markdown body) before applying it.\n\
 - Use `git_status` / `git_diff` / `git_log` to inspect the working tree, and `git_commit` to checkpoint coherent units of work. `git_pull` / `git_push` only work on cloud-tier projects.\n\
 </project_memory>\n\

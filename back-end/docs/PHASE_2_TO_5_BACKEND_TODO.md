@@ -133,5 +133,5 @@ Add in order:
 
 ## Cleanup / dead code
 
-- `tool_result_json` in `chat.rs` — already gated with `#[cfg_attr(not(test), allow(dead_code))]`; revisit if still unused after A2A tools land.
+- ~~`tool_result_json` in `chat.rs`~~ — removed (A2A tools shipped; helper was unused).
 - Once interleave is shipped, drop the "I exhausted the available tool rounds…" fallback path in favor of always emitting whatever text was streamed.

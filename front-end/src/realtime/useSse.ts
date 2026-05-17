@@ -58,6 +58,20 @@ const HANDLERS: Record<string, Invalidator> = {
     ];
   },
 
+  // W3-B3: scheduler picked up an idle agent and dispatched a task to it.
+  // Invalidate tasks (status may flip to in-progress on the agent's first
+  // turn) and agents (status flips idle → working). The agent's inbox /
+  // messages cache also goes stale because a new message landed.
+  'task.autoDispatched': (p) => {
+    const projectId = getString(p, 'projectId');
+    const agentId = getString(p, 'agentId');
+    return [
+      projectId ? ['tasks', projectId] : ['tasks'],
+      projectId ? ['agents', projectId] : ['agents'],
+      agentId ? ['agent-messages', agentId] : ['agent-messages'],
+    ];
+  },
+
   'alert.created': () => [['alerts']],
   'alert.dismissed': () => [['alerts']],
   'notification.created': () => [['notifications']],

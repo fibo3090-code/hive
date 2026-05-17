@@ -382,15 +382,6 @@ fn validate_tool_invocation(
     validate_against_schema(&invocation.arguments, &manifest.input_schema)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-fn tool_result_json(tool: &str, error: impl Into<String>) -> Value {
-    json!({
-        "ok": false,
-        "tool": tool,
-        "error": error.into(),
-    })
-}
-
 /// Build a structured tool-result for a validation failure that
 /// includes the offending arguments **and** the tool's input schema, so
 /// the next LLM round has everything it needs to self-correct without
@@ -1322,14 +1313,6 @@ mod tests {
         assert!(matches_schema_type(&json!(null), "null"));
         // Unknown types are permissive (never block).
         assert!(matches_schema_type(&json!("hi"), "anything-goes"));
-    }
-
-    #[test]
-    fn tool_result_json_shape_is_stable() {
-        let payload = tool_result_json("web_search", "missing query");
-        assert_eq!(payload["ok"], json!(false));
-        assert_eq!(payload["tool"], json!("web_search"));
-        assert_eq!(payload["error"], json!("missing query"));
     }
 
     #[test]

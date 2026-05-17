@@ -1,2 +1,7 @@
 [toolchain]
-channel = "stable"
+# Pinned so local builds match CI byte-for-byte. Bumping this here is the
+# single source of truth — CI installs whatever this file says, so a PR
+# can lift the toolchain without touching the .github workflows.
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

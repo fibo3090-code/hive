@@ -205,7 +205,11 @@ impl Tool for SpawnAgent {
             json!({
                 "agentId": created.id,
                 "projectId": ctx.project_id,
-                "parentAgentId": ctx.agent_id,
+                // `parentId` (not `parentAgentId`) — the frontend SSE
+                // handler in `useSse.ts` reads this exact key to scope
+                // the agent-lineage cache invalidation. Renaming this
+                // silently de-scopes the invalidate to *all* lineages.
+                "parentId": ctx.agent_id,
                 "role": created.role,
                 "name": created.name,
                 "model": created.model,

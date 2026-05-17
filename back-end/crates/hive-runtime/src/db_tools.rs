@@ -35,6 +35,7 @@ pub const RUNTIME_TOOL_NAMES: &[&str] = &[
     "list_spec_docs",
     "read_spec_doc",
     "add_task",
+    "set_task_status",
     "add_tech_debt",
     "update_tech_debt",
     "record_drift",
@@ -52,6 +53,7 @@ pub const RUNTIME_DEFAULT_TOOL_NAMES: &[&str] = &[
     "list_spec_docs",
     "read_spec_doc",
     "add_task",
+    "set_task_status",
     "add_tech_debt",
     "update_tech_debt",
     "record_drift",
@@ -202,18 +204,17 @@ impl Tool for HiveMindDelete {
     }
     async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
         let id = str_arg(&args, "id")?;
-        let exists = notes::list_by_project(self.db.conn(), &ctx.project_id)
-            .await
-            .map_err(|e| ToolError::Other(format!("delete note: {e}")))?
-            .iter()
-            .any(|n| n.id == id);
-        if !exists {
-            return Err(ToolError::Other(format!("note {id} not found in this project")));
+        // One DELETE WHERE id=? AND project_id=? — no list+iterate +
+        // bare-id delete window where an agent could smuggle in a foreign
+        // note id and silently nuke it. `RecordNotFound` covers both
+        // "doesn't exist" and "exists but isn't in this project".
+        match notes::delete_for_project(self.db.conn(), id, &ctx.project_id).await {
+            Ok(()) => Ok(json!({ "ok": true, "id": id })),
+            Err(sea_orm::DbErr::RecordNotFound(_)) => Err(ToolError::Other(format!(
+                "note {id} not found in this project"
+            ))),
+            Err(e) => Err(ToolError::Other(format!("delete note: {e}"))),
         }
-        notes::delete(self.db.conn(), id)
-            .await
-            .map_err(|e| ToolError::Other(format!("delete note: {e}")))?;
-        Ok(json!({ "ok": true, "id": id }))
     }
 }
 
@@ -319,6 +320,73 @@ impl Tool for AddTask {
         .await
         .map_err(|e| ToolError::Other(format!("add task: {e}")))?;
         Ok(json!({ "id": task.id, "title": task.title, "status": task.status }))
+    }
+}
+
+/// `set_task_status` — agents call this to mark their own assigned task
+/// `completed`, `blocked`, `in-progress`, `cancelled`, etc. This is the
+/// closing-the-loop tool that lets the W3-B3 scheduler stop redispatching
+/// a finished task. Project isolation is enforced in the repo layer
+/// (`tasks::set_status` uses `WHERE id = ? AND project_id = ?`).
+pub struct SetTaskStatus {
+    db: Db,
+}
+#[async_trait]
+impl Tool for SetTaskStatus {
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "set_task_status".into(),
+            description: "Set the status of a task in this project. Use 'completed' when done, 'blocked' if you need help, 'in-progress' to claim it. Include a brief outcome/blocker note in 'summary'.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "taskId": { "type": "string" },
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "in-progress", "queued", "completed", "blocked", "cancelled"]
+                    },
+                    "summary": { "type": "string", "description": "Optional one-line outcome or blocker note, surfaced to the operator." }
+                },
+                "required": ["taskId", "status"]
+            }),
+            side_effects: true,
+        }
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
+        let task_id = str_arg(&args, "taskId")?;
+        let status = str_arg(&args, "status")?;
+        let summary = opt_str(&args, "summary");
+        let updated = match tasks::set_status(self.db.conn(), &ctx.project_id, task_id, status).await {
+            Ok(t) => t,
+            Err(sea_orm::DbErr::RecordNotFound(_)) => {
+                return Err(ToolError::Other(format!(
+                    "task {task_id} not found in this project"
+                )))
+            }
+            Err(e) => return Err(ToolError::Other(format!("set task status: {e}"))),
+        };
+        // Append a note onto the Hive Mind so the operator sees *why* the
+        // agent flipped the status — without forcing an Alert. The author
+        // is the calling agent's id (or the fallback "agent" string).
+        if let Some(note) = summary {
+            let _ = notes::create(
+                self.db.conn(),
+                notes::CreateNote {
+                    project_id: ctx.project_id.clone(),
+                    category: "Auto-generated".into(),
+                    title: format!("Task {status}: {}", updated.title),
+                    content: note,
+                    auto: true,
+                    author: author_of(ctx),
+                },
+            )
+            .await;
+        }
+        Ok(json!({
+            "id": updated.id,
+            "status": updated.status,
+            "completedAt": updated.completed_at,
+        }))
     }
 }
 
@@ -563,6 +631,7 @@ pub fn register_db_tools(registry: &mut ToolRegistry, db: Db) {
     registry.insert(Arc::new(ListSpecDocs { db: db.clone() }));
     registry.insert(Arc::new(ReadSpecDoc { db: db.clone() }));
     registry.insert(Arc::new(AddTask { db: db.clone() }));
+    registry.insert(Arc::new(SetTaskStatus { db: db.clone() }));
     registry.insert(Arc::new(AddTechDebt { db: db.clone() }));
     registry.insert(Arc::new(UpdateTechDebt { db: db.clone() }));
     registry.insert(Arc::new(RecordDrift { db: db.clone() }));

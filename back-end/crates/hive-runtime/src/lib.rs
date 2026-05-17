@@ -18,6 +18,7 @@ pub mod git_tools;
 pub mod loop_detector;
 pub mod prompt;
 pub mod registry;
+pub mod scheduler;
 pub mod spawn;
 pub mod spec_doc;
 pub mod turn_driver;
