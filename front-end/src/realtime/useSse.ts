@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useQueryClient, type QueryKey } from '@tanstack/react-query';
-import { eventStreamUrl } from '@/api/client';
+import { useRealtime } from './RealtimeProvider';
+import { logger } from '@/lib/logger';
 
 /**
  * Map of backend SSE event names to the `QueryKey` prefixes that should
@@ -8,9 +9,6 @@ import { eventStreamUrl } from '@/api/client';
  * the event payload — e.g. `agent.spawned` only invalidates the lineage
  * of the parent it actually spawned under, not every agent in the
  * project.
- *
- * The payload type is `unknown` because we don't trust the wire shape;
- * each handler narrows safely with `getString` / optional chaining.
  */
 type Invalidator = (payload: unknown) => readonly QueryKey[];
 
@@ -21,12 +19,7 @@ function getString(payload: unknown, key: string): string | undefined {
 }
 
 const HANDLERS: Record<string, Invalidator> = {
-  // Project-level scope. `projects` alone is broader than ideal but
-  // necessary because the active-project query keys vary per consumer.
   'project.updated': () => [['projects'], ['projects', 'active'], ['settings']],
-
-  // Agent lifecycle. Status events scope to the project; spawn events
-  // scope to the parent's lineage subtree as well.
   'agent.status': (p) => {
     const projectId = getString(p, 'projectId');
     const agentId = getString(p, 'agentId');
@@ -49,7 +42,6 @@ const HANDLERS: Record<string, Invalidator> = {
     const projectId = getString(p, 'projectId');
     return [projectId ? ['wires', projectId] : ['wires']];
   },
-
   'task.status': (p) => {
     const projectId = getString(p, 'projectId');
     return [
@@ -57,11 +49,6 @@ const HANDLERS: Record<string, Invalidator> = {
       projectId ? ['insights', 'task-distribution', projectId] : ['insights', 'task-distribution'],
     ];
   },
-
-  // W3-B3: scheduler picked up an idle agent and dispatched a task to it.
-  // Invalidate tasks (status may flip to in-progress on the agent's first
-  // turn) and agents (status flips idle → working). The agent's inbox /
-  // messages cache also goes stale because a new message landed.
   'task.autoDispatched': (p) => {
     const projectId = getString(p, 'projectId');
     const agentId = getString(p, 'agentId');
@@ -71,15 +58,9 @@ const HANDLERS: Record<string, Invalidator> = {
       agentId ? ['agent-messages', agentId] : ['agent-messages'],
     ];
   },
-
   'alert.created': () => [['alerts']],
   'alert.dismissed': () => [['alerts']],
   'notification.created': () => [['notifications']],
-
-  // W3-B5: drift auto-detection fires this after each agent turn whose
-  // score crosses the record threshold. Invalidates both the open and
-  // all-events drift query caches plus alerts/notifications because the
-  // high-severity path also writes those.
   'drift.detected': (p) => {
     const projectId = getString(p, 'projectId');
     return [
@@ -89,10 +70,8 @@ const HANDLERS: Record<string, Invalidator> = {
       ['notifications'],
     ];
   },
-
   'session.toggled': () => [['session'], ['projects']],
   'session.closed': () => [['session'], ['session-history']],
-
   'cost.ingested': (p) => {
     const projectId = getString(p, 'projectId');
     return [
@@ -102,7 +81,6 @@ const HANDLERS: Record<string, Invalidator> = {
       projectId ? ['insights', 'agent-token-usage', projectId] : ['insights', 'agent-token-usage'],
     ];
   },
-
   'module.installed': () => [['modules'], ['module']],
   'module.published': (p) => {
     const jobId = getString(p, 'jobId');
@@ -124,34 +102,22 @@ const HANDLERS: Record<string, Invalidator> = {
       jobId ? ['synthesis-job', jobId] : ['synthesis-job'],
     ];
   },
-
   'llm_provider.updated': (p) => {
     const id = getString(p, 'id');
-    return [
-      ['llm-providers'],
-      id ? ['llm-providers', id, 'models'] : ['llm-providers'],
-    ];
+    return [['llm-providers'], id ? ['llm-providers', id, 'models'] : ['llm-providers']];
   },
   'llm_provider.tested': (p) => {
     const id = getString(p, 'id');
-    return [
-      ['llm-providers'],
-      id ? ['llm-providers', id, 'models'] : ['llm-providers'],
-    ];
+    return [['llm-providers'], id ? ['llm-providers', id, 'models'] : ['llm-providers']];
   },
-
   'workspace.updated': (p) => {
     const projectId = getString(p, 'projectId');
     return [projectId ? ['workspace-info', projectId] : ['workspace-info']];
   },
-
   'chat.thread.created': (p) => {
     const projectId = getString(p, 'projectId');
     return [projectId ? ['chat-threads', projectId] : ['chat-threads']];
   },
-
-  // Git events scope to the project so other projects' caches don't
-  // refetch on every commit.
   'git.changed': (p) => {
     const projectId = getString(p, 'projectId');
     if (projectId) {
@@ -166,7 +132,6 @@ const HANDLERS: Record<string, Invalidator> = {
     }
     return [['git-status'], ['git-branches'], ['git-log'], ['git-tree'], ['git-diff'], ['git-file']];
   },
-
   'synthesis.progress': (p) => {
     const jobId = getString(p, 'jobId');
     return [jobId ? ['synthesis-job', jobId] : ['synthesis-job']];
@@ -191,22 +156,16 @@ const HANDLERS: Record<string, Invalidator> = {
 };
 
 /**
- * Global SSE subscription that invalidates TanStack Query caches based on
- * backend events. Chat-specific streaming events (`chat.<thread_id>.token`,
- * `…complete`, `…cancelled`, `…error`, `…context_trim`) are handled
- * separately in `useChatStream` so this hook doesn't thrash the
- * message-history cache on every token.
- *
- * Each event's `QueryKey` invalidation is scoped via the event payload
- * (e.g. `git.changed` only refetches *that* project's git queries, not
- * every project's). Drops the typical refetch volume from O(events × all
- * project queries) to O(events × ~3 keys).
+ * Global SSE → TanStack Query invalidation bridge. Subscribes through the
+ * shared `RealtimeProvider` (single EventSource for the whole app) instead
+ * of opening its own.
  */
 export function useSse() {
   const qc = useQueryClient();
+  const { subscribe } = useRealtime();
 
   useEffect(() => {
-    const source = new EventSource(eventStreamUrl('/v1/events'));
+    const unsubs: Array<() => void> = [];
 
     const handle = (eventName: string) => (event: MessageEvent) => {
       const handler = HANDLERS[eventName];
@@ -215,8 +174,7 @@ export function useSse() {
       try {
         payload = event.data ? JSON.parse(event.data) : null;
       } catch {
-        // Malformed payload — fall through with `null` so the handler's
-        // fallback keys (the broad ones) still fire.
+        // malformed payload — fall through with null so broad keys still fire
       }
       const keys = handler(payload);
       for (const queryKey of keys) {
@@ -224,48 +182,31 @@ export function useSse() {
       }
     };
 
-    // `sync.required` is emitted when the backend's broadcast buffer
-    // skipped events for this consumer (background tab, throttled
-    // mobile). We don't know which queries went stale — invalidate the
-    // entire cache so the UI resyncs in one round-trip.
-    const syncRequiredListener: EventListener = (event) => {
-      const messageEvent = event as MessageEvent;
-      let skipped: number | undefined;
-      try {
-        const parsed = messageEvent.data ? JSON.parse(messageEvent.data) : null;
-        if (parsed && typeof parsed === 'object' && 'skipped' in parsed) {
-          const raw = (parsed as Record<string, unknown>).skipped;
-          if (typeof raw === 'number') skipped = raw;
+    // sync.required = backend's broadcast buffer skipped events for this
+    // consumer. We don't know which queries went stale → blanket invalidate.
+    unsubs.push(
+      subscribe('sync.required', (event) => {
+        let skipped: number | undefined;
+        try {
+          const parsed = event.data ? JSON.parse(event.data) : null;
+          if (parsed && typeof parsed === 'object' && 'skipped' in parsed) {
+            const raw = (parsed as Record<string, unknown>).skipped;
+            if (typeof raw === 'number') skipped = raw;
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
-      }
-      console.warn('[sse] sync.required — broadcast lagged', skipped ?? '?', 'events; invalidating all queries');
-      qc.invalidateQueries();
-    };
-    source.addEventListener('sync.required', syncRequiredListener);
+        logger.warn('sse', `sync.required — broadcast lagged ${skipped ?? '?'} events; invalidating all queries`);
+        qc.invalidateQueries();
+      }),
+    );
 
-    const listeners: Array<[string, EventListener]> = [['sync.required', syncRequiredListener]];
     for (const eventName of Object.keys(HANDLERS)) {
-      const listener = handle(eventName) as EventListener;
-      source.addEventListener(eventName, listener);
-      listeners.push([eventName, listener]);
+      unsubs.push(subscribe(eventName, handle(eventName)));
     }
 
-    // Surface connection errors so a silent disconnect doesn't masquerade
-    // as a working stream. EventSource auto-reconnects internally; this
-    // log is for ops visibility.
-    source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) {
-        console.warn('[sse] connection closed by server');
-      }
-    };
-
     return () => {
-      for (const [eventName, listener] of listeners) {
-        source.removeEventListener(eventName, listener);
-      }
-      source.close();
+      for (const u of unsubs) u();
     };
-  }, [qc]);
+  }, [qc, subscribe]);
 }
