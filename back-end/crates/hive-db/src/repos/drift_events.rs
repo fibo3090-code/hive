@@ -26,10 +26,7 @@ fn json_empty_object() -> serde_json::Value {
     serde_json::json!({})
 }
 
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateDriftEvent,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateDriftEvent) -> Result<Model, DbErr> {
     ActiveModel {
         id: Set(new_id()),
         project_id: Set(input.project_id),
@@ -58,11 +55,7 @@ pub async fn list_for_project(
     q.order_by_desc(Column::CreatedAt).all(db).await
 }
 
-pub async fn set_status(
-    db: &DatabaseConnection,
-    id: &str,
-    status: &str,
-) -> Result<Model, DbErr> {
+pub async fn set_status(db: &DatabaseConnection, id: &str, status: &str) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .one(db)
         .await?

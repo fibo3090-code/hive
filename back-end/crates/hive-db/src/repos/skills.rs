@@ -101,11 +101,7 @@ pub struct UpdateSkill {
     pub markdown_body: Option<String>,
 }
 
-pub async fn update(
-    db: &DatabaseConnection,
-    id: &str,
-    patch: UpdateSkill,
-) -> Result<Model, DbErr> {
+pub async fn update(db: &DatabaseConnection, id: &str, patch: UpdateSkill) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .one(db)
         .await?
@@ -140,5 +136,8 @@ pub async fn update(
 }
 
 pub async fn delete(db: &DatabaseConnection, id: &str) -> Result<(), DbErr> {
-    Entity::delete_by_id(id.to_owned()).exec(db).await.map(|_| ())
+    Entity::delete_by_id(id.to_owned())
+        .exec(db)
+        .await
+        .map(|_| ())
 }

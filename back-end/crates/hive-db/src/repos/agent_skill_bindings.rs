@@ -27,10 +27,7 @@ pub async fn bind(db: &DatabaseConnection, input: CreateBinding) -> Result<Model
     .await
 }
 
-pub async fn list_for_agent(
-    db: &DatabaseConnection,
-    agent_id: &str,
-) -> Result<Vec<Model>, DbErr> {
+pub async fn list_for_agent(db: &DatabaseConnection, agent_id: &str) -> Result<Vec<Model>, DbErr> {
     Entity::find()
         .filter(Column::AgentId.eq(agent_id))
         .order_by_asc(Column::CreatedAt)
@@ -52,11 +49,7 @@ pub async fn list_skills_for_agent(
         .map(|rows| rows.into_iter().filter_map(|(_, skill)| skill).collect())
 }
 
-pub async fn unbind(
-    db: &DatabaseConnection,
-    agent_id: &str,
-    skill_id: &str,
-) -> Result<u64, DbErr> {
+pub async fn unbind(db: &DatabaseConnection, agent_id: &str, skill_id: &str) -> Result<u64, DbErr> {
     Entity::delete_many()
         .filter(Column::AgentId.eq(agent_id))
         .filter(Column::SkillId.eq(skill_id))
@@ -66,5 +59,8 @@ pub async fn unbind(
 }
 
 pub async fn delete(db: &DatabaseConnection, id: &str) -> Result<(), DbErr> {
-    Entity::delete_by_id(id.to_owned()).exec(db).await.map(|_| ())
+    Entity::delete_by_id(id.to_owned())
+        .exec(db)
+        .await
+        .map(|_| ())
 }

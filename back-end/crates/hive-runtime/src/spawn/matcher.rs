@@ -264,7 +264,12 @@ mod tests {
         // Loose: name-only match.
         let weak = cand("loose", "Weather Service", &[], CandidateKind::Connector);
         // Tight: exact tag.
-        let strong = cand("tight", "Other", &["weather-fetch"], CandidateKind::CustomMcp);
+        let strong = cand(
+            "tight",
+            "Other",
+            &["weather-fetch"],
+            CandidateKind::CustomMcp,
+        );
         let plan = match_capabilities(&caps, &[weak, strong], MatcherConfig::default());
         assert_eq!(plan.matches.len(), 1);
         assert_eq!(plan.matches[0].candidate_id, "tight");
@@ -334,15 +339,11 @@ mod tests {
         // above threshold.
         let c = cand(
             "c1",
-            "Weather",         // would match "weather"
-            &["geocoding"],    // doesn't
+            "Weather",      // would match "weather"
+            &["geocoding"], // doesn't
             CandidateKind::Connector,
         );
-        let plan = match_capabilities(
-            &["weather".to_owned()],
-            &[c],
-            MatcherConfig::default(),
-        );
+        let plan = match_capabilities(&["weather".to_owned()], &[c], MatcherConfig::default());
         assert!(plan.matches.is_empty());
         assert_eq!(plan.unmatched, vec!["weather".to_owned()]);
     }
@@ -353,7 +354,12 @@ mod tests {
             min_score: 0.9, // basically only exact matches
             fall_back_to_name: true,
         };
-        let c = cand("c1", "W", &["weather-data-stream"], CandidateKind::CustomMcp);
+        let c = cand(
+            "c1",
+            "W",
+            &["weather-data-stream"],
+            CandidateKind::CustomMcp,
+        );
         // 1/3 ≈ 0.33, well below 0.9.
         let plan = match_capabilities(&["weather".to_owned()], &[c], cfg);
         assert_eq!(plan.unmatched, vec!["weather".to_owned()]);

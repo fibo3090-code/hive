@@ -63,13 +63,14 @@ impl Tool for TodoTool {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "todo".into(),
-            description: "Manage a project-local todo list. Use this to keep track of multi-step execution. \
+            description:
+                "Manage a project-local todo list. Use this to keep track of multi-step execution. \
                 Actions: \
                 - 'add': requires 'title', adds a new todo item. \
                 - 'complete': requires 'id', marks an item as done. \
                 - 'remove': requires 'id', removes an item. \
                 - 'list': lists current items."
-                .into(),
+                    .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -101,9 +102,9 @@ impl Tool for TodoTool {
 
         match args.action.as_str() {
             "add" => {
-                let title = args
-                    .title
-                    .ok_or_else(|| ToolError::InvalidArgs("missing 'title' for add action".into()))?;
+                let title = args.title.ok_or_else(|| {
+                    ToolError::InvalidArgs("missing 'title' for add action".into())
+                })?;
                 let item = TodoItem {
                     id: state.next_id.to_string(),
                     title,
@@ -115,9 +116,9 @@ impl Tool for TodoTool {
                 Ok(json!({ "ok": true, "items": state.items }))
             }
             "complete" => {
-                let id = args
-                    .id
-                    .ok_or_else(|| ToolError::InvalidArgs("missing 'id' for complete action".into()))?;
+                let id = args.id.ok_or_else(|| {
+                    ToolError::InvalidArgs("missing 'id' for complete action".into())
+                })?;
                 if let Some(item) = state.items.iter_mut().find(|i| i.id == id) {
                     item.status = "done".into();
                     Self::save_state(ctx, &state).await?;
@@ -127,9 +128,9 @@ impl Tool for TodoTool {
                 }
             }
             "remove" => {
-                let id = args
-                    .id
-                    .ok_or_else(|| ToolError::InvalidArgs("missing 'id' for remove action".into()))?;
+                let id = args.id.ok_or_else(|| {
+                    ToolError::InvalidArgs("missing 'id' for remove action".into())
+                })?;
                 let initial_len = state.items.len();
                 state.items.retain(|i| i.id != id);
                 if state.items.len() < initial_len {
@@ -140,7 +141,10 @@ impl Tool for TodoTool {
                 }
             }
             "list" => Ok(json!({ "ok": true, "items": state.items })),
-            _ => Err(ToolError::InvalidArgs(format!("unknown action: {}", args.action))),
+            _ => Err(ToolError::InvalidArgs(format!(
+                "unknown action: {}",
+                args.action
+            ))),
         }
     }
 }

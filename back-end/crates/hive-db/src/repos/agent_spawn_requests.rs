@@ -28,10 +28,7 @@ fn json_empty_object() -> serde_json::Value {
     serde_json::json!({})
 }
 
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateSpawnRequest,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateSpawnRequest) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     ActiveModel {
         id: Set(new_id()),

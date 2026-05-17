@@ -455,7 +455,10 @@ mod tests {
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].name, "web_search");
         assert_eq!(resp.tool_calls[0].arguments["query"], "rust");
-        assert!(resp.tool_calls[0].id.as_deref().is_some_and(|id| id.starts_with("call_")));
+        assert!(resp.tool_calls[0]
+            .id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("call_")));
     }
 
     #[test]

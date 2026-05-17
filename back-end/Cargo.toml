@@ -34,8 +34,8 @@ tower = { version = "0.4" }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Database
-sea-orm = { version = "1", features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros"] }
-sea-orm-migration = { version = "1" }
+sea-orm = { version = "1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros", "with-json"] }
+sea-orm-migration = { version = "1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

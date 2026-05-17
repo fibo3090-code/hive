@@ -385,14 +385,28 @@ mod tests {
     fn ssrf_guard_rejects_private_ipv4_ranges() {
         use std::net::{IpAddr, Ipv4Addr};
         // Loopback, RFC1918, link-local + AWS metadata, broadcast.
-        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
-        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
-        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
-        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
-        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
-        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255))));
+        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(
+            127, 0, 0, 1
+        ))));
+        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(
+            10, 0, 0, 1
+        ))));
+        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(
+            172, 16, 0, 1
+        ))));
+        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(
+            192, 168, 1, 1
+        ))));
+        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(
+            169, 254, 169, 254
+        ))));
+        assert!(is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(
+            255, 255, 255, 255
+        ))));
         // A real public IP must NOT be flagged.
-        assert!(!is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))));
+        assert!(!is_private_or_internal(&IpAddr::V4(Ipv4Addr::new(
+            93, 184, 216, 34
+        ))));
     }
 
     #[test]
@@ -401,9 +415,15 @@ mod tests {
         // Loopback, ULA (fc00::/7), link-local (fe80::/10), documentation
         // (2001:db8::/32), and an IPv4-mapped loopback.
         assert!(is_private_or_internal(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
-        assert!(is_private_or_internal(&IpAddr::V6("fc00::1".parse().unwrap())));
-        assert!(is_private_or_internal(&IpAddr::V6("fe80::1".parse().unwrap())));
-        assert!(is_private_or_internal(&IpAddr::V6("2001:db8::1".parse().unwrap())));
+        assert!(is_private_or_internal(&IpAddr::V6(
+            "fc00::1".parse().unwrap()
+        )));
+        assert!(is_private_or_internal(&IpAddr::V6(
+            "fe80::1".parse().unwrap()
+        )));
+        assert!(is_private_or_internal(&IpAddr::V6(
+            "2001:db8::1".parse().unwrap()
+        )));
         assert!(is_private_or_internal(&IpAddr::V6(
             "::ffff:127.0.0.1".parse().unwrap()
         )));

@@ -10,7 +10,13 @@
 #   - the issue/PR tracking the eventual upgrade.
 
 [advisories]
-ignore = []
+ignore = [
+    # RUSTSEC-2023-0071: rsa is present only through sqlx-mysql in the lockfile;
+    # the resolved workspace graph does not enable MySQL (`cargo tree --target all
+    # -i sqlx-mysql` is empty). Track removal by dropping sea-orm-migration's
+    # optional CLI dependency when SeaORM/SQLx exposes a fixed path.
+    "RUSTSEC-2023-0071",
+]
 
 [output]
 deny = ["warnings", "unmaintained", "unsound"]

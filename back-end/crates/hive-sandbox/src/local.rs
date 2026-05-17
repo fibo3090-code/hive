@@ -235,7 +235,11 @@ impl Sandbox for LocalFsSandbox {
                     ))));
                 }
             }
-            Ok(_) => return Err(SandboxError::Io(std::io::Error::other("not a regular file"))),
+            Ok(_) => {
+                return Err(SandboxError::Io(std::io::Error::other(
+                    "not a regular file",
+                )))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(SandboxError::NotFound(resolved));
             }

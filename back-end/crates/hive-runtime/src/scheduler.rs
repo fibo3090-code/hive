@@ -131,7 +131,11 @@ async fn dispatch_one_task_if_any(
             continue;
         }
 
-        let Some(task) = tasks::get(db.conn(), &assignment.task_id).await.ok().flatten() else {
+        let Some(task) = tasks::get(db.conn(), &assignment.task_id)
+            .await
+            .ok()
+            .flatten()
+        else {
             continue;
         };
         if matches!(task.status.as_str(), "completed" | "cancelled") {

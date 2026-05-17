@@ -20,9 +20,7 @@ use serde_json::Value;
 
 use crate::{
     registry::ExecutorRegistry,
-    spawn::driver::{
-        DiscoveredApi, PipelineContext, PipelineDeps, PipelineError, SynthesizedMcp,
-    },
+    spawn::driver::{DiscoveredApi, PipelineContext, PipelineDeps, PipelineError, SynthesizedMcp},
 };
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
@@ -49,10 +47,7 @@ pub struct LlmPipelineDeps {
 
 #[async_trait]
 impl PipelineDeps for LlmPipelineDeps {
-    async fn plan_needs(
-        &self,
-        ctx: &PipelineContext,
-    ) -> Result<Vec<String>, PipelineError> {
+    async fn plan_needs(&self, ctx: &PipelineContext) -> Result<Vec<String>, PipelineError> {
         let system = "You are the HIVE capability planner. \
 Decide which external capabilities a new specialist agent needs based on its role and context. \
 Capabilities should be high-level strings like 'weather', 'crypto-prices', 'github-issues'. \
@@ -110,8 +105,11 @@ The spec should be a minimal OpenAPI-like fragment describing the core functiona
             );
 
             let picked: DiscoveredApiResponse = self.chat_json(system, &user).await?;
-            
-            let requires_approval = !self.api_domain_whitelist.iter().any(|d| picked.url.contains(d));
+
+            let requires_approval = !self
+                .api_domain_whitelist
+                .iter()
+                .any(|d| picked.url.contains(d));
 
             out.push(DiscoveredApi {
                 capability: cap.clone(),
@@ -219,7 +217,9 @@ The prompt should define its identity, mission, and operating loop.";
         )
         .await?;
 
-        self.executors.ensure_with_parent(&agent.id, &ctx.project_id, ctx.parent_agent_id.as_deref()).await;
+        self.executors
+            .ensure_with_parent(&agent.id, &ctx.project_id, ctx.parent_agent_id.as_deref())
+            .await;
 
         Ok(agent.id)
     }
@@ -267,8 +267,9 @@ impl LlmPipelineDeps {
                     .await
                     .map_err(|e| PipelineError::Dep(e.to_string()))?;
 
-                serde_json::from_str::<T>(&retry_res.text)
-                    .map_err(|e| PipelineError::Dep(format!("JSON parse failed after retry: {}", e)))
+                serde_json::from_str::<T>(&retry_res.text).map_err(|e| {
+                    PipelineError::Dep(format!("JSON parse failed after retry: {}", e))
+                })
             }
         }
     }
@@ -334,7 +335,8 @@ mod tests {
         async fn chat_stream(
             &self,
             _req: ChatRequest,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>, LlmError> {
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>, LlmError>
+        {
             unimplemented!()
         }
 
@@ -367,7 +369,9 @@ mod tests {
     async fn test_plan_needs_success() {
         let db = fresh_db().await;
         let llm = Arc::new(MockLlm {
-            responses: Mutex::new(vec![r#"{"capabilities": ["weather", "geocoding"]}"#.to_owned()]),
+            responses: Mutex::new(vec![
+                r#"{"capabilities": ["weather", "geocoding"]}"#.to_owned()
+            ]),
         });
         let bus = crate::events::EventBus::new(tokio::sync::broadcast::channel(10).0);
         let deps = LlmPipelineDeps {

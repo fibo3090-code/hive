@@ -22,13 +22,10 @@ use serde_json::{json, Value};
 use hive_db::repos::{
     agent_mcp_bindings::{self, CreateBinding},
     agent_spawn_requests::{self, UpdateSpawnRequest},
-    connectors, custom_mcp_servers,
-    skills,
+    connectors, custom_mcp_servers, skills,
 };
 
-use super::matcher::{
-    match_capabilities, Candidate, CandidateKind, MatchPlan, MatcherConfig,
-};
+use super::matcher::{match_capabilities, Candidate, CandidateKind, MatchPlan, MatcherConfig};
 use crate::events::EventBus;
 
 // ─── Public driver ─────────────────────────────────────────────────────
@@ -42,10 +39,7 @@ pub trait PipelineDeps: Send + Sync {
     /// capabilities at all (skip the rest of the pipeline if not), and
     /// what they are. Returning an empty vec is the explicit "no tools
     /// needed" signal.
-    async fn plan_needs(
-        &self,
-        ctx: &PipelineContext,
-    ) -> Result<Vec<String>, PipelineError>;
+    async fn plan_needs(&self, ctx: &PipelineContext) -> Result<Vec<String>, PipelineError>;
 
     /// Stage 2: researching-api. For each unmatched capability, find a
     /// public API that could supply it. Implementations may parallelise.
@@ -159,7 +153,9 @@ pub async fn run_pipeline(
 ) -> Result<PipelineOutcome, PipelineError> {
     let request = agent_spawn_requests::get(db, spawn_request_id)
         .await?
-        .ok_or_else(|| PipelineError::Aborted(format!("spawn request {spawn_request_id} not found")))?;
+        .ok_or_else(|| {
+            PipelineError::Aborted(format!("spawn request {spawn_request_id} not found"))
+        })?;
 
     let ctx = PipelineContext {
         project_id: request.project_id.clone(),
@@ -184,8 +180,7 @@ pub async fn run_pipeline(
     if !needs.is_empty() {
         transition(db, bus, &ctx, "matching-existing-mcp", None).await?;
         let candidates = build_candidates(db, &ctx.project_id).await?;
-        let plan: MatchPlan =
-            match_capabilities(&needs, &candidates, MatcherConfig::default());
+        let plan: MatchPlan = match_capabilities(&needs, &candidates, MatcherConfig::default());
         for hit in &plan.matches {
             matched_mcp_ids.push(hit.candidate_id.clone());
             bound_mcp_ids.push(hit.candidate_id.clone());
@@ -196,10 +191,7 @@ pub async fn run_pipeline(
         // cleanly so the parent learns it can't get what it asked for
         // without paying the synthesis cost.
         if !unmatched.is_empty() && ctx.mcp_strategy == "reuse-only" {
-            let detail = format!(
-                "no existing MCP for capabilities: {}",
-                unmatched.join(", ")
-            );
+            let detail = format!("no existing MCP for capabilities: {}", unmatched.join(", "));
             mark_failed(db, bus, &ctx, &detail).await?;
             return Ok(PipelineOutcome {
                 spawn_request_id: ctx.spawn_request_id.clone(),
@@ -467,11 +459,7 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::RuntimeEvent;
-    use hive_db::{
-        entities::project,
-        repos::agent_spawn_requests::CreateSpawnRequest,
-        Db,
-    };
+    use hive_db::{entities::project, repos::agent_spawn_requests::CreateSpawnRequest, Db};
     use sea_orm::{ActiveModelTrait, Set};
     use tokio::sync::broadcast;
 
@@ -544,10 +532,7 @@ mod tests {
             _prompt: &str,
             ids: &[String],
         ) -> Result<String, PipelineError> {
-            self.materialize_calls
-                .lock()
-                .unwrap()
-                .push(ids.to_vec());
+            self.materialize_calls.lock().unwrap().push(ids.to_vec());
             Ok(self.agent_id.clone())
         }
     }

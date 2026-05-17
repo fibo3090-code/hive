@@ -40,11 +40,7 @@ pub async fn list_for_entity(
 }
 
 /// Paginated listing for the audit-log inspector. Newest first.
-pub async fn list(
-    db: &DatabaseConnection,
-    limit: u64,
-    offset: u64,
-) -> Result<Vec<Model>, DbErr> {
+pub async fn list(db: &DatabaseConnection, limit: u64, offset: u64) -> Result<Vec<Model>, DbErr> {
     Entity::find()
         .order_by_desc(Column::CreatedAt)
         .limit(limit)
@@ -55,10 +51,7 @@ pub async fn list(
 
 /// Delete every row whose `created_at` is *strictly* less than `cutoff_iso`
 /// (RFC3339). Returns the number of rows removed.
-pub async fn delete_before(
-    db: &DatabaseConnection,
-    cutoff_iso: &str,
-) -> Result<u64, DbErr> {
+pub async fn delete_before(db: &DatabaseConnection, cutoff_iso: &str) -> Result<u64, DbErr> {
     let result = Entity::delete_many()
         .filter(Column::CreatedAt.lt(cutoff_iso))
         .exec(db)

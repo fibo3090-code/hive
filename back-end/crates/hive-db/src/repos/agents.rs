@@ -110,7 +110,12 @@ pub async fn create(db: &DatabaseConnection, input: CreateAgent) -> Result<Model
 }
 
 /// Partially update an existing agent.
-pub async fn update(db: &DatabaseConnection, project_id: &str, id: &str, input: UpdateAgent) -> Result<Model, DbErr> {
+pub async fn update(
+    db: &DatabaseConnection,
+    project_id: &str,
+    id: &str,
+    input: UpdateAgent,
+) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .filter(Column::ProjectId.eq(project_id))
         .one(db)
@@ -165,7 +170,12 @@ pub async fn update(db: &DatabaseConnection, project_id: &str, id: &str, input: 
 }
 
 /// Set the status of an agent.
-pub async fn set_status(db: &DatabaseConnection, project_id: &str, id: &str, status: &str) -> Result<Model, DbErr> {
+pub async fn set_status(
+    db: &DatabaseConnection,
+    project_id: &str,
+    id: &str,
+    status: &str,
+) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .filter(Column::ProjectId.eq(project_id))
         .one(db)

@@ -117,13 +117,23 @@ impl Tool for FsWriteTool {
 
         // Part 10.6: Enforce File Protection Zones
         let path_str = args.path.replace('\\', "/");
-        if path_str == ".env" || path_str.starts_with(".env.") || path_str == ".git" || path_str.starts_with(".git/") {
-            return Err(ToolError::InvalidArgs(format!("Access denied: {} is a system-protected file", args.path)));
+        if path_str == ".env"
+            || path_str.starts_with(".env.")
+            || path_str == ".git"
+            || path_str.starts_with(".git/")
+        {
+            return Err(ToolError::InvalidArgs(format!(
+                "Access denied: {} is a system-protected file",
+                args.path
+            )));
         }
         for protected in &ctx.protected_files {
             let p_str = protected.replace('\\', "/");
             if path_str == p_str || path_str.starts_with(&format!("{}/", p_str)) {
-                return Err(ToolError::InvalidArgs(format!("Access denied: {} is a user-protected file", args.path)));
+                return Err(ToolError::InvalidArgs(format!(
+                    "Access denied: {} is a user-protected file",
+                    args.path
+                )));
             }
         }
 

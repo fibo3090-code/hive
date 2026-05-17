@@ -30,14 +30,20 @@ impl MigrationTrait for Migration {
         match manager.get_connection().execute(stmt).await {
             Ok(_) => Ok(()),
             // MySQL ER_DUP_KEYNAME (1061) — index already present.
-            Err(e) if e.to_string().contains("1061") || e.to_string().contains("already exists") => Ok(()),
+            Err(e)
+                if e.to_string().contains("1061") || e.to_string().contains("already exists") =>
+            {
+                Ok(())
+            }
             Err(e) => Err(e),
         }
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let sql = match manager.get_database_backend() {
-            sea_orm::DatabaseBackend::MySql => "DROP INDEX idx_chat_threads_project_agent ON chat_threads",
+            sea_orm::DatabaseBackend::MySql => {
+                "DROP INDEX idx_chat_threads_project_agent ON chat_threads"
+            }
             _ => "DROP INDEX IF EXISTS idx_chat_threads_project_agent",
         };
         let stmt = sea_orm::Statement::from_string(manager.get_database_backend(), sql.to_owned());

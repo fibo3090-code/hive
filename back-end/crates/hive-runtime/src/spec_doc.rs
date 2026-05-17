@@ -57,7 +57,10 @@ pub fn parse_sections(markdown: &str) -> Vec<SectionInput> {
     let mut current_body = String::new();
     let mut seen_anchors: HashSet<String> = HashSet::new();
 
-    let push = |title: Option<String>, body: String, out: &mut Vec<SectionInput>, seen: &mut HashSet<String>| {
+    let push = |title: Option<String>,
+                body: String,
+                out: &mut Vec<SectionInput>,
+                seen: &mut HashSet<String>| {
         let title = title.unwrap_or_else(|| "Preamble".to_owned());
         let trimmed_body = body.trim().to_owned();
         // Skip a wholly-empty preamble (no markdown at all before the
@@ -80,7 +83,12 @@ pub fn parse_sections(markdown: &str) -> Vec<SectionInput> {
     for raw_line in markdown.lines() {
         if let Some(heading) = parse_top_level_heading(raw_line) {
             // Flush the in-progress section before starting a new one.
-            push(current_title.take(), std::mem::take(&mut current_body), &mut out, &mut seen_anchors);
+            push(
+                current_title.take(),
+                std::mem::take(&mut current_body),
+                &mut out,
+                &mut seen_anchors,
+            );
             current_title = Some(heading.to_owned());
             continue;
         }
@@ -100,7 +108,9 @@ pub fn parse_sections(markdown: &str) -> Vec<SectionInput> {
 /// traverse.
 fn parse_top_level_heading(line: &str) -> Option<&str> {
     let trimmed = line.trim_start();
-    let rest = trimmed.strip_prefix("##").or_else(|| trimmed.strip_prefix('#'))?;
+    let rest = trimmed
+        .strip_prefix("##")
+        .or_else(|| trimmed.strip_prefix('#'))?;
     // Must have whitespace after the `#`/`##` to be a heading (avoids
     // matching `#tag` inline notation that some teams use).
     let body = rest.strip_prefix(' ').or_else(|| rest.strip_prefix('\t'))?;
@@ -250,10 +260,8 @@ pub async fn materialize_decomposition(
 ) -> Result<MaterializeResult, DbErr> {
     // Resolve anchors → section ids up front so each task lookup is O(1).
     let sections = spec_document_sections::list_for_document(db, spec_document_id).await?;
-    let anchor_to_id: std::collections::HashMap<String, String> = sections
-        .into_iter()
-        .map(|s| (s.anchor, s.id))
-        .collect();
+    let anchor_to_id: std::collections::HashMap<String, String> =
+        sections.into_iter().map(|s| (s.anchor, s.id)).collect();
 
     let txn = db.begin().await?;
     let mut sprint_ids = Vec::with_capacity(decomposition.sprints.len());
@@ -287,17 +295,14 @@ pub async fn materialize_decomposition(
         sprint_ids.push(sprint_id.clone());
 
         for task in sprint.tasks {
-            let resolved_section = task
-                .spec_section_anchor
-                .as_deref()
-                .and_then(|a| {
-                    let key = a.trim_start_matches('#').to_lowercase();
-                    let m = anchor_to_id.get(&key).cloned();
-                    if m.is_none() {
-                        unmatched.insert(a.to_owned());
-                    }
-                    m
-                });
+            let resolved_section = task.spec_section_anchor.as_deref().and_then(|a| {
+                let key = a.trim_start_matches('#').to_lowercase();
+                let m = anchor_to_id.get(&key).cloned();
+                if m.is_none() {
+                    unmatched.insert(a.to_owned());
+                }
+                m
+            });
             let phase = task.agent_role.clone();
             let created_task = tasks::create(
                 &txn,

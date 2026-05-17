@@ -131,7 +131,8 @@ impl Tool for HiveMindList {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "hive_mind_list".into(),
-            description: "List Hive Mind notes for this project (optionally filtered by topic).".into(),
+            description: "List Hive Mind notes for this project (optionally filtered by topic)."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -144,7 +145,11 @@ impl Tool for HiveMindList {
     }
     async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
         let topic = opt_str(&args, "topic");
-        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50).min(200) as usize;
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(50)
+            .min(200) as usize;
         let mut rows = notes::list_by_project(self.db.conn(), &ctx.project_id)
             .await
             .map_err(|e| ToolError::Other(format!("list notes: {e}")))?;
@@ -185,7 +190,9 @@ impl Tool for HiveMindRead {
             .into_iter()
             .find(|n| n.id == id)
             .ok_or_else(|| ToolError::Other(format!("note {id} not found in this project")))?;
-        Ok(json!({ "id": row.id, "topic": row.category, "title": row.title, "content": row.content, "author": row.author, "createdAt": row.created_at, "updatedAt": row.updated_at }))
+        Ok(
+            json!({ "id": row.id, "topic": row.category, "title": row.title, "content": row.content, "author": row.author, "createdAt": row.created_at, "updatedAt": row.updated_at }),
+        )
     }
 }
 
@@ -272,7 +279,9 @@ impl Tool for ReadSpecDoc {
             .into_iter()
             .map(|s| serde_json::to_value(&s).unwrap_or(Value::Null))
             .collect();
-        Ok(json!({ "id": doc.id, "title": doc.title, "source": doc.source, "version": doc.version, "markdown": doc.markdown, "sections": section_values }))
+        Ok(
+            json!({ "id": doc.id, "title": doc.title, "source": doc.source, "version": doc.version, "markdown": doc.markdown, "sections": section_values }),
+        )
     }
 }
 
@@ -286,7 +295,8 @@ impl Tool for AddTask {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "add_task".into(),
-            description: "Create a task in this project's backlog, optionally assigned to an agent.".into(),
+            description:
+                "Create a task in this project's backlog, optionally assigned to an agent.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -356,15 +366,16 @@ impl Tool for SetTaskStatus {
         let task_id = str_arg(&args, "taskId")?;
         let status = str_arg(&args, "status")?;
         let summary = opt_str(&args, "summary");
-        let updated = match tasks::set_status(self.db.conn(), &ctx.project_id, task_id, status).await {
-            Ok(t) => t,
-            Err(sea_orm::DbErr::RecordNotFound(_)) => {
-                return Err(ToolError::Other(format!(
-                    "task {task_id} not found in this project"
-                )))
-            }
-            Err(e) => return Err(ToolError::Other(format!("set task status: {e}"))),
-        };
+        let updated =
+            match tasks::set_status(self.db.conn(), &ctx.project_id, task_id, status).await {
+                Ok(t) => t,
+                Err(sea_orm::DbErr::RecordNotFound(_)) => {
+                    return Err(ToolError::Other(format!(
+                        "task {task_id} not found in this project"
+                    )))
+                }
+                Err(e) => return Err(ToolError::Other(format!("set task status: {e}"))),
+            };
         // Append a note onto the Hive Mind so the operator sees *why* the
         // agent flipped the status — without forcing an Alert. The author
         // is the calling agent's id (or the fallback "agent" string).
@@ -466,7 +477,9 @@ impl Tool for UpdateTechDebt {
             .iter()
             .any(|t| t.id == id);
         if !belongs {
-            return Err(ToolError::Other(format!("tech-debt item {id} not found in this project")));
+            return Err(ToolError::Other(format!(
+                "tech-debt item {id} not found in this project"
+            )));
         }
         let item = tech_debt::update(
             self.db.conn(),
@@ -544,10 +557,9 @@ impl Tool for ListSkills {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "list_skills".into(),
-            description:
-                "List the skills bound to this agent. Returns slug, name, and a short \
+            description: "List the skills bound to this agent. Returns slug, name, and a short \
                  description; call `read_skill` with the slug to get the full playbook."
-                    .into(),
+                .into(),
             input_schema: json!({ "type": "object", "properties": {} }),
             side_effects: false,
         }

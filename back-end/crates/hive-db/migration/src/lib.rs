@@ -9,6 +9,7 @@ mod m20260427_000001_agent_relations;
 mod m20260428_000001_cost_cents_i64;
 mod m20260504_000001_workspaces;
 mod m20260511_000001_synthesis_jobs;
+mod m20260514_000001_agent_skill_bindings;
 mod m20260518_000001_search_config;
 mod m20260601_000001_budget_cents_i64;
 mod m20260602_000001_module_publish;
@@ -18,7 +19,6 @@ mod m20260606_000001_redesign_foundations;
 mod m20260606_000002_repair_chat_attachments;
 mod m20260612_000001_chat_threads_agent_index;
 mod m20260613_000001_agent_wires;
-mod m20260514_000001_agent_skill_bindings;
 
 pub struct Migrator;
 

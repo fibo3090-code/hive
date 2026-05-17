@@ -35,10 +35,7 @@ fn json_empty_array() -> serde_json::Value {
     serde_json::json!([])
 }
 
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateCustomMcpServer,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateCustomMcpServer) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     ActiveModel {
         id: Set(new_id()),
@@ -91,11 +88,7 @@ pub async fn list_reusable_for_project(
         .await
 }
 
-pub async fn set_status(
-    db: &DatabaseConnection,
-    id: &str,
-    status: &str,
-) -> Result<Model, DbErr> {
+pub async fn set_status(db: &DatabaseConnection, id: &str, status: &str) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .one(db)
         .await?

@@ -24,10 +24,7 @@ fn json_empty_object() -> serde_json::Value {
     serde_json::json!({})
 }
 
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateConnector,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateConnector) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     ActiveModel {
         id: Set(new_id()),
@@ -99,5 +96,8 @@ pub async fn set_status(
 }
 
 pub async fn delete(db: &DatabaseConnection, id: &str) -> Result<(), DbErr> {
-    Entity::delete_by_id(id.to_owned()).exec(db).await.map(|_| ())
+    Entity::delete_by_id(id.to_owned())
+        .exec(db)
+        .await
+        .map(|_| ())
 }

@@ -300,7 +300,11 @@ mod tests {
     fn per_tool_override_beats_class_default() {
         let m = PermissionMatrix::build()
             // A specific shell tool the operator has audited and trusts.
-            .override_tool("shell_exec_audited", ActionClass::ShellExec, PermissionDecision::Allow);
+            .override_tool(
+                "shell_exec_audited",
+                ActionClass::ShellExec,
+                PermissionDecision::Allow,
+            );
         assert_eq!(
             m.decide("shell_exec", ActionClass::ShellExec),
             PermissionDecision::Ask

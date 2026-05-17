@@ -45,7 +45,12 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Skills::ProjectId).string().null())
                     .col(ColumnDef::new(Skills::Slug).string().not_null())
                     .col(ColumnDef::new(Skills::Name).string().not_null())
-                    .col(ColumnDef::new(Skills::Description).text().not_null().default(""))
+                    .col(
+                        ColumnDef::new(Skills::Description)
+                            .text()
+                            .not_null()
+                            .default(""),
+                    )
                     .col(
                         ColumnDef::new(Skills::SystemPromptFragment)
                             .text()
@@ -118,7 +123,12 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Connectors::Name).string().not_null())
                     .col(ColumnDef::new(Connectors::BaseUrl).string().null())
                     // "none" | "bearer" | "basic" | "oauth2" | "mcp_handshake"
-                    .col(ColumnDef::new(Connectors::AuthKind).string().not_null().default("none"))
+                    .col(
+                        ColumnDef::new(Connectors::AuthKind)
+                            .string()
+                            .not_null()
+                            .default("none"),
+                    )
                     // Encrypted via hive-crypto, identical pattern to llm_providers.
                     .col(
                         ColumnDef::new(Connectors::EncryptedCredentials)
@@ -189,8 +199,18 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default("manual"),
                     )
-                    .col(ColumnDef::new(SpecDocuments::Markdown).text().not_null().default(""))
-                    .col(ColumnDef::new(SpecDocuments::Version).integer().not_null().default(1))
+                    .col(
+                        ColumnDef::new(SpecDocuments::Markdown)
+                            .text()
+                            .not_null()
+                            .default(""),
+                    )
+                    .col(
+                        ColumnDef::new(SpecDocuments::Version)
+                            .integer()
+                            .not_null()
+                            .default(1),
+                    )
                     .col(ColumnDef::new(SpecDocuments::CreatedAt).string().not_null())
                     .col(ColumnDef::new(SpecDocuments::UpdatedAt).string().not_null())
                     .foreign_key(
@@ -230,10 +250,28 @@ impl MigrationTrait for Migration {
                             .string()
                             .not_null(),
                     )
-                    .col(ColumnDef::new(SpecDocumentSections::Anchor).string().not_null())
-                    .col(ColumnDef::new(SpecDocumentSections::Title).string().not_null())
-                    .col(ColumnDef::new(SpecDocumentSections::Body).text().not_null().default(""))
-                    .col(ColumnDef::new(SpecDocumentSections::Ordinal).integer().not_null().default(0))
+                    .col(
+                        ColumnDef::new(SpecDocumentSections::Anchor)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(SpecDocumentSections::Title)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(SpecDocumentSections::Body)
+                            .text()
+                            .not_null()
+                            .default(""),
+                    )
+                    .col(
+                        ColumnDef::new(SpecDocumentSections::Ordinal)
+                            .integer()
+                            .not_null()
+                            .default(0),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .from(
@@ -270,13 +308,42 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .primary_key(),
                     )
-                    .col(ColumnDef::new(AgentTaskAssignments::AgentId).string().not_null())
-                    .col(ColumnDef::new(AgentTaskAssignments::TaskId).string().not_null())
-                    .col(ColumnDef::new(AgentTaskAssignments::AssignedAt).string().not_null())
-                    .col(ColumnDef::new(AgentTaskAssignments::ExpectedCompletionAt).string().null())
-                    .col(ColumnDef::new(AgentTaskAssignments::StartedAt).string().null())
-                    .col(ColumnDef::new(AgentTaskAssignments::CompletedAt).string().null())
-                    .col(ColumnDef::new(AgentTaskAssignments::DriftScore).double().not_null().default(0.0))
+                    .col(
+                        ColumnDef::new(AgentTaskAssignments::AgentId)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentTaskAssignments::TaskId)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentTaskAssignments::AssignedAt)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentTaskAssignments::ExpectedCompletionAt)
+                            .string()
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentTaskAssignments::StartedAt)
+                            .string()
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentTaskAssignments::CompletedAt)
+                            .string()
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentTaskAssignments::DriftScore)
+                            .double()
+                            .not_null()
+                            .default(0.0),
+                    )
                     // "paused" | "started" | "in-progress" | "finished"
                     // | "blocked" | "awaiting-authorization" | "requesting-input"
                     .col(
@@ -285,8 +352,16 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default("started"),
                     )
-                    .col(ColumnDef::new(AgentTaskAssignments::CreatedAt).string().not_null())
-                    .col(ColumnDef::new(AgentTaskAssignments::UpdatedAt).string().not_null())
+                    .col(
+                        ColumnDef::new(AgentTaskAssignments::CreatedAt)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentTaskAssignments::UpdatedAt)
+                            .string()
+                            .not_null(),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .from(AgentTaskAssignments::Table, AgentTaskAssignments::AgentId)
@@ -396,13 +471,25 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .primary_key(),
                     )
-                    .col(ColumnDef::new(CustomMcpServers::ProjectId).string().not_null())
+                    .col(
+                        ColumnDef::new(CustomMcpServers::ProjectId)
+                            .string()
+                            .not_null(),
+                    )
                     // The agent the server was originally generated for. Other
                     // agents may bind via agent_mcp_bindings when reusable.
-                    .col(ColumnDef::new(CustomMcpServers::OwnerAgentId).string().null())
+                    .col(
+                        ColumnDef::new(CustomMcpServers::OwnerAgentId)
+                            .string()
+                            .null(),
+                    )
                     .col(ColumnDef::new(CustomMcpServers::Name).string().not_null())
                     .col(ColumnDef::new(CustomMcpServers::Slug).string().not_null())
-                    .col(ColumnDef::new(CustomMcpServers::SourceApiUrl).string().null())
+                    .col(
+                        ColumnDef::new(CustomMcpServers::SourceApiUrl)
+                            .string()
+                            .null(),
+                    )
                     .col(
                         ColumnDef::new(CustomMcpServers::SourceApiSpecJson)
                             .json()
@@ -452,9 +539,21 @@ impl MigrationTrait for Migration {
                     )
                     // Optional similarity-search vector cached for the matcher.
                     // JSON of f32[]; refreshed when capabilities or description change.
-                    .col(ColumnDef::new(CustomMcpServers::EmbeddingJson).json().null())
-                    .col(ColumnDef::new(CustomMcpServers::CreatedAt).string().not_null())
-                    .col(ColumnDef::new(CustomMcpServers::UpdatedAt).string().not_null())
+                    .col(
+                        ColumnDef::new(CustomMcpServers::EmbeddingJson)
+                            .json()
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(CustomMcpServers::CreatedAt)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(CustomMcpServers::UpdatedAt)
+                            .string()
+                            .not_null(),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .from(CustomMcpServers::Table, CustomMcpServers::ProjectId)
@@ -488,9 +587,21 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .primary_key(),
                     )
-                    .col(ColumnDef::new(AgentSpawnRequests::ProjectId).string().not_null())
-                    .col(ColumnDef::new(AgentSpawnRequests::ParentAgentId).string().null())
-                    .col(ColumnDef::new(AgentSpawnRequests::RequestedRole).string().not_null())
+                    .col(
+                        ColumnDef::new(AgentSpawnRequests::ProjectId)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentSpawnRequests::ParentAgentId)
+                            .string()
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentSpawnRequests::RequestedRole)
+                            .string()
+                            .not_null(),
+                    )
                     .col(
                         ColumnDef::new(AgentSpawnRequests::RequestedCapabilitiesJson)
                             .json()
@@ -520,7 +631,11 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default("queued"),
                     )
-                    .col(ColumnDef::new(AgentSpawnRequests::ChildAgentId).string().null())
+                    .col(
+                        ColumnDef::new(AgentSpawnRequests::ChildAgentId)
+                            .string()
+                            .null(),
+                    )
                     .col(
                         ColumnDef::new(AgentSpawnRequests::DiscoveredApiJson)
                             .json()
@@ -544,9 +659,21 @@ impl MigrationTrait for Migration {
                             .null(),
                     )
                     .col(ColumnDef::new(AgentSpawnRequests::Error).text().null())
-                    .col(ColumnDef::new(AgentSpawnRequests::CreatedAt).string().not_null())
-                    .col(ColumnDef::new(AgentSpawnRequests::UpdatedAt).string().not_null())
-                    .col(ColumnDef::new(AgentSpawnRequests::CompletedAt).string().null())
+                    .col(
+                        ColumnDef::new(AgentSpawnRequests::CreatedAt)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentSpawnRequests::UpdatedAt)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentSpawnRequests::CompletedAt)
+                            .string()
+                            .null(),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .from(AgentSpawnRequests::Table, AgentSpawnRequests::ProjectId)
@@ -581,11 +708,23 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .primary_key(),
                     )
-                    .col(ColumnDef::new(AgentMcpBindings::AgentId).string().not_null())
-                    .col(ColumnDef::new(AgentMcpBindings::McpServerId).string().not_null())
+                    .col(
+                        ColumnDef::new(AgentMcpBindings::AgentId)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(AgentMcpBindings::McpServerId)
+                            .string()
+                            .not_null(),
+                    )
                     // "custom" (-> custom_mcp_servers) | "connector" (-> connectors)
                     .col(ColumnDef::new(AgentMcpBindings::Kind).string().not_null())
-                    .col(ColumnDef::new(AgentMcpBindings::CreatedAt).string().not_null())
+                    .col(
+                        ColumnDef::new(AgentMcpBindings::CreatedAt)
+                            .string()
+                            .not_null(),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .from(AgentMcpBindings::Table, AgentMcpBindings::AgentId)

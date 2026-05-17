@@ -14,10 +14,7 @@ pub struct CreateSpecDocument {
     pub markdown: String,
 }
 
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateSpecDocument,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateSpecDocument) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     ActiveModel {
         id: Set(new_id()),
@@ -76,5 +73,8 @@ pub async fn update_markdown(
 }
 
 pub async fn delete(db: &DatabaseConnection, id: &str) -> Result<(), DbErr> {
-    Entity::delete_by_id(id.to_owned()).exec(db).await.map(|_| ())
+    Entity::delete_by_id(id.to_owned())
+        .exec(db)
+        .await
+        .map(|_| ())
 }

@@ -192,15 +192,24 @@ mod tests {
     fn streaming_tools_implies_tools() {
         // A model that doesn't support tools at all can never support
         // streaming tools.
-        assert!(!supports_streaming_tools(ProviderKind::Openai, "gpt-3.5-turbo"));
+        assert!(!supports_streaming_tools(
+            ProviderKind::Openai,
+            "gpt-3.5-turbo"
+        ));
         assert!(!supports_streaming_tools(ProviderKind::Ollama, "llama2:7b"));
     }
 
     #[test]
     fn streaming_tools_enabled_for_frontier_providers() {
-        assert!(supports_streaming_tools(ProviderKind::Anthropic, "claude-opus-4-7"));
+        assert!(supports_streaming_tools(
+            ProviderKind::Anthropic,
+            "claude-opus-4-7"
+        ));
         assert!(supports_streaming_tools(ProviderKind::Openai, "gpt-5"));
-        assert!(supports_streaming_tools(ProviderKind::Gemini, "gemini-2.5-pro"));
+        assert!(supports_streaming_tools(
+            ProviderKind::Gemini,
+            "gemini-2.5-pro"
+        ));
     }
 
     #[test]
@@ -209,6 +218,9 @@ mod tests {
         // false here so the runtime takes the non-streaming path with its
         // synchronous validation surface.
         assert!(supports_tools(ProviderKind::Ollama, "qwen2.5:14b"));
-        assert!(!supports_streaming_tools(ProviderKind::Ollama, "qwen2.5:14b"));
+        assert!(!supports_streaming_tools(
+            ProviderKind::Ollama,
+            "qwen2.5:14b"
+        ));
     }
 }

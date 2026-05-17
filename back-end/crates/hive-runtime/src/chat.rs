@@ -402,7 +402,7 @@ fn tool_validation_error_json(
         "submittedArguments": arguments,
         "inputSchema": schema,
         "hint": "Re-emit the tool call with arguments matching `inputSchema`. \
-The previous attempt is in `submittedArguments` for diff context.",
+    The previous attempt is in `submittedArguments` for diff context.",
     })
 }
 
@@ -774,7 +774,16 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
             request
         };
 
-        let outcome = match collect_response(&provider, request, &cancel, Some(&bus), Some(&thread_id), Some(&assistant_message_id)).await {
+        let outcome = match collect_response(
+            &provider,
+            request,
+            &cancel,
+            Some(&bus),
+            Some(&thread_id),
+            Some(&assistant_message_id),
+        )
+        .await
+        {
             Ok(collected) => collected,
             Err(ChatError::Llm(err)) => {
                 let detail = err.to_string();
@@ -1127,14 +1136,8 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     // W3-B5: drift auto-detection. Only meaningful for agent-driven turns
     // — a plain user→assistant chat has no task to drift from.
     if let Some(ref agent_id) = agent_id {
-        crate::drift_hook::record_after_turn(
-            &db,
-            &bus,
-            &project_id,
-            agent_id,
-            &executed_calls,
-        )
-        .await;
+        crate::drift_hook::record_after_turn(&db, &bus, &project_id, agent_id, &executed_calls)
+            .await;
     }
 
     Ok(())
@@ -1339,13 +1342,19 @@ mod tests {
             "properties": { "query": { "type": "string" } },
             "required": ["query"],
         });
-        let payload =
-            tool_validation_error_json("web_search", "missing required field `query`", &args, &schema);
+        let payload = tool_validation_error_json(
+            "web_search",
+            "missing required field `query`",
+            &args,
+            &schema,
+        );
         assert_eq!(payload["ok"], json!(false));
         assert_eq!(payload["tool"], json!("web_search"));
         assert_eq!(payload["error"], json!("missing required field `query`"));
         assert_eq!(payload["submittedArguments"], args);
         assert_eq!(payload["inputSchema"], schema);
-        assert!(payload["hint"].as_str().is_some_and(|s| s.contains("inputSchema")));
+        assert!(payload["hint"]
+            .as_str()
+            .is_some_and(|s| s.contains("inputSchema")));
     }
 }

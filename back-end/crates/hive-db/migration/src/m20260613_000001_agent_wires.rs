@@ -29,7 +29,11 @@ impl MigrationTrait for Migration {
                             .primary_key(),
                     )
                     .col(ColumnDef::new(AgentWires::ProjectId).string().not_null())
-                    .col(ColumnDef::new(AgentWires::ParentAgentId).string().not_null())
+                    .col(
+                        ColumnDef::new(AgentWires::ParentAgentId)
+                            .string()
+                            .not_null(),
+                    )
                     .col(ColumnDef::new(AgentWires::ChildAgentId).string().not_null())
                     .col(ColumnDef::new(AgentWires::CreatedAt).string().not_null())
                     .foreign_key(

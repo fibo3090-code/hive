@@ -86,7 +86,12 @@ pub async fn create<C: ConnectionTrait>(db: &C, input: CreateTask) -> Result<Mod
 }
 
 /// Partially update an existing task.
-pub async fn update(db: &DatabaseConnection, project_id: &str, id: &str, input: UpdateTask) -> Result<Model, DbErr> {
+pub async fn update(
+    db: &DatabaseConnection,
+    project_id: &str,
+    id: &str,
+    input: UpdateTask,
+) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .filter(Column::ProjectId.eq(project_id))
         .one(db)
@@ -125,7 +130,12 @@ pub async fn update(db: &DatabaseConnection, project_id: &str, id: &str, input: 
 }
 
 /// Set the status of a task. When status is "completed", also sets `completed_at`.
-pub async fn set_status(db: &DatabaseConnection, project_id: &str, id: &str, status: &str) -> Result<Model, DbErr> {
+pub async fn set_status(
+    db: &DatabaseConnection,
+    project_id: &str,
+    id: &str,
+    status: &str,
+) -> Result<Model, DbErr> {
     let existing = Entity::find_by_id(id.to_owned())
         .filter(Column::ProjectId.eq(project_id))
         .one(db)

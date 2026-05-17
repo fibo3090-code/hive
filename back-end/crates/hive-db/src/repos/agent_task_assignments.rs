@@ -19,10 +19,7 @@ fn default_state() -> String {
     "started".to_owned()
 }
 
-pub async fn create(
-    db: &DatabaseConnection,
-    input: CreateAssignment,
-) -> Result<Model, DbErr> {
+pub async fn create(db: &DatabaseConnection, input: CreateAssignment) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     ActiveModel {
         id: Set(new_id()),
@@ -63,10 +60,7 @@ pub async fn list_for_project_via_tasks(
         .await
 }
 
-pub async fn list_for_agent(
-    db: &DatabaseConnection,
-    agent_id: &str,
-) -> Result<Vec<Model>, DbErr> {
+pub async fn list_for_agent(db: &DatabaseConnection, agent_id: &str) -> Result<Vec<Model>, DbErr> {
     Entity::find()
         .filter(Column::AgentId.eq(agent_id))
         .order_by_desc(Column::AssignedAt)
@@ -74,10 +68,7 @@ pub async fn list_for_agent(
         .await
 }
 
-pub async fn list_for_task(
-    db: &DatabaseConnection,
-    task_id: &str,
-) -> Result<Vec<Model>, DbErr> {
+pub async fn list_for_task(db: &DatabaseConnection, task_id: &str) -> Result<Vec<Model>, DbErr> {
     Entity::find()
         .filter(Column::TaskId.eq(task_id))
         .order_by_desc(Column::AssignedAt)

@@ -116,7 +116,8 @@ impl PromptComposer {
         if skills.is_empty() {
             return self;
         }
-        let mut block = String::from("Skills bound to this agent (call `read_skill` for the full playbook):\n");
+        let mut block =
+            String::from("Skills bound to this agent (call `read_skill` for the full playbook):\n");
         for (slug, description) in skills {
             let desc = description.trim();
             if desc.is_empty() {
@@ -170,7 +171,10 @@ impl PromptComposer {
 /// unavailable (e.g. tests running with a stripped env).
 fn global_hive_md_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    let p = PathBuf::from(home).join(".config").join("hive").join("HIVE.md");
+    let p = PathBuf::from(home)
+        .join(".config")
+        .join("hive")
+        .join("HIVE.md");
     if p.exists() {
         Some(p)
     } else {
@@ -318,7 +322,10 @@ mod tests {
             .build()
             .unwrap();
         assert!(out.contains("Project-level rules."));
-        assert!(out.contains("HIVE.md"), "header includes file path for traceability");
+        assert!(
+            out.contains("HIVE.md"),
+            "header includes file path for traceability"
+        );
     }
 
     #[test]
@@ -353,7 +360,10 @@ mod tests {
         let with = PromptComposer::new()
             .with_agent_prompt(Some("AGENT".into()))
             .with_skills(&[
-                ("git-flow".into(), "Branch-cut → PR → review workflow".into()),
+                (
+                    "git-flow".into(),
+                    "Branch-cut → PR → review workflow".into(),
+                ),
                 ("lint-fix".into(), "".into()),
             ])
             .add_reminder("REM")

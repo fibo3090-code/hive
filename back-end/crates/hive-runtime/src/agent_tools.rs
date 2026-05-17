@@ -27,7 +27,9 @@ async fn can_message(
     caller: Option<&str>,
     target: &str,
 ) -> ToolResult<bool> {
-    let Some(caller) = caller else { return Ok(true) };
+    let Some(caller) = caller else {
+        return Ok(true);
+    };
     let wires = agent_wires::list_by_project(db.conn(), project_id)
         .await
         .map_err(|e| ToolError::Other(format!("wires: {e}")))?;
@@ -160,7 +162,8 @@ impl Tool for SpawnAgent {
         // graph view both reflect the spawn. Best-effort: a fresh child can't
         // form a cycle or a duplicate, and a missing wire shouldn't fail spawn.
         if let Some(parent_id) = ctx.agent_id.as_deref() {
-            let _ = agent_wires::create(self.db.conn(), &ctx.project_id, parent_id, &created.id).await;
+            let _ =
+                agent_wires::create(self.db.conn(), &ctx.project_id, parent_id, &created.id).await;
         }
 
         // Bring the executor up under the parent's cancel scope so cancelling
@@ -272,9 +275,19 @@ impl Tool for MessageAgent {
             .ok_or_else(|| ToolError::Other(format!("agent {agent_id} not found")))?;
 
         if target.project_id != ctx.project_id {
-            return Err(ToolError::InvalidArgs(format!("Access denied: agent {} belongs to a different project", agent_id)));
+            return Err(ToolError::InvalidArgs(format!(
+                "Access denied: agent {} belongs to a different project",
+                agent_id
+            )));
         }
-        if !can_message(&self.db, &ctx.project_id, ctx.agent_id.as_deref(), &target.id).await? {
+        if !can_message(
+            &self.db,
+            &ctx.project_id,
+            ctx.agent_id.as_deref(),
+            &target.id,
+        )
+        .await?
+        {
             return Err(ToolError::Other(format!(
                 "agent {} is not in your visibility set — you may message your direct parents and your own descendants. Use `request_relay` to route through a parent, or `list_visible_agents` to see who you can reach.",
                 agent_id
@@ -356,7 +369,12 @@ impl Tool for ListVisibleAgents {
         };
         let items: Vec<Value> = all
             .into_iter()
-            .filter(|a| visible_ids.as_ref().map(|v| v.contains(&a.id)).unwrap_or(true))
+            .filter(|a| {
+                visible_ids
+                    .as_ref()
+                    .map(|v| v.contains(&a.id))
+                    .unwrap_or(true)
+            })
             .map(|a| json!({ "id": a.id, "name": a.name, "role": a.role, "status": a.status }))
             .collect();
         Ok(json!({ "agents": items }))
@@ -393,24 +411,36 @@ impl Tool for RequestRelay {
         }
     }
     async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
-        let via = args.get("viaAgentId").and_then(Value::as_str)
+        let via = args
+            .get("viaAgentId")
+            .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArgs("`viaAgentId` is required".into()))?;
-        let target = args.get("targetAgentId").and_then(Value::as_str)
+        let target = args
+            .get("targetAgentId")
+            .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArgs("`targetAgentId` is required".into()))?;
-        let content = args.get("content").and_then(Value::as_str)
+        let content = args
+            .get("content")
+            .and_then(Value::as_str)
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| ToolError::InvalidArgs("`content` is required".into()))?;
         let Some(caller) = ctx.agent_id.as_deref() else {
-            return Err(ToolError::Other("request_relay can only be called by an agent".into()));
+            return Err(ToolError::Other(
+                "request_relay can only be called by an agent".into(),
+            ));
         };
         let parents = agent_wires::direct_parent_ids(self.db.conn(), &ctx.project_id, caller)
             .await
             .map_err(|e| ToolError::Other(format!("parents: {e}")))?;
         if !parents.iter().any(|p| p == via) {
-            return Err(ToolError::Other(format!("{via} is not a direct parent of yours")));
+            return Err(ToolError::Other(format!(
+                "{via} is not a direct parent of yours"
+            )));
         }
         if !can_message(&self.db, &ctx.project_id, Some(via), target).await? {
-            return Err(ToolError::Other(format!("{via} cannot see {target}, so it can't relay to it")));
+            return Err(ToolError::Other(format!(
+                "{via} cannot see {target}, so it can't relay to it"
+            )));
         }
         let target_agent = agents::get(self.db.conn(), target)
             .await
@@ -431,7 +461,10 @@ impl Tool for RequestRelay {
         )
         .await
         .map_err(|e| ToolError::Other(format!("enqueue: {e}")))?;
-        let _ = self.executors.ensure(&target_agent.id, &target_agent.project_id).await;
+        let _ = self
+            .executors
+            .ensure(&target_agent.id, &target_agent.project_id)
+            .await;
         self.executors
             .dispatch(
                 &target_agent.id,
@@ -460,7 +493,9 @@ async fn can_manage(
     target_id: &str,
     target_parent: Option<&str>,
 ) -> ToolResult<bool> {
-    let Some(caller) = caller else { return Ok(true) };
+    let Some(caller) = caller else {
+        return Ok(true);
+    };
     if target_parent == Some(caller) {
         return Ok(true);
     }
@@ -490,19 +525,34 @@ impl Tool for DeleteAgent {
         }
     }
     async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
-        let agent_id = args.get("agentId").and_then(Value::as_str)
+        let agent_id = args
+            .get("agentId")
+            .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArgs("`agentId` is required".into()))?;
         let target = agents::get(self.db.conn(), agent_id)
             .await
             .map_err(|e| ToolError::Other(format!("lookup agent: {e}")))?
             .filter(|a| a.project_id == ctx.project_id)
-            .ok_or_else(|| ToolError::Other(format!("agent {agent_id} not found in this project")))?;
-        if !can_manage(&self.db, &ctx.project_id, ctx.agent_id.as_deref(), &target.id, target.parent_agent_id.as_deref()).await? {
-            return Err(ToolError::Other(format!("{agent_id} is not one of your direct sub-agents")));
+            .ok_or_else(|| {
+                ToolError::Other(format!("agent {agent_id} not found in this project"))
+            })?;
+        if !can_manage(
+            &self.db,
+            &ctx.project_id,
+            ctx.agent_id.as_deref(),
+            &target.id,
+            target.parent_agent_id.as_deref(),
+        )
+        .await?
+        {
+            return Err(ToolError::Other(format!(
+                "{agent_id} is not one of your direct sub-agents"
+            )));
         }
         self.executors.cancel_subtree(agent_id).await;
         let _ = self.executors.terminate(agent_id).await;
-        let _ = agents::set_status(self.db.conn(), &target.project_id, agent_id, "deprecated").await;
+        let _ =
+            agents::set_status(self.db.conn(), &target.project_id, agent_id, "deprecated").await;
         Ok(json!({ "ok": true, "agentId": agent_id, "status": "deprecated" }))
     }
 }
@@ -529,21 +579,42 @@ impl Tool for MonitorAgent {
         }
     }
     async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
-        let agent_id = args.get("agentId").and_then(Value::as_str)
+        let agent_id = args
+            .get("agentId")
+            .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArgs("`agentId` is required".into()))?;
         let target = agents::get(self.db.conn(), agent_id)
             .await
             .map_err(|e| ToolError::Other(format!("lookup agent: {e}")))?
             .filter(|a| a.project_id == ctx.project_id)
-            .ok_or_else(|| ToolError::Other(format!("agent {agent_id} not found in this project")))?;
-        if !can_message(&self.db, &ctx.project_id, ctx.agent_id.as_deref(), &target.id).await? {
-            return Err(ToolError::Other(format!("{agent_id} is not in your visibility set")));
+            .ok_or_else(|| {
+                ToolError::Other(format!("agent {agent_id} not found in this project"))
+            })?;
+        if !can_message(
+            &self.db,
+            &ctx.project_id,
+            ctx.agent_id.as_deref(),
+            &target.id,
+        )
+        .await?
+        {
+            return Err(ToolError::Other(format!(
+                "{agent_id} is not in your visibility set"
+            )));
         }
-        let limit = args.get("messageLimit").and_then(Value::as_u64).unwrap_or(5).clamp(1, 20);
+        let limit = args
+            .get("messageLimit")
+            .and_then(Value::as_u64)
+            .unwrap_or(5)
+            .clamp(1, 20);
         let messages = agent_messages::list_by_agent(self.db.conn(), agent_id, limit)
             .await
             .map_err(|e| ToolError::Other(format!("messages: {e}")))?;
-        let runtime_state = self.executors.state(agent_id).await.map(|s| format!("{s:?}"));
+        let runtime_state = self
+            .executors
+            .state(agent_id)
+            .await
+            .map(|s| format!("{s:?}"));
         let msg_items: Vec<Value> = messages
             .into_iter()
             .map(|m| {
@@ -595,22 +666,46 @@ impl Tool for DelegateTask {
         }
     }
     async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
-        let agent_id = args.get("agentId").and_then(Value::as_str)
+        let agent_id = args
+            .get("agentId")
+            .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArgs("`agentId` is required".into()))?;
-        let task_text = args.get("task").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+        let task_text = args
+            .get("task")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .ok_or_else(|| ToolError::InvalidArgs("`task` is required".into()))?;
         let target = agents::get(self.db.conn(), agent_id)
             .await
             .map_err(|e| ToolError::Other(format!("lookup agent: {e}")))?
             .filter(|a| a.project_id == ctx.project_id)
-            .ok_or_else(|| ToolError::Other(format!("agent {agent_id} not found in this project")))?;
-        if !can_message(&self.db, &ctx.project_id, ctx.agent_id.as_deref(), &target.id).await? {
-            return Err(ToolError::Other(format!("{agent_id} is not in your visibility set")));
+            .ok_or_else(|| {
+                ToolError::Other(format!("agent {agent_id} not found in this project"))
+            })?;
+        if !can_message(
+            &self.db,
+            &ctx.project_id,
+            ctx.agent_id.as_deref(),
+            &target.id,
+        )
+        .await?
+        {
+            return Err(ToolError::Other(format!(
+                "{agent_id} is not in your visibility set"
+            )));
         }
-        let title = args.get("title").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+        let title = args
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| task_text.chars().take(80).collect());
-        let priority = args.get("priority").and_then(Value::as_str).map(|p| p.to_lowercase())
+        let priority = args
+            .get("priority")
+            .and_then(Value::as_str)
+            .map(|p| p.to_lowercase())
             .filter(|p| ["low", "medium", "high"].contains(&p.as_str()))
             .unwrap_or_else(|| "medium".to_owned());
         let task = tasks::create(

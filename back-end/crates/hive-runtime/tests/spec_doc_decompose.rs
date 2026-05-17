@@ -152,7 +152,9 @@ async fn end_to_end_decompose_creates_sprints_and_tasks_linked_to_sections() {
     assert_eq!(result.task_ids.len(), 3);
     assert_eq!(result.unmatched_anchors, vec!["nope-not-real".to_owned()]);
 
-    let listed_sprints = sprints::list_by_project(db.conn(), &project_id).await.unwrap();
+    let listed_sprints = sprints::list_by_project(db.conn(), &project_id)
+        .await
+        .unwrap();
     assert_eq!(listed_sprints.len(), 2);
     // The sprint with a `goal` shows it appended to the name.
     assert!(listed_sprints[0].name.contains("Foundations"));
@@ -164,17 +166,32 @@ async fn end_to_end_decompose_creates_sprints_and_tasks_linked_to_sections() {
     assert_eq!(listed_sprints[1].position, 1);
 
     // 4. Task FK links resolve back to spec sections (the whole point).
-    let listed_tasks = tasks::list_by_project(db.conn(), &project_id).await.unwrap();
+    let listed_tasks = tasks::list_by_project(db.conn(), &project_id)
+        .await
+        .unwrap();
     assert_eq!(listed_tasks.len(), 3);
 
-    let auth_section_id = sections.iter().find(|s| s.anchor == "auth").unwrap().id.clone();
-    let payments_section_id = sections.iter().find(|s| s.anchor == "payments").unwrap().id.clone();
+    let auth_section_id = sections
+        .iter()
+        .find(|s| s.anchor == "auth")
+        .unwrap()
+        .id
+        .clone();
+    let payments_section_id = sections
+        .iter()
+        .find(|s| s.anchor == "payments")
+        .unwrap()
+        .id
+        .clone();
 
     let sso_task = listed_tasks
         .iter()
         .find(|t| t.title == "Wire SSO callback")
         .unwrap();
-    assert_eq!(sso_task.spec_section_id.as_deref(), Some(auth_section_id.as_str()));
+    assert_eq!(
+        sso_task.spec_section_id.as_deref(),
+        Some(auth_section_id.as_str())
+    );
     assert_eq!(sso_task.due_at.as_deref(), Some("2026-05-10T00:00:00Z"));
     assert_eq!(sso_task.priority, "high");
     assert_eq!(sso_task.estimated_tokens, 1200);
@@ -284,7 +301,9 @@ async fn task_without_anchor_is_persisted_without_section_link() {
     // bad references are surfaced).
     assert!(result.unmatched_anchors.is_empty());
 
-    let listed = tasks::list_by_project(db.conn(), &project_id).await.unwrap();
+    let listed = tasks::list_by_project(db.conn(), &project_id)
+        .await
+        .unwrap();
     assert!(listed.iter().all(|t| t.spec_section_id.is_none()));
 }
 
@@ -323,7 +342,9 @@ async fn starting_position_offsets_subsequent_sprints() {
         .await
         .unwrap();
 
-    let listed = sprints::list_by_project(db.conn(), &project_id).await.unwrap();
+    let listed = sprints::list_by_project(db.conn(), &project_id)
+        .await
+        .unwrap();
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0].position, 0);
     assert_eq!(listed[1].position, 1);

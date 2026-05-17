@@ -49,7 +49,8 @@ impl Tool for GitStatus {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "git_status".into(),
-            description: "Show the working-tree status of the project repo (porcelain entries).".into(),
+            description: "Show the working-tree status of the project repo (porcelain entries)."
+                .into(),
             input_schema: json!({ "type": "object", "properties": {} }),
             side_effects: false,
         }
@@ -94,7 +95,11 @@ impl Tool for GitLog {
         }
     }
     async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
-        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).min(100) as usize;
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(20)
+            .min(100) as usize;
         let commits = repo_for(ctx).log(limit).map_err(map_git_err)?;
         let items: Vec<Value> = commits
             .into_iter()
@@ -129,13 +134,21 @@ impl Tool for GitCommit {
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| ToolError::InvalidArgs("`message` is required".into()))?;
         let paths: Option<Vec<String>> = args.get("paths").and_then(Value::as_array).map(|a| {
-            a.iter().filter_map(Value::as_str).map(str::to_owned).collect()
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
         });
-        let author_name = ctx.agent_id.clone().unwrap_or_else(|| "hive-agent".to_owned());
+        let author_name = ctx
+            .agent_id
+            .clone()
+            .unwrap_or_else(|| "hive-agent".to_owned());
         let commit = repo_for(ctx)
             .commit(message, &author_name, "agent@hive.local", paths.as_deref())
             .map_err(map_git_err)?;
-        Ok(json!({ "hash": commit.hash, "shortHash": commit.short_hash, "summary": commit.summary }))
+        Ok(
+            json!({ "hash": commit.hash, "shortHash": commit.short_hash, "summary": commit.summary }),
+        )
     }
 }
 
@@ -147,7 +160,9 @@ impl Tool for GitPull {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "git_pull".into(),
-            description: "Fast-forward pull from the configured upstream. Disabled on `local`-tier projects.".into(),
+            description:
+                "Fast-forward pull from the configured upstream. Disabled on `local`-tier projects."
+                    .into(),
             input_schema: json!({ "type": "object", "properties": {} }),
             side_effects: true,
         }
@@ -167,7 +182,8 @@ impl Tool for GitPush {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "git_push".into(),
-            description: "Push the current branch to its upstream. Disabled on `local`-tier projects.".into(),
+            description:
+                "Push the current branch to its upstream. Disabled on `local`-tier projects.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
             side_effects: true,
         }

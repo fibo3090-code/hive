@@ -24,11 +24,9 @@ use hive_db::{
     repos::{
         agent_mcp_bindings, agent_messages, agent_skill_bindings, agent_spawn_requests,
         agent_task_assignments, agent_wires, agents, alerts, audit, chat_attachments,
-        chat_messages, chat_threads,
-        connectors, cost_events,
-        custom_mcp_servers, drift_events, llm_providers, notes, notifications,
-        project_workspaces, projects, sessions, settings, skills, spec_document_sections,
-        spec_documents, sprints, synthesis_jobs, tasks, tech_debt,
+        chat_messages, chat_threads, connectors, cost_events, custom_mcp_servers, drift_events,
+        llm_providers, notes, notifications, project_workspaces, projects, sessions, settings,
+        skills, spec_document_sections, spec_documents, sprints, synthesis_jobs, tasks, tech_debt,
     },
     seed::seed_demo,
     Db,
@@ -482,7 +480,9 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
                     let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
                     let cutoff_iso = cutoff.to_rfc3339();
                     match audit::delete_before(purge_db.conn(), &cutoff_iso).await {
-                        Ok(n) if n > 0 => tracing::info!(removed = n, cutoff = %cutoff_iso, "audit_log purge"),
+                        Ok(n) if n > 0 => {
+                            tracing::info!(removed = n, cutoff = %cutoff_iso, "audit_log purge")
+                        }
                         Ok(_) => {}
                         Err(err) => tracing::warn!(error = %err, "audit_log purge failed"),
                     }
@@ -563,7 +563,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/projects/:project_id/coordinator/ensure",
             post(ensure_coordinator),
         )
-        .route("/v1/projects/:project_id/tasks", get(list_tasks).post(create_task))
+        .route(
+            "/v1/projects/:project_id/tasks",
+            get(list_tasks).post(create_task),
+        )
         .route("/v1/tasks/:task_id/set-status", post(set_task_status))
         .route("/v1/projects/:project_id/alerts", get(list_alerts))
         .route("/v1/alerts/:alert_id/dismiss", post(dismiss_alert))
@@ -714,7 +717,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             get(list_github_pulls).post(create_github_pull),
         )
         .route("/v1/chat-threads", post(create_chat_thread))
-        .route("/v1/chat-threads/:thread_id", get(get_chat_thread).delete(delete_chat_thread))
+        .route(
+            "/v1/chat-threads/:thread_id",
+            get(get_chat_thread).delete(delete_chat_thread),
+        )
         .route(
             "/v1/chat-threads/:thread_id/messages",
             get(list_chat_messages).post(send_chat_message),
@@ -871,9 +877,9 @@ fn resolve_bind_addr() -> anyhow::Result<SocketAddr> {
             if trimmed.is_empty() {
                 return Ok(SocketAddr::from(([127, 0, 0, 1], 8787)));
             }
-            let mut iter = trimmed
-                .to_socket_addrs()
-                .map_err(|e| anyhow::anyhow!("HIVE_BIND `{trimmed}` is not a valid host:port: {e}"))?;
+            let mut iter = trimmed.to_socket_addrs().map_err(|e| {
+                anyhow::anyhow!("HIVE_BIND `{trimmed}` is not a valid host:port: {e}")
+            })?;
             iter.next()
                 .ok_or_else(|| anyhow::anyhow!("HIVE_BIND `{trimmed}` resolved to no addresses"))
         }
@@ -1330,6 +1336,14 @@ async fn enabled_tools_for_turn(
         .unwrap_or_default())
 }
 
+fn effective_tool_names(global_enabled: &[String], per_agent: &[String]) -> Vec<String> {
+    if per_agent.is_empty() {
+        global_enabled.to_vec()
+    } else {
+        per_agent.to_vec()
+    }
+}
+
 async fn build_tooling(
     state: &AppState,
     project_id: &str,
@@ -1342,23 +1356,16 @@ async fn build_tooling(
         return Ok(None);
     }
 
-    // Intersect global allow-list with the agent's per-row `enabled_tools`
-    // when an agent is bound to the thread. An empty agent list means
-    // "unconfigured" (fall back to globals); a non-empty list narrows.
+    // Use the project-global list as the inherited default. A non-empty
+    // per-agent list is an explicit scoped loadout (notably for the
+    // Coordinator, whose `coordinator_tools` includes spawn/message tools
+    // that are not safe defaults for every specialist).
     let enabled_tools = if let Some(agent_id_ref) = agent_id.as_ref() {
         let database = db(state).await;
         let agent_row = agents::get(database.conn(), agent_id_ref).await?;
         if let Some(agent_row) = agent_row {
             let per_agent = agents::parse_enabled_tools(&agent_row.enabled_tools);
-            if per_agent.is_empty() {
-                global_enabled.clone()
-            } else {
-                global_enabled
-                    .iter()
-                    .filter(|name| per_agent.iter().any(|n| n == *name))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            }
+            effective_tool_names(&global_enabled, &per_agent)
         } else {
             global_enabled.clone()
         }
@@ -1429,7 +1436,8 @@ async fn build_tooling(
         .with_thread(thread_id.to_owned())
         .with_message(message_id.to_owned());
 
-    let file_protection = settings::get_value(db(state).await.conn(), "global", "fileProtection").await?;
+    let file_protection =
+        settings::get_value(db(state).await.conn(), "global", "fileProtection").await?;
     let mut protected_files = Vec::new();
     if let Some(fp) = file_protection {
         if let Some(files) = fp.get("files").and_then(|f| f.as_array()) {
@@ -2258,7 +2266,7 @@ async fn terminate_agent(
     let agent = agents::get(database.conn(), &agent_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
-    
+
     // Cascade cancel to every descendant first so child agents stop
     // mid-turn rather than completing work that's about to be discarded.
     state.executors.cancel_subtree(&agent_id).await;
@@ -2349,7 +2357,12 @@ async fn delete_agent_wire(
         return Err(AppError::NotFound(format!("wire {wire_id}")));
     }
     if let Some(pid) = project_id {
-        emit(&state, "wire.changed", json!({ "projectId": pid, "wireId": wire_id })).await;
+        emit(
+            &state,
+            "wire.changed",
+            json!({ "projectId": pid, "wireId": wire_id }),
+        )
+        .await;
     }
     Ok(Json(json!({ "ok": true, "id": wire_id })))
 }
@@ -2521,7 +2534,9 @@ async fn list_tool_manifests(State(state): State<AppState>) -> Result<Json<Value
     hive_runtime::register_db_tools(&mut registry, database.clone());
     hive_runtime::register_git_tools(&mut registry, database.clone());
 
-    let global = enabled_tools_for_turn(&state, None).await.unwrap_or_default();
+    let global = enabled_tools_for_turn(&state, None)
+        .await
+        .unwrap_or_default();
     let manifests = registry.manifests();
     let payload: Vec<Value> = manifests
         .into_iter()
@@ -2543,8 +2558,13 @@ fn tool_category(name: &str) -> &'static str {
         "web_search" | "web_fetch" => "research",
         "fs_read" | "fs_write" | "fs_list" => "filesystem",
         "shell_exec" => "execution",
-        "spawn_agent" | "message_agent" | "list_visible_agents" | "request_relay" | "delete_agent"
-        | "monitor_agent" | "delegate_task" => "coordination",
+        "spawn_agent"
+        | "message_agent"
+        | "list_visible_agents"
+        | "request_relay"
+        | "delete_agent"
+        | "monitor_agent"
+        | "delegate_task" => "coordination",
         "hive_mind_write" | "hive_mind_read" | "hive_mind_list" | "hive_mind_delete" => "memory",
         "list_spec_docs" | "read_spec_doc" | "add_task" | "set_task_status" | "add_tech_debt"
         | "update_tech_debt" | "record_drift" => "planning",
@@ -2564,7 +2584,8 @@ async fn set_agent_status(
     let before = agents::get(database.conn(), &agent_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
-    let updated = agents::set_status(database.conn(), &before.project_id, &agent_id, &body.status).await?;
+    let updated =
+        agents::set_status(database.conn(), &before.project_id, &agent_id, &body.status).await?;
     audit::append(
         database.conn(),
         "local_operator",
@@ -2805,7 +2826,8 @@ async fn set_task_status(
     let before = tasks::get(database.conn(), &task_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("task {task_id} not found")))?;
-    let updated = tasks::set_status(database.conn(), &before.project_id, &task_id, &body.status).await?;
+    let updated =
+        tasks::set_status(database.conn(), &before.project_id, &task_id, &body.status).await?;
     audit::append(
         database.conn(),
         "local_operator",
@@ -3365,7 +3387,13 @@ async fn post_project_genesis_preview(
 
                 let request = hive_llm::chat::ChatRequest::new(model_id, messages);
                 if let Ok(response) = client.chat(request).await {
-                    let cleaned_text = response.text.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+                    let cleaned_text = response
+                        .text
+                        .trim()
+                        .trim_start_matches("```json")
+                        .trim_start_matches("```")
+                        .trim_end_matches("```")
+                        .trim();
                     if let Ok(json) = serde_json::from_str::<Value>(cleaned_text) {
                         if json.get("phases").is_some() {
                             return Ok(Json(json));
@@ -3494,12 +3522,18 @@ async fn launch_project(
         Ok(()) => steps.push(launch_step(
             "provision-workspace",
             "ok",
-            format!("workspace at {} (git initialised)", workspace_root.display()),
+            format!(
+                "workspace at {} (git initialised)",
+                workspace_root.display()
+            ),
         )),
         Err(e) => steps.push(launch_step(
             "provision-workspace",
             "warn",
-            format!("workspace at {} (git init failed: {e})", workspace_root.display()),
+            format!(
+                "workspace at {} (git init failed: {e})",
+                workspace_root.display()
+            ),
         )),
     }
 
@@ -3520,7 +3554,11 @@ async fn launch_project(
         steps.push(launch_step(
             "probe-search",
             if configured { "ok" } else { "warn" },
-            if configured { "Tavily key configured" } else { "Tavily selected but no API key set" },
+            if configured {
+                "Tavily key configured"
+            } else {
+                "Tavily selected but no API key set"
+            },
         ));
     } else {
         let url = search_settings
@@ -3533,7 +3571,9 @@ async fn launch_project(
                 .timeout(Duration::from_secs(3))
                 .build()
                 .ok()?;
-            client.get(&url).send().await.ok().map(|r| r.status().is_success() || r.status().is_redirection() || r.status().as_u16() == 403)
+            client.get(&url).send().await.ok().map(|r| {
+                r.status().is_success() || r.status().is_redirection() || r.status().as_u16() == 403
+            })
         }
         .await;
         match probe {
@@ -3544,7 +3584,11 @@ async fn launch_project(
     }
 
     // 4. Persist the brief as a spec document.
-    let description = body.description.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let description = body
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let mut spec_document_id: Option<String> = None;
     if let Some(desc) = description {
         let doc = spec_documents::create(
@@ -3558,9 +3602,17 @@ async fn launch_project(
         )
         .await?;
         spec_document_id = Some(doc.id);
-        steps.push(launch_step("spec-document", "ok", "brief saved as a spec document"));
+        steps.push(launch_step(
+            "spec-document",
+            "ok",
+            "brief saved as a spec document",
+        ));
     } else {
-        steps.push(launch_step("spec-document", "skipped", "no project brief provided"));
+        steps.push(launch_step(
+            "spec-document",
+            "skipped",
+            "no project brief provided",
+        ));
     }
 
     // 5. Decompose the brief into sprints + tasks.
@@ -3576,16 +3628,28 @@ async fn launch_project(
                     steps.push(launch_step(
                         "decompose-plan",
                         "ok",
-                        format!("created {} sprint(s) and {} task(s)", sprint_ids.len(), task_ids.len()),
+                        format!(
+                            "created {} sprint(s) and {} task(s)",
+                            sprint_ids.len(),
+                            task_ids.len()
+                        ),
                     ));
                 }
                 Err(detail) => steps.push(launch_step("decompose-plan", "warn", detail)),
             }
         } else {
-            steps.push(launch_step("decompose-plan", "skipped", "no brief to decompose"));
+            steps.push(launch_step(
+                "decompose-plan",
+                "skipped",
+                "no brief to decompose",
+            ));
         }
     } else {
-        steps.push(launch_step("decompose-plan", "skipped", "decomposition not requested"));
+        steps.push(launch_step(
+            "decompose-plan",
+            "skipped",
+            "decomposition not requested",
+        ));
     }
 
     let _ = project_workspaces::mark_started(database.conn(), &project_id).await;
@@ -3654,7 +3718,10 @@ async fn decompose_brief(
             hive_llm::chat::ChatMessage::user(description.to_owned()),
         ],
     );
-    let resp = client.chat(req).await.map_err(|e| format!("planner call failed: {e}"))?;
+    let resp = client
+        .chat(req)
+        .await
+        .map_err(|e| format!("planner call failed: {e}"))?;
     let cleaned = resp
         .text
         .trim()
@@ -3662,7 +3729,8 @@ async fn decompose_brief(
         .trim_start_matches("```")
         .trim_end_matches("```")
         .trim();
-    let parsed: Value = serde_json::from_str(cleaned).map_err(|e| format!("planner returned invalid JSON: {e}"))?;
+    let parsed: Value =
+        serde_json::from_str(cleaned).map_err(|e| format!("planner returned invalid JSON: {e}"))?;
     let phases = parsed
         .get("phases")
         .and_then(Value::as_array)
@@ -3689,7 +3757,11 @@ async fn decompose_brief(
             sprints::CreateSprint {
                 project_id: project_id.to_owned(),
                 name: name.clone(),
-                status: if i == 0 { "active".into() } else { "planned".into() },
+                status: if i == 0 {
+                    "active".into()
+                } else {
+                    "planned".into()
+                },
                 start_date: today.clone(),
                 end_date: today.clone(),
                 velocity: None,
@@ -3701,9 +3773,17 @@ async fn decompose_brief(
         .map_err(|e| format!("create sprint: {e}"))?;
         sprint_ids.push(sprint.id.clone());
 
-        let tasks_arr = phase.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
+        let tasks_arr = phase
+            .get("tasks")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         for t in tasks_arr {
-            let title = t.get("title").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+            let title = t
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
             let Some(title) = title else { continue };
             let priority = t
                 .get("priority")
@@ -5030,7 +5110,9 @@ async fn list_audit_log(
     let limit = q.limit.unwrap_or(100).min(500);
     let offset = q.offset.unwrap_or(0);
     let rows = audit::list(database.conn(), limit, offset).await?;
-    Ok(Json(json!({ "items": rows, "limit": limit, "offset": offset })))
+    Ok(Json(
+        json!({ "items": rows, "limit": limit, "offset": offset }),
+    ))
 }
 
 async fn delete_chat_thread(
@@ -5170,7 +5252,11 @@ fn mechanical_summary(transcript: &str) -> String {
     let head: String = transcript.chars().take(600).collect();
     format!(
         "(Automatic summary — no LLM provider was available for compaction.)\n\n{head}{}",
-        if transcript.chars().count() > 600 { "…" } else { "" }
+        if transcript.chars().count() > 600 {
+            "…"
+        } else {
+            ""
+        }
     )
 }
 
@@ -5234,7 +5320,11 @@ async fn send_chat_message(
     // default like "Thread N" or the agent's name at creation time).
     if let Ok(msgs) = chat_messages::list_by_thread(database.conn(), &thread.id).await {
         if msgs.len() == 1 {
-            let mut title: String = body.content.split_whitespace().collect::<Vec<_>>().join(" ");
+            let mut title: String = body
+                .content
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             if title.chars().count() > 60 {
                 title = title.chars().take(57).collect::<String>() + "…";
             }
@@ -5496,16 +5586,14 @@ fn attachments_root(data_dir: &StdPath, project_id: &str) -> PathBuf {
 /// `thread_ids`, then `unlink` the corresponding files under
 /// `<data_dir>/attachments/`. Errors are logged and swallowed — losing track of
 /// a file shouldn't block the project/thread delete.
-async fn purge_attachments_for_threads(
-    database: &Db,
-    data_dir: &StdPath,
-    thread_ids: &[String],
-) {
+async fn purge_attachments_for_threads(database: &Db, data_dir: &StdPath, thread_ids: &[String]) {
     let mut message_ids: Vec<String> = Vec::new();
     for tid in thread_ids {
         match chat_messages::list_by_thread(database.conn(), tid).await {
             Ok(rows) => message_ids.extend(rows.into_iter().map(|m| m.id)),
-            Err(err) => tracing::warn!(thread = %tid, error = %err, "list messages for attachment purge failed"),
+            Err(err) => {
+                tracing::warn!(thread = %tid, error = %err, "list messages for attachment purge failed")
+            }
         }
     }
     if message_ids.is_empty() {
@@ -5530,34 +5618,54 @@ async fn purge_attachments_for_threads(
 /// delete files whose `storage_path` is no longer in
 /// `chat_message_attachments`. Cheap and bounded; logs but never fails.
 async fn cleanup_orphan_attachments(database: &Db, data_dir: &StdPath) {
-    let known: std::collections::HashSet<String> =
-        match chat_attachments::list_all_storage_paths(database.conn()).await {
-            Ok(rows) => rows.into_iter().collect(),
-            Err(err) => {
-                tracing::warn!(error = %err, "orphan attachment sweep: list_all_storage_paths failed");
-                return;
-            }
-        };
+    let known: std::collections::HashSet<String> = match chat_attachments::list_all_storage_paths(
+        database.conn(),
+    )
+    .await
+    {
+        Ok(rows) => rows.into_iter().collect(),
+        Err(err) => {
+            tracing::warn!(error = %err, "orphan attachment sweep: list_all_storage_paths failed");
+            return;
+        }
+    };
     let root = data_dir.join("attachments");
     let mut project_dirs = match tokio::fs::read_dir(&root).await {
         Ok(rd) => rd,
         Err(_) => return,
     };
     while let Ok(Some(project_entry)) = project_dirs.next_entry().await {
-        if !project_entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+        if !project_entry
+            .file_type()
+            .await
+            .map(|t| t.is_dir())
+            .unwrap_or(false)
+        {
             continue;
         }
         let project_dir = project_entry.path();
-        let Some(project_id) = project_dir.file_name().and_then(|s| s.to_str()).map(str::to_owned)
+        let Some(project_id) = project_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(str::to_owned)
         else {
             continue;
         };
-        let Ok(mut files) = tokio::fs::read_dir(&project_dir).await else { continue };
+        let Ok(mut files) = tokio::fs::read_dir(&project_dir).await else {
+            continue;
+        };
         while let Ok(Some(file_entry)) = files.next_entry().await {
-            if !file_entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+            if !file_entry
+                .file_type()
+                .await
+                .map(|t| t.is_file())
+                .unwrap_or(false)
+            {
                 continue;
             }
-            let Some(file_name) = file_entry.file_name().to_str().map(str::to_owned) else { continue };
+            let Some(file_name) = file_entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
             let relative = format!("{project_id}/{file_name}");
             if !known.contains(&relative) {
                 let path = file_entry.path();
@@ -6232,6 +6340,24 @@ mod prompt_tests {
         assert!(prompt.contains("Own server-side correctness"));
         assert!(prompt.contains("Preserve API contracts"));
     }
+
+    #[test]
+    fn empty_agent_tool_list_inherits_project_defaults() {
+        let global = vec!["fs_read".to_owned(), "hive_mind_read".to_owned()];
+        let effective = effective_tool_names(&global, &[]);
+
+        assert_eq!(effective, global);
+    }
+
+    #[test]
+    fn explicit_agent_tool_list_can_expose_coordination_tools() {
+        let global = vec!["fs_read".to_owned(), "fs_write".to_owned()];
+        let coordinator = vec!["spawn_agent".to_owned(), "message_agent".to_owned()];
+        let effective = effective_tool_names(&global, &coordinator);
+
+        assert_eq!(effective, coordinator);
+        assert!(effective.contains(&"spawn_agent".to_owned()));
+    }
 }
 
 // ─── Phase 1b: redesign handlers ─────────────────────────────────────────
@@ -6374,9 +6500,8 @@ async fn update_connector_status(
     Json(body): Json<ConnectorStatusBody>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    let row =
-        connectors::set_status(database.conn(), &connector_id, &body.status, body.handshake)
-            .await?;
+    let row = connectors::set_status(database.conn(), &connector_id, &body.status, body.handshake)
+        .await?;
     Ok(Json(json!(row)))
 }
 
@@ -6414,12 +6539,8 @@ async fn create_spec_document(
     // Sync sections derived from the markdown so anchors land at write-time.
     if !payload.markdown.trim().is_empty() {
         let sections = parse_sections(&payload.markdown);
-        spec_document_sections::sync_for_document(
-            database.conn(),
-            &doc.id,
-            into_upserts(sections),
-        )
-        .await?;
+        spec_document_sections::sync_for_document(database.conn(), &doc.id, into_upserts(sections))
+            .await?;
     }
     Ok(Json(json!(doc)))
 }
@@ -6460,8 +6581,12 @@ async fn update_spec_document_markdown(
     // tasks remain resolvable. Anchors are slugify-stable, so most
     // existing references survive across edits.
     let sections = parse_sections(&body.markdown);
-    spec_document_sections::sync_for_document(database.conn(), &spec_document_id, into_upserts(sections))
-        .await?;
+    spec_document_sections::sync_for_document(
+        database.conn(),
+        &spec_document_id,
+        into_upserts(sections),
+    )
+    .await?;
     Ok(Json(json!(row)))
 }
 
@@ -6624,10 +6749,14 @@ async fn update_drift_event_status(
     Path(event_id): Path<String>,
     Json(body): Json<DriftStatusBody>,
 ) -> Result<Json<Value>, AppError> {
-    let valid = matches!(body.status.as_str(), "open" | "approved" | "corrected" | "dismissed");
+    let valid = matches!(
+        body.status.as_str(),
+        "open" | "approved" | "corrected" | "dismissed"
+    );
     if !valid {
         return Err(AppError::BadRequest(format!(
-            "invalid drift status `{}`", body.status
+            "invalid drift status `{}`",
+            body.status
         )));
     }
     let database = db(&state).await;
@@ -6819,9 +6948,7 @@ async fn get_spawn_request(
     let database = db(&state).await;
     let row = agent_spawn_requests::get(database.conn(), &spawn_request_id)
         .await?
-        .ok_or_else(|| {
-            AppError::NotFound(format!("spawn request {spawn_request_id} not found"))
-        })?;
+        .ok_or_else(|| AppError::NotFound(format!("spawn request {spawn_request_id} not found")))?;
     Ok(Json(json!(row)))
 }
 

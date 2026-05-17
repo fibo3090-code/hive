@@ -190,10 +190,18 @@ async fn skills_round_trip_global_and_project_scoped() {
     .await
     .unwrap();
 
-    let listed = skills::list_for_project(db.conn(), &project_id).await.unwrap();
+    let listed = skills::list_for_project(db.conn(), &project_id)
+        .await
+        .unwrap();
     let ids: Vec<&str> = listed.iter().map(|s| s.id.as_str()).collect();
-    assert!(ids.contains(&global.id.as_str()), "global skill must surface");
-    assert!(ids.contains(&scoped.id.as_str()), "project skill must surface");
+    assert!(
+        ids.contains(&global.id.as_str()),
+        "global skill must surface"
+    );
+    assert!(
+        ids.contains(&scoped.id.as_str()),
+        "project skill must surface"
+    );
 
     // A different project sees the global one but not the scoped one.
     let listed_other = skills::list_for_project(db.conn(), "other-project")
@@ -412,7 +420,9 @@ async fn spawn_request_walks_state_machine() {
     )
     .await
     .unwrap();
-    custom_mcp_servers::set_status(db.conn(), &mcp.id, "active").await.unwrap();
+    custom_mcp_servers::set_status(db.conn(), &mcp.id, "active")
+        .await
+        .unwrap();
 
     let reusable = custom_mcp_servers::list_reusable_for_project(db.conn(), &project_id)
         .await
@@ -491,10 +501,14 @@ async fn connector_list_filters_mcp_kind() {
     .await
     .unwrap();
 
-    let all = connectors::list_for_project(db.conn(), &project_id).await.unwrap();
+    let all = connectors::list_for_project(db.conn(), &project_id)
+        .await
+        .unwrap();
     assert_eq!(all.len(), 2);
 
-    let mcp_only = connectors::list_mcp_for_project(db.conn(), &project_id).await.unwrap();
+    let mcp_only = connectors::list_mcp_for_project(db.conn(), &project_id)
+        .await
+        .unwrap();
     assert_eq!(mcp_only.len(), 1);
     assert_eq!(mcp_only[0].id, mcp.id);
     assert_ne!(mcp_only[0].id, api.id);

@@ -49,7 +49,9 @@ async fn child_adjacency(
 ) -> Result<std::collections::HashMap<String, Vec<String>>, DbErr> {
     let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for w in list_by_project(db, project_id).await? {
-        map.entry(w.parent_agent_id).or_default().push(w.child_agent_id);
+        map.entry(w.parent_agent_id)
+            .or_default()
+            .push(w.child_agent_id);
     }
     Ok(map)
 }
