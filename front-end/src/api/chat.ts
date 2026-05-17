@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError, API_BASE_URL, eventStreamUrl } from '@/api/client';
+import { useRealtime } from '@/realtime/RealtimeProvider';
+import { logger } from '@/lib/logger';
 
 export interface ChatThread {
   id: string;
@@ -19,6 +21,10 @@ export interface ToolCallTrace {
   arguments?: unknown;
   result?: unknown;
   request?: unknown;
+  /** Inline validation/runtime error from the tool layer. */
+  error?: string;
+  /** UI status — set during streaming, not on persisted messages. */
+  status?: 'running' | 'ok' | 'error';
 }
 
 export interface ChatMessage {
@@ -43,9 +49,6 @@ export interface SendMessageResponse {
   assistantMessage: ChatMessage;
   providerId: string;
   model: string;
-  /** True when the request used `defer` and the caller must POST to
-   *  `/v1/chat-messages/:assistantId/process` to start the runtime
-   *  (typically because attachments are uploading). */
   deferred?: boolean;
 }
 
@@ -92,9 +95,6 @@ export function useSendChatMessage(threadId: string | null | undefined) {
       content: string;
       model?: { providerId: string; modelId: string } | null;
       systemPrompt?: string;
-      /** When true, server skips spawning the runtime; caller must
-       *  follow up with `useProcessChatMessage` once attachments
-       *  are uploaded. */
       defer?: boolean;
     }) =>
       api<SendMessageResponse>(`/v1/chat-threads/${input.threadId ?? threadId}/messages`, {
@@ -112,9 +112,6 @@ export function useSendChatMessage(threadId: string | null | undefined) {
   });
 }
 
-/** Companion to `useSendChatMessage` when `defer: true` was used.
- *  Idempotent — the server only spawns the runtime if the assistant
- *  row is still `pending`. */
 export function useProcessChatMessage() {
   return useMutation({
     mutationFn: (assistantMessageId: string) =>
@@ -131,8 +128,6 @@ export function useCancelChatMessage() {
     mutationFn: (messageId: string) =>
       api<{ ok: boolean }>(`/v1/chat-messages/${messageId}/cancel`, { method: 'POST' }),
     onSuccess: (_data, messageId) => {
-      // We don't know the thread id here, so invalidate all chat-messages caches.
-      // The streaming hook below is the source of truth for the in-flight UI.
       qc.invalidateQueries({ queryKey: ['chat-messages'] });
       void messageId;
     },
@@ -159,275 +154,248 @@ export function useCompactChatThread() {
   });
 }
 
-/**
- * Subscribe to chat.<threadId>.* server-sent events and accumulate streaming
- * text by `assistantMessageId`. Token deltas go into `streaming[id]`; when
- * the `complete` or `cancelled` event fires we invalidate the history query
- * so the final persisted message replaces the live buffer.
- */
 export interface ContextTrimNotice {
-  /** How many oldest messages were dropped before the LLM call. */
   dropped: number;
-  /** Estimated tokens after trimming. */
   estimatedTokens: number;
-  /** Effective context window for the model. */
   contextWindow: number;
 }
 
-export interface StreamingState {
-  [messageId: string]:
-    | {
-        content: string;
-        status: 'streaming' | 'complete' | 'cancelled' | 'error';
-        tokensIn?: number;
-        tokensOut?: number;
-        costCents?: number;
-        toolCalls?: ToolCallTrace[];
-        /** Set if pre-flight context trimming kicked in. */
-        contextTrim?: ContextTrimNotice;
-      }
-    | undefined;
+/**
+ * A chunk of an assistant message in arrival order. Causal honesty (R2):
+ * a message is the *sequence* of these segments as the model produced
+ * them — interleaved text and tool calls — not "all text, then all tools".
+ */
+export type ChatSegment =
+  | { kind: 'text'; content: string }
+  | {
+      kind: 'tool';
+      tool: string;
+      args?: unknown;
+      result?: unknown;
+      error?: string;
+      status: 'running' | 'ok' | 'error';
+    };
+
+export interface StreamingMessage {
+  segments: ChatSegment[];
+  /** Concatenated text segments — convenience for callers that just want text. */
+  content: string;
+  status: 'streaming' | 'complete' | 'cancelled' | 'error';
+  tokensIn?: number;
+  tokensOut?: number;
+  costCents?: number;
+  durationMs?: number;
+  contextTrim?: ContextTrimNotice;
 }
 
+export interface StreamingState {
+  [messageId: string]: StreamingMessage | undefined;
+}
+
+interface TokenEvent { threadId: string; messageId: string; delta: string }
+interface CompleteEvent { threadId: string; messageId: string; tokensIn?: number; tokensOut?: number; costCents?: number; durationMs?: number }
+interface PlainEvent { threadId: string; messageId: string }
+interface ToolCallEvent { threadId: string; messageId: string; tool: string; args?: unknown }
+interface ToolResultEvent { threadId: string; messageId: string; tool: string; result?: unknown }
+interface ToolValidationErrorEvent { threadId: string; messageId: string; tool: string; error?: string; message?: string }
+interface ContextTrimEvent { threadId: string; messageId: string; dropped: number; estimatedTokens: number; contextWindow: number }
+
+function deriveContent(segments: ChatSegment[]): string {
+  return segments
+    .filter((s): s is Extract<ChatSegment, { kind: 'text' }> => s.kind === 'text')
+    .map((s) => s.content)
+    .join('');
+}
+
+function appendText(segments: ChatSegment[], delta: string): ChatSegment[] {
+  const last = segments[segments.length - 1];
+  if (last && last.kind === 'text') {
+    return [...segments.slice(0, -1), { kind: 'text', content: last.content + delta }];
+  }
+  return [...segments, { kind: 'text', content: delta }];
+}
+
+function pushToolCall(segments: ChatSegment[], tool: string, args: unknown): ChatSegment[] {
+  return [...segments, { kind: 'tool', tool, args, status: 'running' }];
+}
+
+function resolveTool(
+  segments: ChatSegment[],
+  tool: string,
+  patch: Partial<Extract<ChatSegment, { kind: 'tool' }>>,
+): ChatSegment[] {
+  // Find the most recent running tool segment with the matching name.
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const seg = segments[i];
+    if (seg.kind === 'tool' && seg.tool === tool && seg.status === 'running') {
+      const next = [...segments];
+      next[i] = { ...seg, ...patch };
+      return next;
+    }
+  }
+  // No matching running segment — append a synthetic one so the result
+  // isn't dropped.
+  return [...segments, { kind: 'tool', tool, status: patch.status ?? 'ok', ...patch }];
+}
+
+/**
+ * Subscribe to chat.<threadId>.* events through the shared RealtimeProvider
+ * and accumulate streaming text + tool calls **in arrival order**. Returns
+ * a map of `messageId → StreamingMessage`.
+ */
 export function useChatStream(threadId: string | null | undefined) {
   const qc = useQueryClient();
+  const { subscribe } = useRealtime();
   const [streaming, setStreaming] = useState<StreamingState>({});
-  const streamingRef = useRef<StreamingState>({});
+  const stateRef = useRef<StreamingState>({});
 
-  const update = useCallback((next: StreamingState) => {
-    streamingRef.current = next;
-    setStreaming(next);
+  const update = useCallback((messageId: string, patch: (prev: StreamingMessage | undefined) => StreamingMessage) => {
+    const prev = stateRef.current[messageId];
+    const next = patch(prev);
+    const nextState: StreamingState = { ...stateRef.current, [messageId]: next };
+    stateRef.current = nextState;
+    setStreaming(nextState);
   }, []);
 
   useEffect(() => {
-    if (!threadId) {
-      return;
-    }
-    const source = new EventSource(eventStreamUrl('/v1/events'));
+    if (!threadId) return;
 
-    const onToken = (event: MessageEvent) => {
+    const unsubs: Array<() => void> = [];
+
+    const blankMsg = (): StreamingMessage => ({ segments: [], content: '', status: 'streaming' });
+
+    const safeParse = <T,>(event: MessageEvent): T | null => {
       try {
-        const data = JSON.parse(event.data) as {
-          threadId: string;
-          messageId: string;
-          delta: string;
-        };
-        if (data.threadId !== threadId) return;
-        const current = streamingRef.current[data.messageId];
-        const nextContent = (current?.content ?? '') + data.delta;
-        update({
-          ...streamingRef.current,
-          [data.messageId]: {
-            content: nextContent,
-            status: 'streaming',
-            toolCalls: current?.toolCalls ?? [],
-          },
-        });
+        return JSON.parse(event.data) as T;
       } catch (err) {
-        console.warn('[chat-stream] malformed token chunk', err);
+        logger.warn('chat-stream', 'malformed event', err);
+        return null;
       }
     };
 
-    const onComplete = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          threadId: string;
-          messageId: string;
-          tokensIn?: number;
-          tokensOut?: number;
-          costCents?: number;
-        };
-        if (data.threadId !== threadId) return;
-        const current = streamingRef.current[data.messageId];
-        update({
-          ...streamingRef.current,
-          [data.messageId]: {
-            content: current?.content ?? '',
+    unsubs.push(
+      subscribe(`chat.${threadId}.streaming`, (event) => {
+        const data = safeParse<PlainEvent>(event);
+        if (!data || data.threadId !== threadId) return;
+        // Marker that the model started producing output. We seed an empty
+        // message entry so the UI flips to "streaming…" immediately even
+        // before the first token lands.
+        update(data.messageId, (prev) => prev ?? blankMsg());
+      }),
+    );
+
+    unsubs.push(
+      subscribe(`chat.${threadId}.token`, (event) => {
+        const data = safeParse<TokenEvent>(event);
+        if (!data || data.threadId !== threadId) return;
+        update(data.messageId, (prev) => {
+          const base = prev ?? blankMsg();
+          const segments = appendText(base.segments, data.delta);
+          return { ...base, segments, content: deriveContent(segments), status: 'streaming' };
+        });
+      }),
+    );
+
+    unsubs.push(
+      subscribe(`chat.${threadId}.tool_call`, (event) => {
+        const data = safeParse<ToolCallEvent>(event);
+        if (!data || data.threadId !== threadId) return;
+        update(data.messageId, (prev) => {
+          const base = prev ?? blankMsg();
+          return { ...base, segments: pushToolCall(base.segments, data.tool, data.args), status: 'streaming' };
+        });
+      }),
+    );
+
+    unsubs.push(
+      subscribe(`chat.${threadId}.tool_result`, (event) => {
+        const data = safeParse<ToolResultEvent>(event);
+        if (!data || data.threadId !== threadId) return;
+        update(data.messageId, (prev) => {
+          const base = prev ?? blankMsg();
+          return {
+            ...base,
+            segments: resolveTool(base.segments, data.tool, { result: data.result, status: 'ok' }),
+          };
+        });
+      }),
+    );
+
+    unsubs.push(
+      subscribe(`chat.${threadId}.tool_validation_error`, (event) => {
+        const data = safeParse<ToolValidationErrorEvent>(event);
+        if (!data || data.threadId !== threadId) return;
+        update(data.messageId, (prev) => {
+          const base = prev ?? blankMsg();
+          return {
+            ...base,
+            segments: resolveTool(base.segments, data.tool, {
+              error: data.error ?? data.message ?? 'validation error',
+              status: 'error',
+            }),
+          };
+        });
+      }),
+    );
+
+    unsubs.push(
+      subscribe(`chat.${threadId}.complete`, (event) => {
+        const data = safeParse<CompleteEvent>(event);
+        if (!data || data.threadId !== threadId) return;
+        update(data.messageId, (prev) => {
+          const base = prev ?? blankMsg();
+          return {
+            ...base,
             status: 'complete',
             tokensIn: data.tokensIn,
             tokensOut: data.tokensOut,
             costCents: data.costCents,
-            toolCalls: current?.toolCalls ?? [],
-          },
+            durationMs: data.durationMs,
+          };
         });
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
-      } catch (err) {
-        // SSE frame failed JSON.parse. The connection is still healthy
-        // — frames can race or be malformed by an upstream proxy. Log
-        // at warn so it shows in the dev console; if frame loss is
-        // ever a real issue, the count tells the story.
-        console.warn('[chat-stream] malformed event', err);
-      }
-    };
+      }),
+    );
 
-    const onCancelled = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as { threadId: string; messageId: string };
-        if (data.threadId !== threadId) return;
-        const current = streamingRef.current[data.messageId];
-        update({
-          ...streamingRef.current,
-          [data.messageId]: {
-            content: current?.content ?? '',
-            status: 'cancelled',
-            toolCalls: current?.toolCalls ?? [],
-          },
-        });
+    unsubs.push(
+      subscribe(`chat.${threadId}.cancelled`, (event) => {
+        const data = safeParse<PlainEvent>(event);
+        if (!data || data.threadId !== threadId) return;
+        update(data.messageId, (prev) => ({ ...(prev ?? blankMsg()), status: 'cancelled' }));
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
-      } catch (err) {
-        // SSE frame failed JSON.parse. The connection is still healthy
-        // — frames can race or be malformed by an upstream proxy. Log
-        // at warn so it shows in the dev console; if frame loss is
-        // ever a real issue, the count tells the story.
-        console.warn('[chat-stream] malformed event', err);
-      }
-    };
+      }),
+    );
 
-    const onError = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as { threadId: string; messageId: string };
-        if (data.threadId !== threadId) return;
-        const current = streamingRef.current[data.messageId];
-        update({
-          ...streamingRef.current,
-          [data.messageId]: {
-            content: current?.content ?? '',
-            status: 'error',
-            toolCalls: current?.toolCalls ?? [],
-          },
-        });
+    unsubs.push(
+      subscribe(`chat.${threadId}.error`, (event) => {
+        const data = safeParse<PlainEvent>(event);
+        if (!data || data.threadId !== threadId) return;
+        update(data.messageId, (prev) => ({ ...(prev ?? blankMsg()), status: 'error' }));
         qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
-      } catch (err) {
-        // SSE frame failed JSON.parse. The connection is still healthy
-        // — frames can race or be malformed by an upstream proxy. Log
-        // at warn so it shows in the dev console; if frame loss is
-        // ever a real issue, the count tells the story.
-        console.warn('[chat-stream] malformed event', err);
-      }
-    };
+      }),
+    );
 
-    const onToolCall = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          threadId: string;
-          messageId: string;
-          tool: string;
-          args?: unknown;
-        };
-        if (data.threadId !== threadId) return;
-        const current = streamingRef.current[data.messageId];
-        const toolCalls = [...(current?.toolCalls ?? []), { tool: data.tool, arguments: data.args }];
-        update({
-          ...streamingRef.current,
-          [data.messageId]: {
-            content: current?.content ?? '',
-            status: current?.status ?? 'streaming',
-            tokensIn: current?.tokensIn,
-            tokensOut: current?.tokensOut,
-            costCents: current?.costCents,
-            toolCalls,
-          },
-        });
-      } catch (err) {
-        // SSE frame failed JSON.parse. The connection is still healthy
-        // — frames can race or be malformed by an upstream proxy. Log
-        // at warn so it shows in the dev console; if frame loss is
-        // ever a real issue, the count tells the story.
-        console.warn('[chat-stream] malformed event', err);
-      }
-    };
+    unsubs.push(
+      subscribe(`chat.${threadId}.message`, () => {
+        qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
+      }),
+    );
 
-    const onToolResult = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          threadId: string;
-          messageId: string;
-          tool: string;
-          result?: unknown;
-        };
-        if (data.threadId !== threadId) return;
-        const current = streamingRef.current[data.messageId];
-        const toolCalls = [...(current?.toolCalls ?? [])];
-        const index = [...toolCalls].reverse().findIndex((entry) => entry.tool === data.tool && entry.result === undefined);
-        if (index >= 0) {
-          const actualIndex = toolCalls.length - 1 - index;
-          toolCalls[actualIndex] = { ...toolCalls[actualIndex], result: data.result };
-        } else {
-          toolCalls.push({ tool: data.tool, result: data.result });
-        }
-        update({
-          ...streamingRef.current,
-          [data.messageId]: {
-            content: current?.content ?? '',
-            status: current?.status ?? 'streaming',
-            tokensIn: current?.tokensIn,
-            tokensOut: current?.tokensOut,
-            costCents: current?.costCents,
-            toolCalls,
-          },
-        });
-      } catch (err) {
-        // SSE frame failed JSON.parse. The connection is still healthy
-        // — frames can race or be malformed by an upstream proxy. Log
-        // at warn so it shows in the dev console; if frame loss is
-        // ever a real issue, the count tells the story.
-        console.warn('[chat-stream] malformed event', err);
-      }
-    };
-
-    const onMessage = () => {
-      qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
-    };
-
-    const onContextTrim = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          threadId: string;
-          messageId: string;
-          dropped: number;
-          estimatedTokens: number;
-          contextWindow: number;
-        };
-        if (data.threadId !== threadId) return;
-        const current = streamingRef.current[data.messageId];
-        update({
-          ...streamingRef.current,
-          [data.messageId]: {
-            content: current?.content ?? '',
-            status: current?.status ?? 'streaming',
-            tokensIn: current?.tokensIn,
-            tokensOut: current?.tokensOut,
-            costCents: current?.costCents,
-            toolCalls: current?.toolCalls ?? [],
-            contextTrim: {
-              dropped: data.dropped,
-              estimatedTokens: data.estimatedTokens,
-              contextWindow: data.contextWindow,
-            },
-          },
-        });
-      } catch (err) {
-        // SSE frame failed JSON.parse. The connection is still healthy
-        // — frames can race or be malformed by an upstream proxy. Log
-        // at warn so it shows in the dev console; if frame loss is
-        // ever a real issue, the count tells the story.
-        console.warn('[chat-stream] malformed event', err);
-      }
-    };
-
-    source.addEventListener(`chat.${threadId}.token`, onToken as EventListener);
-    source.addEventListener(`chat.${threadId}.complete`, onComplete as EventListener);
-    source.addEventListener(`chat.${threadId}.cancelled`, onCancelled as EventListener);
-    source.addEventListener(`chat.${threadId}.error`, onError as EventListener);
-    source.addEventListener(`chat.${threadId}.message`, onMessage as EventListener);
-    source.addEventListener(`chat.${threadId}.tool_call`, onToolCall as EventListener);
-    source.addEventListener(`chat.${threadId}.tool_result`, onToolResult as EventListener);
-    source.addEventListener(`chat.${threadId}.context_trim`, onContextTrim as EventListener);
+    unsubs.push(
+      subscribe(`chat.${threadId}.context_trim`, (event) => {
+        const data = safeParse<ContextTrimEvent>(event);
+        if (!data || data.threadId !== threadId) return;
+        update(data.messageId, (prev) => ({
+          ...(prev ?? blankMsg()),
+          contextTrim: { dropped: data.dropped, estimatedTokens: data.estimatedTokens, contextWindow: data.contextWindow },
+        }));
+      }),
+    );
 
     return () => {
-      source.close();
+      for (const u of unsubs) u();
     };
-  }, [threadId, qc, update]);
+  }, [threadId, qc, subscribe, update]);
 
   return streaming;
 }
@@ -437,8 +405,6 @@ export function useChatStream(threadId: string | null | undefined) {
 export interface ChatAttachment {
   id: string;
   messageId: string;
-  /** `'image' | 'text' | 'binary'` — drives how the message renderer
-   * displays the attachment (image inline vs download chip). */
   kind: string;
   name: string;
   mimeType: string;
@@ -449,15 +415,12 @@ export interface ChatAttachment {
 export function useChatAttachments(messageId: string | null | undefined) {
   return useQuery({
     queryKey: ['chat-attachments', messageId],
-    queryFn: () =>
-      api<ChatAttachment[]>(`/v1/chat-messages/${messageId}/attachments`),
+    queryFn: () => api<ChatAttachment[]>(`/v1/chat-messages/${messageId}/attachments`),
     enabled: Boolean(messageId),
     staleTime: 60_000,
   });
 }
 
-/** Upload one or more files to a chat message. The server enforces
- *  ≤ 10 MB per file and ≤ 5 attachments per message. */
 export function useUploadChatAttachments() {
   const qc = useQueryClient();
   return useMutation({
@@ -466,13 +429,10 @@ export function useUploadChatAttachments() {
       for (const file of input.files) {
         form.append('file', file, file.name);
       }
-      const response = await fetch(
-        `${API_BASE_URL}/v1/chat-messages/${input.messageId}/attachments`,
-        {
-          method: 'POST',
-          body: form,
-        },
-      );
+      const response = await fetch(`${API_BASE_URL}/v1/chat-messages/${input.messageId}/attachments`, {
+        method: 'POST',
+        body: form,
+      });
       if (!response.ok) {
         const text = await response.text();
         let message = `Upload failed (${response.status})`;
@@ -487,9 +447,7 @@ export function useUploadChatAttachments() {
       return (await response.json()) as ChatAttachment[];
     },
     onSuccess: (_data, vars) => {
-      qc.invalidateQueries({
-        queryKey: ['chat-attachments', vars.messageId],
-      });
+      qc.invalidateQueries({ queryKey: ['chat-attachments', vars.messageId] });
     },
   });
 }
@@ -498,14 +456,9 @@ export function useDeleteChatAttachment() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { messageId: string; attachmentId: string }) =>
-      api<{ ok: boolean }>(
-        `/v1/chat-messages/${input.messageId}/attachments/${input.attachmentId}`,
-        { method: 'DELETE' },
-      ),
+      api<{ ok: boolean }>(`/v1/chat-messages/${input.messageId}/attachments/${input.attachmentId}`, { method: 'DELETE' }),
     onSuccess: (_data, vars) => {
-      qc.invalidateQueries({
-        queryKey: ['chat-attachments', vars.messageId],
-      });
+      qc.invalidateQueries({ queryKey: ['chat-attachments', vars.messageId] });
     },
   });
 }
@@ -514,8 +467,8 @@ export function attachmentDownloadUrl(messageId: string, attachmentId: string): 
   return `${API_BASE_URL}/v1/chat-messages/${messageId}/attachments/${attachmentId}`;
 }
 
-// Re-exported for ad-hoc callers that want to build their own fetch.
 export { API_BASE_URL };
+export { eventStreamUrl };
 
 export function useDeleteChatThread() {
   const qc = useQueryClient();

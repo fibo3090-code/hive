@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { JsonViewer } from '@/components/shared/JsonViewer';
 import { CodeViewerDialog } from '@/components/modals/CodeViewerDialog';
 import { Send, Paperclip, AtSign, Hexagon, Copy, Eye, Code, AlertTriangle, ArrowDown, Check, Square, Plus, Settings2, X, FileText, Image as ImageIcon, FileBox, Trash2, LayoutList } from 'lucide-react';
 import { useHiveData } from '@/api/queries/useHiveData';
@@ -165,25 +166,48 @@ function ToolCallList({ toolCalls }: { readonly toolCalls: ToolCallTrace[] }) {
   if (toolCalls.length === 0) return null;
   return (
     <div className="mt-2 space-y-2">
-      {toolCalls.map((call, index) => (
-        <details key={`${call.tool}-${index}`} className="rounded-md border border-border bg-surface-2 px-3 py-2">
-          <summary className="cursor-pointer text-xs font-mono text-primary">
-            {call.tool}
-          </summary>
-          <div className="mt-2 space-y-2">
-            {'arguments' in call && call.arguments !== undefined && (
-              <pre className="overflow-x-auto text-micro text-muted-foreground whitespace-pre-wrap">
-                {JSON.stringify(call.arguments, null, 2)}
-              </pre>
-            )}
-            {'result' in call && call.result !== undefined && (
-              <pre className="overflow-x-auto text-micro text-muted-foreground whitespace-pre-wrap">
-                {JSON.stringify(call.result, null, 2)}
-              </pre>
-            )}
-          </div>
-        </details>
-      ))}
+      {toolCalls.map((call, index) => {
+        const statusColor =
+          call.status === 'error'
+            ? 'text-destructive'
+            : call.status === 'running'
+              ? 'text-warning'
+              : 'text-primary';
+        const statusLabel =
+          call.status === 'running'
+            ? '⏵ running'
+            : call.status === 'error'
+              ? '✕ error'
+              : call.status === 'ok'
+                ? '✓ ok'
+                : null;
+        return (
+          <details
+            key={`${call.tool}-${index}`}
+            className="rounded-md border border-border bg-surface-2 px-3 py-2"
+            open={call.status === 'error'}
+            aria-label={`Tool call: ${call.tool}`}
+          >
+            <summary className={`cursor-pointer text-xs font-mono ${statusColor} flex items-center gap-2`}>
+              <span>{call.tool}</span>
+              {statusLabel && <span className="text-micro opacity-80">{statusLabel}</span>}
+            </summary>
+            <div className="mt-2 space-y-2">
+              {call.error && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-micro text-destructive">
+                  {call.error}
+                </div>
+              )}
+              {call.arguments !== undefined && (
+                <JsonViewer value={call.arguments} label="arguments" previewChars={240} />
+              )}
+              {call.result !== undefined && (
+                <JsonViewer value={call.result} label="result" previewChars={320} />
+              )}
+            </div>
+          </details>
+        );
+      })}
     </div>
   );
 }
@@ -320,10 +344,27 @@ export default function ChatCentral() {
     return messages.map((m) => {
       const live = streaming[m.id];
       if (live && m.status !== 'done') {
+        // Derive a flat toolCalls list from the live segments so the existing
+        // ToolCallList renderer keeps working. Tool segments preserve arrival
+        // order (causal honesty) — text-vs-tool interleave is not yet shown
+        // in the message body (Sprint 1 ships ordered tool list + metadata;
+        // full interleaved rendering arrives in Sprint 1.5).
+        const liveToolCalls: ToolCallTrace[] = live.segments
+          .filter((s): s is Extract<typeof live.segments[number], { kind: 'tool' }> => s.kind === 'tool')
+          .map((s) => ({
+            tool: s.tool,
+            arguments: s.args,
+            result: s.result,
+            error: s.error,
+            status: s.status,
+          }));
         return {
           ...m,
           content: live.content || m.content,
-          toolCalls: (live.toolCalls as ToolCallTrace[] | undefined) ?? m.toolCalls,
+          toolCalls: liveToolCalls.length > 0 ? liveToolCalls : m.toolCalls,
+          tokensIn: live.tokensIn ?? m.tokensIn,
+          tokensOut: live.tokensOut ?? m.tokensOut,
+          costCents: live.costCents ?? m.costCents,
         };
       }
       return m;
