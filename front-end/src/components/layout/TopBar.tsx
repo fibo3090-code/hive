@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { NotificationDropdown } from './NotificationDropdown';
+import { ConnectionStatusPill } from '@/components/shared/ConnectionStatusPill';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { cn } from '@/lib/utils';
 
@@ -96,6 +97,9 @@ export function TopBar() {
           <Progress value={budgetPct} className="h-1.5 flex-1" />
           <span className="text-micro text-muted-foreground">${session.budgetTotal}</span>
         </div>
+
+        {/* Realtime connection health */}
+        <ConnectionStatusPill />
 
         {/* Notification dropdown */}
         <NotificationDropdown />

@@ -8,6 +8,8 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { CommandPalette } from "@/components/CommandPalette";
 import { WorkspaceProvider } from "@/context/WorkspaceContext";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
+import { BackendDownBanner } from "@/components/shared/BackendDownBanner";
+import { RealtimeProvider } from "@/realtime/RealtimeProvider";
 import { useSse } from "@/realtime/useSse";
 import Projects from "./pages/Projects";
 import Onboarding from "./pages/Onboarding";
@@ -16,11 +18,7 @@ import HiveGraph from "./pages/HiveGraph";
 import ChatCentral from "./pages/ChatCentral";
 import CodeVersioning from "./pages/CodeVersioning";
 
-import SpecPlan from "./pages/SpecPlan";
-import Modules from "./pages/Modules";
-import ModuleDetail from "./pages/ModuleDetail";
 import Settings from "./pages/Settings";
-import AgentForge from "./pages/AgentForge";
 import SessionHistory from "./pages/SessionHistory";
 import NotFound from "./pages/NotFound";
 import Stats from "./pages/Stats";
@@ -39,10 +37,12 @@ const App = () => (
     <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
       <WorkspaceProvider>
         <TooltipProvider>
-          <ErrorBoundary>
-            <RealtimeBridge />
-            <Toaster />
-            <Sonner />
+          <RealtimeProvider>
+            <ErrorBoundary scope="App">
+              <RealtimeBridge />
+              <Toaster />
+              <Sonner />
+              <BackendDownBanner />
             <BrowserRouter>
               <CommandPalette />
               <Routes>
@@ -70,15 +70,10 @@ const App = () => (
                   <Route path="/modules" element={<Navigate to="/forge?tab=modules" replace />} />
                   <Route path="/agent-forge" element={<Navigate to="/forge?tab=agents" replace />} />
 
-                  {/* Legacy concrete pages still mounted for the redesigned
-                      tabs to lazy-load (Stats wraps Insights, Forge wraps
-                      Modules + AgentForge). Kept as direct routes too so
-                      detail pages and existing tests still resolve. */}
-
-                  <Route path="/spec-legacy" element={<SpecPlan />} />
-                  <Route path="/modules-legacy" element={<Modules />} />
-                  <Route path="/modules/:moduleId" element={<ModuleDetail />} />
-                  <Route path="/agent-forge-legacy" element={<AgentForge />} />
+                  {/* Legacy routes dropped — canonical pages are Forge tabs + Planning. */}
+                  <Route path="/spec-legacy" element={<Navigate to="/planning" replace />} />
+                  <Route path="/modules-legacy" element={<Navigate to="/forge?tab=modules" replace />} />
+                  <Route path="/agent-forge-legacy" element={<Navigate to="/forge?tab=agents" replace />} />
 
                   <Route path="/settings" element={<Settings />} />
                   <Route path="/session-history" element={<SessionHistory />} />
@@ -87,7 +82,8 @@ const App = () => (
                 <Route path="*" element={<NotFound />} />
               </Routes>
             </BrowserRouter>
-          </ErrorBoundary>
+            </ErrorBoundary>
+          </RealtimeProvider>
         </TooltipProvider>
       </WorkspaceProvider>
     </ThemeProvider>
