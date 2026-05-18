@@ -10,6 +10,7 @@ import {
   Settings,
   Hexagon,
   Sparkles,
+  Wand2,
   Clock,
   PanelLeftClose,
   PanelLeft,
@@ -25,6 +26,7 @@ const navItems = [
   { icon: BarChart3, label: 'Stats', path: '/stats' },
   { icon: FileText, label: 'Planning', path: '/planning' },
   { icon: Sparkles, label: 'Forge', path: '/forge' },
+  { icon: Wand2, label: 'Spawn Requests', path: '/spawn-requests' },
   { icon: Clock, label: 'Session History', path: '/session-history' },
   { icon: Settings, label: 'Settings', path: '/settings' },
 ];
