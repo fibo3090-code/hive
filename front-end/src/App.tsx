@@ -9,6 +9,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { WorkspaceProvider } from "@/context/WorkspaceContext";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import { BackendDownBanner } from "@/components/shared/BackendDownBanner";
+import { KeyboardShortcutsOverlay } from "@/components/shared/KeyboardShortcutsOverlay";
 import { RealtimeProvider } from "@/realtime/RealtimeProvider";
 import { useSse } from "@/realtime/useSse";
 import Projects from "./pages/Projects";
@@ -24,6 +25,7 @@ import NotFound from "./pages/NotFound";
 import Stats from "./pages/Stats";
 import Planning from "./pages/Planning";
 import Forge from "./pages/Forge";
+import SpawnRequests from "./pages/SpawnRequests";
 
 const queryClient = new QueryClient();
 
@@ -45,6 +47,7 @@ const App = () => (
               <BackendDownBanner />
             <BrowserRouter>
               <CommandPalette />
+              <KeyboardShortcutsOverlay />
               <Routes>
                 {/* Full-screen routes (no chrome) */}
                 <Route path="/" element={<Projects />} />
@@ -61,6 +64,7 @@ const App = () => (
                   <Route path="/stats" element={<Stats />} />
                   <Route path="/planning" element={<Planning />} />
                   <Route path="/forge" element={<Forge />} />
+                  <Route path="/spawn-requests" element={<SpawnRequests />} />
 
                   {/* Backwards-compat redirects so deep links keep working
                       while the new IA stabilises. The `replace` flag means

@@ -15,6 +15,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { AgentSpawnModal } from '@/components/modals/AgentSpawnModal';
 import { AgentConfigDialog } from '@/components/modals/AgentConfigDialog';
+import { ConfirmDeleteModal } from '@/components/modals/ConfirmDeleteModal';
 import { toast } from 'sonner';
 
 const lockedAgents = new Set<string>();
@@ -284,11 +285,7 @@ function AgentDetailDrawer({
           <Settings className="h-3.5 w-3.5" /> Config
         </button>
         <button
-          onClick={() => {
-            if (window.confirm(`Delete agent "${agent.name}"? This permanently removes the agent and its history.`)) {
-              onTerminate(agent.id);
-            }
-          }}
+          onClick={() => onTerminate(agent.id)}
           className="flex items-center gap-1 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 ml-auto"
         ><Trash2 className="h-3.5 w-3.5" /> Delete</button>
       </div>
@@ -316,8 +313,11 @@ export default function HiveGraph() {
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [showLocks, setShowLocks] = useState(false);
+  const [showLegend, setShowLegend] = useState(true);
   const [spawnModalOpen, setSpawnModalOpen] = useState(false);
   const [configAgent, setConfigAgent] = useState<Agent | null>(null);
+  const [pendingDeleteAgent, setPendingDeleteAgent] = useState<Agent | null>(null);
+  const [pendingDeleteWireId, setPendingDeleteWireId] = useState<string | null>(null);
   const wires = useMemo(() => wiresQuery.data ?? [], [wiresQuery.data]);
   const graph = useMemo(() => buildGraph(state.agents, wires), [state.agents, wires]);
 
@@ -337,13 +337,18 @@ export default function HiveGraph() {
       toast.info('That edge comes from the spawn lineage — wire it explicitly to manage it.');
       return;
     }
-    const wireId = edge.id.slice('wire-'.length);
-    if (!window.confirm('Delete this wire?')) return;
+    setPendingDeleteWireId(edge.id.slice('wire-'.length));
+  }, []);
+
+  const confirmDeleteWire = useCallback(() => {
+    if (!pendingDeleteWireId) return;
+    const wireId = pendingDeleteWireId;
+    setPendingDeleteWireId(null);
     deleteWireMutation.mutate(wireId, {
       onSuccess: () => toast.success('Wire removed'),
       onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not remove wire'),
     });
-  }, [deleteWireMutation]);
+  }, [pendingDeleteWireId, deleteWireMutation]);
 
   useEffect(() => {
     if (graphFocusAgentId) {
@@ -431,6 +436,14 @@ export default function HiveGraph() {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => setShowLegend((v) => !v)}
+            aria-pressed={showLegend}
+            title="Toggle edge legend"
+            className={cn('rounded-md border px-2 py-1 text-micro text-muted-foreground hover:text-foreground', showLegend && 'border-primary/40 text-foreground')}
+          >
+            Legend
+          </button>
+          <button
             onClick={() => setShowLocks((value) => !value)}
             aria-label={showLocks ? 'Hide locked agent overlay' : 'Show locked agent overlay'}
             aria-pressed={showLocks}
@@ -467,6 +480,39 @@ export default function HiveGraph() {
           </div>
         )}
 
+        {showLegend && (
+          <div className="absolute right-4 top-4 rounded-lg border border-border bg-card/95 p-3 text-xs shadow-lg w-48 z-10">
+            <div className="font-semibold mb-2 flex items-center justify-between">
+              <span>Edge legend</span>
+              <button
+                type="button"
+                onClick={() => setShowLegend(false)}
+                aria-label="Hide legend"
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <svg width="32" height="6" aria-hidden="true">
+                  <line x1="0" y1="3" x2="32" y2="3" stroke="hsl(var(--primary))" strokeWidth="1.5" />
+                </svg>
+                <span className="text-muted-foreground">Wire (authority)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <svg width="32" height="6" aria-hidden="true">
+                  <line x1="0" y1="3" x2="32" y2="3" stroke="hsl(var(--border))" strokeWidth="1.5" strokeDasharray="4 3" />
+                </svg>
+                <span className="text-muted-foreground">Lineage (spawn)</span>
+              </div>
+              <div className="pt-1 text-micro text-muted-foreground border-t border-border">
+                Drag from a node handle to create a wire. Click a wire to remove it.
+              </div>
+            </div>
+          </div>
+        )}
+
         <AnimatePresence>
           {selectedAgent && (
             <AgentDetailDrawer
@@ -474,12 +520,33 @@ export default function HiveGraph() {
               onClose={() => setSelectedAgentId(null)}
               onMessage={() => { setChatTargetAgentId(selectedAgent.id); navigate('/chat'); }}
               onTogglePause={(agent) => { void togglePause(agent); }}
-              onTerminate={(agentId) => { void terminateAgent(agentId); }}
+              onTerminate={(agentId) => {
+                const a = state.agents.find((x) => x.id === agentId) ?? null;
+                setPendingDeleteAgent(a);
+              }}
               onConfig={(agent) => setConfigAgent(agent)}
             />
           )}
         </AnimatePresence>
       </div>
+
+      <ConfirmDeleteModal
+        open={pendingDeleteAgent !== null}
+        onOpenChange={(o) => { if (!o) setPendingDeleteAgent(null); }}
+        title={`Delete agent "${pendingDeleteAgent?.name ?? ''}"`}
+        description="This permanently removes the agent, its inbox, lineage links, and any open threads. This cannot be undone."
+        onConfirm={() => {
+          if (pendingDeleteAgent) void terminateAgent(pendingDeleteAgent.id);
+          setPendingDeleteAgent(null);
+        }}
+      />
+      <ConfirmDeleteModal
+        open={pendingDeleteWireId !== null}
+        onOpenChange={(o) => { if (!o) setPendingDeleteWireId(null); }}
+        title="Delete wire"
+        description="This breaks the authority link between the two agents. Existing in-flight tasks are not cancelled."
+        onConfirm={confirmDeleteWire}
+      />
     </div>
   );
 }

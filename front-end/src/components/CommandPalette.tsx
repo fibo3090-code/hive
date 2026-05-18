@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bot, Settings, LayoutDashboard, Network, MessageSquare, GitBranch, BarChart3, Boxes, ClipboardList, Hammer, History, Plus } from 'lucide-react';
+import { Bot, Settings, LayoutDashboard, Network, MessageSquare, GitBranch, BarChart3, Boxes, ClipboardList, Hammer, History, Plus, Wand2 } from 'lucide-react';
 import { useHiveData } from '@/api/queries/useHiveData';
 import type { Agent } from '@/types/domain';
 import { cn } from '@/lib/utils';
@@ -30,6 +30,7 @@ const commandItems: PaletteItem[] = [
   { id: 'nav-stats', group: 'Navigate', label: 'Go to Stats', preview: 'Agent / project metrics, runtime feed, eval leaderboard.', path: '/stats', kind: 'navigation', icon: BarChart3 },
   { id: 'nav-planning', group: 'Navigate', label: 'Go to Planning', preview: 'Spec docs, sprint plan, tech-debt board, Hive Mind notes, drift.', path: '/planning', kind: 'navigation', icon: ClipboardList },
   { id: 'nav-forge', group: 'Navigate', label: 'Go to Forge', preview: 'Skills, Modules, Connectors, and the custom agent builder.', path: '/forge', kind: 'navigation', icon: Hammer },
+  { id: 'nav-spawn', group: 'Navigate', label: 'Go to Spawn Requests', preview: 'Live agent auto-spawn pipeline: planning, MCP matching, synthesis, materialization.', path: '/spawn-requests', kind: 'navigation', icon: Wand2 },
   { id: 'nav-modules', group: 'Navigate', label: 'Go to Modules', preview: 'Browse installed and generated HCM modules.', path: '/forge?tab=modules', kind: 'navigation', icon: Boxes },
   { id: 'nav-history', group: 'Navigate', label: 'Go to Session History', preview: 'Past sessions and their outcomes.', path: '/session-history', kind: 'navigation', icon: History },
   { id: 'nav-settings', group: 'Navigate', label: 'Go to Settings', preview: 'LLM providers, GitHub sync, tools & sandbox, and other preferences.', path: '/settings', kind: 'navigation', icon: Settings },
