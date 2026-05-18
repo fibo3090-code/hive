@@ -2392,31 +2392,48 @@ struct EnsureCoordinatorBody {
 }
 
 /// Tool set for the coordinator under the chosen team-mode stance.
+///
+/// In team mode the coordinator owns delegation — full coordination
+/// surface, no direct `web_search` (delegate research instead).
+///
+/// In **solo** mode the coordinator works alone: agent-spawning /
+/// delegation tools are *removed* so a confused small model can't try
+/// to summon non-existent specialists. Prompt-level instructions alone
+/// proved insufficient — small Ollama models routinely ignore "don't
+/// call X" prose, so we deny the call at the tool-allowlist layer.
 fn coordinator_tools(team_mode: Option<bool>) -> Vec<String> {
-    let mut tools = vec![
+    let base = vec![
         "fs_read".to_owned(),
         "fs_list".to_owned(),
         "fs_write".to_owned(),
         "shell_exec".to_owned(),
         "web_fetch".to_owned(),
-        "spawn_agent".to_owned(),
-        "message_agent".to_owned(),
-        "list_visible_agents".to_owned(),
-        "request_relay".to_owned(),
-        "delete_agent".to_owned(),
-        "monitor_agent".to_owned(),
-        "delegate_task".to_owned(),
     ];
     match team_mode {
         Some(true) => {
-            // Team mode: no direct web_search — push the coordinator
-            // toward delegating research to a specialist sub-agent.
+            // Team mode: keep coordination tools, drop `web_search`
+            // so research is delegated to a specialist.
+            let mut tools = base;
+            tools.extend([
+                "spawn_agent".to_owned(),
+                "message_agent".to_owned(),
+                "list_visible_agents".to_owned(),
+                "request_relay".to_owned(),
+                "delete_agent".to_owned(),
+                "monitor_agent".to_owned(),
+                "delegate_task".to_owned(),
+            ]);
+            tools
         }
         Some(false) | None => {
+            // Solo / unspecified: coordinator works alone. No agent
+            // spawning, no delegation, no A2A messaging. Allow direct
+            // `web_search` so it can still do research itself.
+            let mut tools = base;
             tools.push("web_search".to_owned());
+            tools
         }
     }
-    tools
 }
 
 fn coordinator_system_prompt(team_mode: Option<bool>) -> String {
@@ -5706,6 +5723,7 @@ async fn send_chat_message(
         tool_context: None,
         cancel: cancel_flag,
         data_dir: data_dir_clone,
+        executors: Some(state.executors.clone()),
     };
     let mut params = params;
     if let Some((registry, context)) = build_tooling(
@@ -5829,6 +5847,7 @@ async fn process_chat_message(
         tool_context: None,
         cancel: cancel_flag,
         data_dir: data_dir_clone,
+        executors: Some(state.executors.clone()),
     };
     if let Some((registry, context)) = build_tooling(
         &state,
@@ -6357,6 +6376,7 @@ impl ApiTurnDriver {
             tool_context: None,
             cancel: cancel_flag,
             data_dir: data_dir_clone,
+            executors: Some(self.state.executors.clone()),
         };
         if let Some((registry, context)) = build_tooling(
             &self.state,
@@ -6749,6 +6769,45 @@ mod prompt_tests {
         // Don't tell the solo coordinator to spawn — the system removes
         // the tool from its allowlist and a spawn call would just fail.
         assert!(prompt.to_lowercase().contains("do not call `spawn_agent`"));
+    }
+
+    #[test]
+    fn solo_coordinator_has_no_spawn_or_delegate_tools() {
+        // Prompt-level "don't call this" guidance is not enough for
+        // small models — the allowlist must enforce it too. This test
+        // is the defence-in-depth: if a future refactor accidentally
+        // adds `spawn_agent` back into the solo branch, this fails.
+        let solo = coordinator_tools(Some(false));
+        for forbidden in [
+            "spawn_agent",
+            "delegate_task",
+            "message_agent",
+            "monitor_agent",
+            "request_relay",
+            "list_visible_agents",
+            "delete_agent",
+        ] {
+            assert!(
+                !solo.contains(&forbidden.to_owned()),
+                "solo coordinator must not have `{forbidden}` in its tool allowlist"
+            );
+        }
+        // It still needs web_search to do research alone.
+        assert!(solo.contains(&"web_search".to_owned()));
+    }
+
+    #[test]
+    fn team_coordinator_keeps_full_coordination_surface() {
+        let team = coordinator_tools(Some(true));
+        for required in ["spawn_agent", "delegate_task", "monitor_agent", "message_agent"] {
+            assert!(
+                team.contains(&required.to_owned()),
+                "team coordinator must have `{required}` available"
+            );
+        }
+        // Team coordinator should NOT do its own web research — that's
+        // what a research specialist sub-agent is for.
+        assert!(!team.contains(&"web_search".to_owned()));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ConfirmDeleteModal } from '@/components/modals/ConfirmDeleteModal';
 
 interface ConfirmRequest {
@@ -26,9 +26,30 @@ export function useConfirmDelete(): readonly [
   const [request, setRequest] = useState<ConfirmRequest | null>(null);
   const resolverRef = useRef<((ok: boolean) => void) | null>(null);
 
+  // On unmount, settle any in-flight promise as `false` so callers
+  // awaiting the result don't hang. Navigation away from a page that
+  // had an open confirm modal would otherwise leak the promise.
+  useEffect(() => {
+    return () => {
+      const pending = resolverRef.current;
+      if (pending) {
+        pending(false);
+        resolverRef.current = null;
+      }
+    };
+  }, []);
+
   const confirm = useCallback(
     (req: ConfirmRequest) =>
       new Promise<boolean>((resolve) => {
+        // If a previous prompt is still pending (re-entered `confirm()`
+        // before the user clicked, or the modal closed without a
+        // selection), settle that prior promise as `false` first so the
+        // caller's `await confirm(...)` doesn't hang forever.
+        const prior = resolverRef.current;
+        if (prior) {
+          prior(false);
+        }
         resolverRef.current = resolve;
         setRequest(req);
         setOpen(true);

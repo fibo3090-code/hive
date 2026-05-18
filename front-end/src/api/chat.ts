@@ -169,6 +169,10 @@ export type ChatSegment =
   | { kind: 'text'; content: string }
   | {
       kind: 'tool';
+      /** Provider-assigned call id (when available — native tool-calling
+       *  paths set this; XML-fallback may not). Used by `resolveTool` to
+       *  disambiguate two parallel calls to the same tool name. */
+      callId?: string;
       tool: string;
       args?: unknown;
       result?: unknown;
@@ -195,9 +199,9 @@ export interface StreamingState {
 interface TokenEvent { threadId: string; messageId: string; delta: string }
 interface CompleteEvent { threadId: string; messageId: string; tokensIn?: number; tokensOut?: number; costCents?: number; durationMs?: number }
 interface PlainEvent { threadId: string; messageId: string }
-interface ToolCallEvent { threadId: string; messageId: string; tool: string; args?: unknown }
-interface ToolResultEvent { threadId: string; messageId: string; tool: string; result?: unknown }
-interface ToolValidationErrorEvent { threadId: string; messageId: string; tool: string; error?: string; message?: string }
+interface ToolCallEvent { threadId: string; messageId: string; callId?: string; tool: string; args?: unknown }
+interface ToolResultEvent { threadId: string; messageId: string; callId?: string; tool: string; result?: unknown }
+interface ToolValidationErrorEvent { threadId: string; messageId: string; callId?: string; tool: string; error?: string; message?: string }
 interface ContextTrimEvent { threadId: string; messageId: string; dropped: number; estimatedTokens: number; contextWindow: number }
 
 function deriveContent(segments: ChatSegment[]): string {
@@ -215,16 +219,44 @@ function appendText(segments: ChatSegment[], delta: string): ChatSegment[] {
   return [...segments, { kind: 'text', content: delta }];
 }
 
-function pushToolCall(segments: ChatSegment[], tool: string, args: unknown): ChatSegment[] {
-  return [...segments, { kind: 'tool', tool, args, status: 'running' }];
+function pushToolCall(
+  segments: ChatSegment[],
+  tool: string,
+  args: unknown,
+  callId?: string,
+): ChatSegment[] {
+  return [...segments, { kind: 'tool', callId, tool, args, status: 'running' }];
 }
 
+/**
+ * Resolve a tool result/error onto the segment that started it. Matching
+ * is **callId-first** (exact id) and falls back to "most recent running
+ * segment with this tool name" when the provider didn't supply an id
+ * (XML-fallback path). Without callId disambiguation two parallel calls
+ * to the same tool produced swapped results.
+ */
 function resolveTool(
   segments: ChatSegment[],
   tool: string,
   patch: Partial<Extract<ChatSegment, { kind: 'tool' }>>,
+  callId?: string,
 ): ChatSegment[] {
-  // Find the most recent running tool segment with the matching name.
+  // Pass 1: exact callId match. Only meaningful when the producer sent
+  // an id (native tool calling does, XML fallback does not).
+  if (callId) {
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const seg = segments[i];
+      if (seg.kind === 'tool' && seg.callId === callId) {
+        const next = [...segments];
+        next[i] = { ...seg, ...patch };
+        return next;
+      }
+    }
+  }
+  // Pass 2: fall back to "most recent running with this name". Wrong
+  // when two parallel same-name calls are in-flight without ids, but
+  // that's the best we can do without an id; backend native-call paths
+  // always emit one so this branch fires only on XML-fallback.
   for (let i = segments.length - 1; i >= 0; i--) {
     const seg = segments[i];
     if (seg.kind === 'tool' && seg.tool === tool && seg.status === 'running') {
@@ -233,9 +265,8 @@ function resolveTool(
       return next;
     }
   }
-  // No matching running segment — append a synthetic one so the result
-  // isn't dropped.
-  return [...segments, { kind: 'tool', tool, status: patch.status ?? 'ok', ...patch }];
+  // No matching segment — append a synthetic one so the result isn't dropped.
+  return [...segments, { kind: 'tool', callId, tool, status: patch.status ?? 'ok', ...patch }];
 }
 
 /**
@@ -302,7 +333,11 @@ export function useChatStream(threadId: string | null | undefined) {
         if (!data || data.threadId !== threadId) return;
         update(data.messageId, (prev) => {
           const base = prev ?? blankMsg();
-          return { ...base, segments: pushToolCall(base.segments, data.tool, data.args), status: 'streaming' };
+          return {
+            ...base,
+            segments: pushToolCall(base.segments, data.tool, data.args, data.callId),
+            status: 'streaming',
+          };
         });
       }),
     );
@@ -315,7 +350,12 @@ export function useChatStream(threadId: string | null | undefined) {
           const base = prev ?? blankMsg();
           return {
             ...base,
-            segments: resolveTool(base.segments, data.tool, { result: data.result, status: 'ok' }),
+            segments: resolveTool(
+              base.segments,
+              data.tool,
+              { result: data.result, status: 'ok' },
+              data.callId,
+            ),
           };
         });
       }),
@@ -329,10 +369,15 @@ export function useChatStream(threadId: string | null | undefined) {
           const base = prev ?? blankMsg();
           return {
             ...base,
-            segments: resolveTool(base.segments, data.tool, {
-              error: data.error ?? data.message ?? 'validation error',
-              status: 'error',
-            }),
+            segments: resolveTool(
+              base.segments,
+              data.tool,
+              {
+                error: data.error ?? data.message ?? 'validation error',
+                status: 'error',
+              },
+              data.callId,
+            ),
           };
         });
       }),

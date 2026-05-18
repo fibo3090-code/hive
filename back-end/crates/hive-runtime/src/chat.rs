@@ -49,6 +49,12 @@ pub struct RunTurn {
     pub agent_id: Option<String>,
     pub tool_registry: Option<ToolRegistry>,
     pub tool_context: Option<ToolContext>,
+    /// In-process executor registry — passed through so the drift hook
+    /// can pause the executor (not just flip the DB row) when an agent
+    /// drifts badly. `None` is acceptable for chat-only paths that
+    /// don't drive agents through executors (test fixtures, the
+    /// pre-runtime-init smoke test).
+    pub executors: Option<Arc<crate::registry::ExecutorRegistry>>,
     /// Mutable cancel flag — when set to true, the runner stops streaming and
     /// marks the message `cancelled`.
     pub cancel: Arc<Mutex<bool>>,
@@ -517,6 +523,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         tool_context,
         cancel,
         data_dir,
+        executors,
     } = params;
 
     let _thread = chat_threads::get(db.conn(), &thread_id)
@@ -933,6 +940,12 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                 json!({
                     "threadId": thread_id,
                     "messageId": assistant_message_id,
+                    // `callId` disambiguates the result event when the
+                    // same tool name is called more than once in the
+                    // same round (e.g. two parallel `fs_read`). Without
+                    // it the frontend resolves results to the wrong
+                    // segment.
+                    "callId": invocation.id,
                     "tool": invocation.tool,
                     "args": invocation.arguments,
                 }),
@@ -986,6 +999,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                         json!({
                             "threadId": thread_id,
                             "messageId": assistant_message_id,
+                            "callId": invocation.id,
                             "tool": invocation.tool,
                             "arguments": invocation.arguments,
                             "error": error,
@@ -1012,6 +1026,12 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                 json!({
                     "threadId": thread_id,
                     "messageId": assistant_message_id,
+                    // See `tool_call` above — `callId` links this result
+                    // to the specific running segment that started the
+                    // call. Frontend's `resolveTool` matches on it
+                    // before falling back to the name+running heuristic
+                    // so two parallel same-name calls resolve correctly.
+                    "callId": invocation.id,
                     "tool": invocation.tool,
                     "result": result,
                 }),
@@ -1141,11 +1161,21 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         json!({ "projectId": project_id, "costCents": total_cost }),
     );
 
-    // W3-B5: drift auto-detection. Only meaningful for agent-driven turns
-    // — a plain user→assistant chat has no task to drift from.
+    // W3-B5: drift auto-detection. Only meaningful for agent-driven
+    // turns — a plain user→assistant chat has no task to drift from.
+    // Passing `executors` lets the hook *actually* pause the in-process
+    // executor when score >= 0.9 (not just flip the DB row) — otherwise
+    // the next inbox item would run before the operator can intervene.
     if let Some(ref agent_id) = agent_id {
-        crate::drift_hook::record_after_turn(&db, &bus, &project_id, agent_id, &executed_calls)
-            .await;
+        crate::drift_hook::record_after_turn(
+            &db,
+            &bus,
+            executors.as_ref(),
+            &project_id,
+            agent_id,
+            &executed_calls,
+        )
+        .await;
     }
 
     Ok(())

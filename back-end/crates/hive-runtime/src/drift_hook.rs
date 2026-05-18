@@ -22,6 +22,8 @@
 //! Everything is best-effort: a DB error inside the hook is logged but
 //! never bubbles up to fail the turn the operator already saw complete.
 
+use std::sync::Arc;
+
 use hive_db::{
     repos::{
         agent_task_assignments, agents, alerts, drift_events,
@@ -35,6 +37,7 @@ use serde_json::{json, Value};
 use crate::{
     drift::{score_task_drift, DriftSeverity, TaskDriftInput},
     events::EventBus,
+    registry::ExecutorRegistry,
 };
 
 /// Pause the agent above this score. Distinct from severity-High because
@@ -52,11 +55,12 @@ const RECORD_THRESHOLD: f32 = 0.4;
 pub async fn record_after_turn(
     db: &Db,
     bus: &EventBus,
+    executors: Option<&Arc<ExecutorRegistry>>,
     project_id: &str,
     agent_id: &str,
     executed_calls: &[Value],
 ) {
-    let result = inner(db, bus, project_id, agent_id, executed_calls).await;
+    let result = inner(db, bus, executors, project_id, agent_id, executed_calls).await;
     if let Err(err) = result {
         // Never poison the caller — the operator already saw the turn complete.
         tracing::warn!(
@@ -69,6 +73,7 @@ pub async fn record_after_turn(
 async fn inner(
     db: &Db,
     bus: &EventBus,
+    executors: Option<&Arc<ExecutorRegistry>>,
     project_id: &str,
     agent_id: &str,
     executed_calls: &[Value],
@@ -187,9 +192,16 @@ async fn inner(
     }
 
     // Top band → also pause the agent so it stops piling up wrong work.
+    // Two layers of enforcement, both required:
+    //   1. DB row flip so the autonomous scheduler stops dispatching new
+    //      tasks (it filters on `agent.status == "idle"`).
+    //   2. In-process executor pause so any inbox item that's *already*
+    //      queued (A2A messages, /dispatch calls) parks until the
+    //      operator resumes. Without (2), an A2A message arriving while
+    //      the agent is DB-paused would still get processed.
     if score.score >= PAUSE_THRESHOLD {
         if let Err(err) = agents::set_status(db.conn(), project_id, agent_id, "paused").await {
-            tracing::warn!(project_id, agent_id, error = %err, "drift_hook: pause failed");
+            tracing::warn!(project_id, agent_id, error = %err, "drift_hook: pause DB row failed");
         } else {
             bus.emit(
                 "agent.status",
@@ -200,6 +212,14 @@ async fn inner(
                     "reason": "drift_auto_pause",
                 }),
             );
+        }
+        if let Some(reg) = executors {
+            if let Err(err) = reg.pause(agent_id).await {
+                tracing::warn!(
+                    project_id, agent_id, error = %err,
+                    "drift_hook: pause executor failed"
+                );
+            }
         }
     }
 
