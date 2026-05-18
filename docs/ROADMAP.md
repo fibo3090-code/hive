@@ -13,6 +13,10 @@ Each item below is a multi-commit effort; rough descending priority.
 
 Make "create a project" actually do something end-to-end.
 
+- Recent groundwork: `/launch` now indexes the created spec document into
+  sections, persists a local deterministic task plan when no LLM planner is
+  reachable, and preserves uploaded checklist/numbered TODO items instead of
+  forcing them into a generic 3-phase plan.
 - Auto-create the coordinator ("CEO") on `/launch` (or on first project open).
 - Turn the onboarding **Describe** step into a back-and-forth chat with the
   coordinator (`POST /v1/projects/:id/coordinator/converse`) instead of a plain

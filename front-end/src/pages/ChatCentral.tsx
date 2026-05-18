@@ -22,6 +22,7 @@ import {
   attachmentDownloadUrl,
   type ChatAttachment,
   type ChatMessage,
+  type ChatSegment,
   type ChatThread,
   type ToolCallTrace,
 } from '@/api/chat';
@@ -161,6 +162,96 @@ function extractMentionTarget(input: string, agents: Array<{ id: string; name: s
     }
   }
   return null;
+}
+
+/**
+ * Inline tool-call bubble used by [`MessageSegments`] when rendering a
+ * live stream. Same styling as [`ToolCallList`]'s rows but standalone so
+ * it can sit between two text spans in arrival order.
+ */
+function InlineToolCall({ seg }: { readonly seg: Extract<ChatSegment, { kind: 'tool' }> }) {
+  const statusColor =
+    seg.status === 'error'
+      ? 'text-destructive'
+      : seg.status === 'running'
+        ? 'text-warning'
+        : 'text-primary';
+  const statusLabel =
+    seg.status === 'running'
+      ? '⏵ running'
+      : seg.status === 'error'
+        ? '✕ error'
+        : '✓ ok';
+  return (
+    <details
+      className="my-2 rounded-md border border-border bg-surface-2 px-3 py-2"
+      open={seg.status === 'error' || seg.status === 'running'}
+      aria-label={`Tool call: ${seg.tool}`}
+    >
+      <summary className={`cursor-pointer text-xs font-mono ${statusColor} flex items-center gap-2`}>
+        <span>{seg.tool}</span>
+        <span className="text-micro opacity-80">{statusLabel}</span>
+      </summary>
+      <div className="mt-2 space-y-2">
+        {seg.error && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-micro text-destructive">
+            {seg.error}
+          </div>
+        )}
+        {seg.args !== undefined && (
+          <JsonViewer value={seg.args} label="arguments" previewChars={240} />
+        )}
+        {seg.result !== undefined && (
+          <JsonViewer value={seg.result} label="result" previewChars={320} />
+        )}
+      </div>
+    </details>
+  );
+}
+
+/**
+ * Render an assistant message in arrival order: each text segment as a
+ * paragraph, each tool segment as an inline collapsible bubble between
+ * the surrounding text. This is the causal-honesty rendering the plan
+ * called out — the previous "all text, then all tools at the bottom"
+ * approach broke the user's mental model of what happened when.
+ *
+ * Only used while a message is still streaming (segments live in
+ * `useChatStream`); persisted messages fall back to the legacy
+ * "body + ToolCallList" layout because the backend doesn't yet store
+ * segment order (it stores `content: string` and `toolCalls: array`).
+ */
+function MessageSegments({
+  segments,
+  isStreaming,
+}: {
+  readonly segments: ChatSegment[];
+  readonly isStreaming: boolean;
+}) {
+  if (segments.length === 0) {
+    return isStreaming ? <span className="opacity-50">…</span> : null;
+  }
+  return (
+    <div className="text-sm whitespace-pre-wrap leading-relaxed">
+      {segments.map((seg, idx) => {
+        if (seg.kind === 'text') {
+          // Show the streaming caret only on the very last text segment
+          // (because the model is still appending characters there).
+          const isLastTextStreaming =
+            isStreaming &&
+            idx === segments.length - 1 &&
+            seg.kind === 'text';
+          return (
+            <span key={`seg-${idx}`}>
+              {seg.content}
+              {isLastTextStreaming && <span className="inline-block ml-0.5 animate-pulse">▊</span>}
+            </span>
+          );
+        }
+        return <InlineToolCall key={`seg-${idx}`} seg={seg} />;
+      })}
+    </div>
+  );
 }
 
 function ToolCallList({ toolCalls }: { readonly toolCalls: ToolCallTrace[] }) {
@@ -341,15 +432,21 @@ export default function ChatCentral() {
 
   // Assemble the render list: merge persisted messages with any in-flight
   // streaming content (assistant chunks not yet finalized in DB).
-  const renderMessages = useMemo<ChatMessage[]>(() => {
+  //
+  // We attach `liveSegments` (non-persisted) on top of each ChatMessage so
+  // the JSX below can render text + tool calls in arrival order
+  // (causal honesty). Persisted messages don't carry segments — the
+  // backend stores `content: string` and `toolCalls: array` so we lose
+  // ordering at finalize time; for those we fall back to the legacy
+  // body + ToolCallList layout.
+  type RenderMessage = ChatMessage & { liveSegments?: ChatSegment[] };
+  const renderMessages = useMemo<RenderMessage[]>(() => {
     return messages.map((m) => {
       const live = streaming[m.id];
       if (live && m.status !== 'done') {
-        // Derive a flat toolCalls list from the live segments so the existing
-        // ToolCallList renderer keeps working. Tool segments preserve arrival
-        // order (causal honesty) — text-vs-tool interleave is not yet shown
-        // in the message body (Sprint 1 ships ordered tool list + metadata;
-        // full interleaved rendering arrives in Sprint 1.5).
+        // Keep the flat toolCalls fallback for the (legacy) ToolCallList
+        // path, but also surface the live segments so the renderer below
+        // can use them when present.
         const liveToolCalls: ToolCallTrace[] = live.segments
           .filter((s): s is Extract<typeof live.segments[number], { kind: 'tool' }> => s.kind === 'tool')
           .map((s) => ({
@@ -366,6 +463,7 @@ export default function ChatCentral() {
           tokensIn: live.tokensIn ?? m.tokensIn,
           tokensOut: live.tokensOut ?? m.tokensOut,
           costCents: live.costCents ?? m.costCents,
+          liveSegments: live.segments,
         };
       }
       return m;
@@ -680,22 +778,31 @@ export default function ChatCentral() {
                   </div>
                 )}
                 <div className={cn('rounded-lg px-4 py-2.5', isUser ? 'bg-primary/10 text-foreground' : 'bg-card border border-border')}>
-                  <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                    {thinking && (
-                      <details className="mb-2 rounded-md border border-border bg-surface-2 px-3 py-2" open={isStreaming}>
-                        <summary className="cursor-pointer text-xs font-mono text-muted-foreground select-none opacity-80 hover:opacity-100">
-                          Agent Reasoning
-                        </summary>
-                        <div className="mt-2 text-xs italic text-muted-foreground whitespace-pre-wrap border-l-2 border-primary/20 pl-3 ml-1 mb-1">
-                          {thinking}
-                          {isStreaming && !body && <span className="inline-block ml-0.5 animate-pulse">▊</span>}
-                        </div>
-                      </details>
-                    )}
-                    {body || (isStreaming && !thinking ? <span className="opacity-50">…</span> : null)}
-                    {isStreaming && body && <span className="inline-block ml-0.5 animate-pulse">▊</span>}
-                  </div>
-                <ToolCallList toolCalls={message.toolCalls ?? []} />
+                  {thinking && (
+                    <details className="mb-2 rounded-md border border-border bg-surface-2 px-3 py-2" open={isStreaming}>
+                      <summary className="cursor-pointer text-xs font-mono text-muted-foreground select-none opacity-80 hover:opacity-100">
+                        Agent Reasoning
+                      </summary>
+                      <div className="mt-2 text-xs italic text-muted-foreground whitespace-pre-wrap border-l-2 border-primary/20 pl-3 ml-1 mb-1">
+                        {thinking}
+                        {isStreaming && !body && <span className="inline-block ml-0.5 animate-pulse">▊</span>}
+                      </div>
+                    </details>
+                  )}
+                  {/* Inline interleave when streaming (segments are alive). For
+                      persisted messages the segments don't survive backend
+                      finalize, so we fall back to body + ToolCallList. */}
+                  {message.liveSegments && message.liveSegments.length > 0 ? (
+                    <MessageSegments segments={message.liveSegments} isStreaming={isStreaming} />
+                  ) : (
+                    <>
+                      <div className="text-sm whitespace-pre-wrap leading-relaxed">
+                        {body || (isStreaming && !thinking ? <span className="opacity-50">…</span> : null)}
+                        {isStreaming && body && <span className="inline-block ml-0.5 animate-pulse">▊</span>}
+                      </div>
+                      <ToolCallList toolCalls={message.toolCalls ?? []} />
+                    </>
+                  )}
                 {code && <CodeBlock language={code.language} code={code.code} />}
                 {isUser && <MessageAttachments messageId={message.id} />}
                 {!isUser ? (

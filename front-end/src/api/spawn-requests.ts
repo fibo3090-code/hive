@@ -122,3 +122,39 @@ export function useUpdateSpawnRequest(projectId: string | null | undefined) {
     },
   });
 }
+
+/**
+ * Approve a spawn request that's parked in `awaiting-approval`. Resumes the
+ * pipeline server-side; the request is expected to move to `materializing-agent`
+ * and then `completed` over the next few seconds.
+ */
+export function useApproveSpawnRequest(projectId: string | null | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api<{ ok: boolean }>(`/v1/spawn-requests/${id}/approve`, { method: 'POST' }),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: spawnKey(projectId) });
+      qc.invalidateQueries({ queryKey: ['spawn-request', id] });
+    },
+  });
+}
+
+/**
+ * Reject a spawn request: flips it to `cancelled` via the generic PATCH path.
+ * The backend's pipeline checks this status before each step and stops.
+ */
+export function useRejectSpawnRequest(projectId: string | null | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api<AgentSpawnRequest>(`/v1/spawn-requests/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'cancelled' satisfies SpawnStatus }),
+      }),
+    onSuccess: (req) => {
+      qc.invalidateQueries({ queryKey: spawnKey(projectId) });
+      qc.invalidateQueries({ queryKey: ['spawn-request', req.id] });
+    },
+  });
+}

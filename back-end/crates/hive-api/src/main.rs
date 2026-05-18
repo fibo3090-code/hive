@@ -957,8 +957,12 @@ fn cors_layer() -> CorsLayer {
     let default_origins: &[&str] = &[
         "http://127.0.0.1:8080",
         "http://localhost:8080",
+        "http://127.0.0.1:8081",
+        "http://localhost:8081",
         "http://127.0.0.1:5173",
         "http://localhost:5173",
+        "http://127.0.0.1:5174",
+        "http://localhost:5174",
     ];
     let origins: Vec<String> = if env_origins.is_empty() {
         default_origins.iter().map(|s| (*s).to_owned()).collect()
@@ -1636,7 +1640,7 @@ async fn setup_database(
     Json(body): Json<SetupDatabaseBody>,
 ) -> Result<Json<SetupStatus>, AppError> {
     let config_path = state.workspace_root.join("config").join("local.toml");
-    let data_dir = state.workspace_root.join("data");
+    let data_dir = resolve_data_dir(&state.workspace_root);
     fs::create_dir_all(&data_dir).map_err(|err| AppError::Internal(err.to_string()))?;
 
     let database_url = if body.engine == "postgres" {
@@ -1669,6 +1673,7 @@ async fn setup_database(
         current.db = db;
         current.database_url = database_url;
         current.engine = body.engine.clone();
+        current.data_dir = data_dir.clone();
         current.needs_setup = false;
     }
 
@@ -2415,19 +2420,82 @@ fn coordinator_tools(team_mode: Option<bool>) -> Vec<String> {
 }
 
 fn coordinator_system_prompt(team_mode: Option<bool>) -> String {
-    let lead = "You are the Coordinator (CEO) for this project. \
-Your job is to turn the user's intent into a single, well-scoped spec \
-document and delegate execution.";
-    let team_clause = match team_mode {
-        Some(true) =>
-            " Team mode is ON: spawn specialist agents (research, architect, product) for non-trivial work. \
-Don't do deep research yourself — delegate.",
-        Some(false) =>
-            " Team mode is OFF: you work alone. Use web_search sparingly; the spec doc you produce \
-will be lower-fidelity than the team-mode equivalent.",
+    let team_section = match team_mode {
+        Some(true) => "\n\n<team_mode>\n\
+ON. You have specialists available. For non-trivial work, spawn the right specialist (research, architect, frontend, backend, QA, security, docs, data, ML) with `spawn_agent` and a bounded brief; do NOT do their work yourself.\n\
+</team_mode>",
+        Some(false) => "\n\n<team_mode>\n\
+OFF. You work alone. Use `web_search` sparingly; the spec you produce will be lower-fidelity than the team-mode equivalent. Do not call `spawn_agent` in this mode.\n\
+</team_mode>",
         None => "",
     };
-    format!("{lead}{team_clause}")
+
+    format!(
+        "You are the Coordinator (CEO) for this project inside HIVE, a local-first multi-agent workspace.\n\
+\n\
+<mission>\n\
+Turn the user's intent into a single, well-scoped spec document, then break it into a sequence of concrete sprints + tasks. After that, delegate execution and monitor progress.\n\
+</mission>\n\
+\n\
+<your_tools>\n\
+You have a broader tool surface than most agents — actually use it. Do not stay parked on `web_search` / `fs_read`; the project-state tools below are how you keep the org coordinated.\n\
+\n\
+Coordination (most important — you are the CEO):\n\
+- `spawn_agent` — create a sub-agent with a role, model, and system-prompt. Use a concrete brief: assignment + ownership boundary + expected output.\n\
+- `delegate_task` — hand a bounded unit of work to an agent you can see (creates a tracked task and dispatches it in one call). Prefer this over freeform `message_agent` for actual work.\n\
+- `monitor_agent` — peek at a sub-agent's status + recent inbox without interrupting it. Use this before re-tasking.\n\
+- `message_agent` — short coordination updates / clarifications. Only to direct parents and your own descendants.\n\
+- `list_visible_agents` — see who you can reach right now.\n\
+- `request_relay` — when you need to message an agent outside your visibility, route through a parent that can see them.\n\
+- `delete_agent` — retire a sub-agent that's done its job.\n\
+\n\
+Planning (file the work the team will execute):\n\
+- `add_task` — file a new task in the backlog (title, optional agentId/phase/priority). The autonomous scheduler will pick it up.\n\
+- `set_task_status` — mark a task `completed` / `blocked` / `in-progress` / `cancelled` with a one-line `summary`. **This is how the scheduler stops looping on a finished task.**\n\
+- `list_spec_docs` / `read_spec_doc` — ground every decision in the spec instead of paraphrasing it.\n\
+- `add_tech_debt` / `update_tech_debt` — when the team takes a shortcut, file it so it doesn't disappear.\n\
+- `record_drift` — when you spot an agent diverging from its assignment, write a drift event so the operator sees it (instead of silently letting them go off-rail).\n\
+\n\
+Memory (durable across turns and agents):\n\
+- `hive_mind_write` — record decisions, conventions, and project facts other agents should know. Use a clear `category` (Architecture / Decisions / Patterns / Issues).\n\
+- `hive_mind_list` / `hive_mind_read` — recall before you reinvent.\n\
+- `hive_mind_delete` — prune stale notes (project-scoped — you can only delete notes in this project).\n\
+\n\
+Skills (playbooks bound to specific agents):\n\
+- `list_skills` — see the skills bound to *you* right now.\n\
+- `read_skill('slug')` — pull the full playbook (system prompt fragment, allowed tools/paths, capability tags, markdown body) before applying it.\n\
+\n\
+Code + filesystem (use when you're verifying claims, not when you're delegating implementation):\n\
+- `fs_list` / `fs_read` / `fs_write` — workspace-relative paths only. `fs_write` requires both `path` and `content`.\n\
+- `git_status` / `git_diff` / `git_log` — inspect the working tree. `git_commit` for coherent checkpoints. `git_pull` / `git_push` only on cloud-tier projects.\n\
+\n\
+Research:\n\
+- `web_search` / `web_fetch` — fresh, time-sensitive facts (versions, APIs, advisories). Don't paraphrase your training data when these are available.\n\
+- `shell_exec` — bounded commands inside the sandbox; pass `command` + `args` array.\n\
+\n\
+Self:\n\
+- `todo` — your own internal checklist for multi-step work (action: add/complete/remove/list).\n\
+</your_tools>\n\
+\n\
+<operating_loop>\n\
+1. Read the user's intent. If it's vague, ask one focused clarifying question — then proceed.\n\
+2. Read the existing spec (`list_spec_docs` + `read_spec_doc`). Don't rewrite it from scratch if there's already a partial one.\n\
+3. Decide: which agents are needed? What sprints / tasks? Capture them with `add_task` (and `spawn_agent` if team mode).\n\
+4. Delegate via `delegate_task` to the right specialist. Use `monitor_agent` to follow up — don't ping repeatedly.\n\
+5. As work completes, `set_task_status` so the scheduler stops re-dispatching.\n\
+6. Record durable decisions in `hive_mind_write` so future agents benefit.\n\
+7. Report progress to the user concisely. Lead with what shipped, what's blocked, and the one decision they need to make.\n\
+</operating_loop>\n\
+\n\
+<anti_patterns>\n\
+- Doing implementation work yourself when a specialist is available.\n\
+- Letting the scheduler re-dispatch a finished task because you forgot to call `set_task_status`.\n\
+- Spawning two agents that own the same files (race) — give each a non-overlapping scope.\n\
+- Treating `message_agent` as a substitute for `delegate_task` — the latter creates the tracked task, the former just sends a chat line.\n\
+- Hard-coding facts from your training when `web_search` / `web_fetch` exists.\n\
+</anti_patterns>{team_section}",
+        team_section = team_section,
+    )
 }
 
 async fn ensure_coordinator(
@@ -3358,16 +3426,18 @@ async fn post_project_genesis_preview(
     let agent_count = body.agent_count.unwrap_or(3).clamp(1, 12) as usize;
 
     let database = db(&state).await;
-    if let Ok((provider_id, model_id)) = resolve_chat_target(&state, None).await {
-        if let Ok(Some(provider_row)) = llm_providers::get(database.conn(), &provider_id).await {
-            if let Ok(config) = build_provider_config(&state, &provider_row).await {
-                let client = hive_llm::client_for(config);
-                let prompt = format!(
+    if !has_explicit_checklist(source_text) {
+        if let Ok((provider_id, model_id)) = resolve_chat_target(&state, None).await {
+            if let Ok(Some(provider_row)) = llm_providers::get(database.conn(), &provider_id).await
+            {
+                if let Ok(config) = build_provider_config(&state, &provider_row).await {
+                    let client = hive_llm::client_for(config);
+                    let prompt = format!(
                     "You are the Hive Project Genesis Planner.\n\
                      You are given a description of a project to build and an agent count ({} agents).\n\
-                     Break this down into 3-5 logical phases.\n\
-                     Each phase must have a name (\"Phase X · <name>\") and an array of 3-5 string tasks.\n\
-                     Also return an array of 3-5 high-level requirements.\n\
+                     Break this down into as many logical phases as the scope deserves (usually 2-6; never a fixed template).\n\
+                     Each phase must have a name (\"Phase X · <name>\") and an array of concrete string tasks.\n\
+                     Also return high-level requirements.\n\
                      Respond ONLY with a JSON object in this format, and no markdown formatting or prose:\n\
                      {{\n\
                        \"phases\": [\n\
@@ -3380,23 +3450,24 @@ async fn post_project_genesis_preview(
                     agent_count
                 );
 
-                let messages = vec![
-                    hive_llm::chat::ChatMessage::system(prompt),
-                    hive_llm::chat::ChatMessage::user(source_text.to_string()),
-                ];
+                    let messages = vec![
+                        hive_llm::chat::ChatMessage::system(prompt),
+                        hive_llm::chat::ChatMessage::user(source_text.to_string()),
+                    ];
 
-                let request = hive_llm::chat::ChatRequest::new(model_id, messages);
-                if let Ok(response) = client.chat(request).await {
-                    let cleaned_text = response
-                        .text
-                        .trim()
-                        .trim_start_matches("```json")
-                        .trim_start_matches("```")
-                        .trim_end_matches("```")
-                        .trim();
-                    if let Ok(json) = serde_json::from_str::<Value>(cleaned_text) {
-                        if json.get("phases").is_some() {
-                            return Ok(Json(json));
+                    let request = hive_llm::chat::ChatRequest::new(model_id, messages);
+                    if let Ok(response) = client.chat(request).await {
+                        let cleaned_text = response
+                            .text
+                            .trim()
+                            .trim_start_matches("```json")
+                            .trim_start_matches("```")
+                            .trim_end_matches("```")
+                            .trim();
+                        if let Ok(json) = serde_json::from_str::<Value>(cleaned_text) {
+                            if json.get("phases").is_some() {
+                                return Ok(Json(json));
+                            }
                         }
                     }
                 }
@@ -3418,32 +3489,17 @@ async fn post_project_genesis_preview(
         lead_words.join(" ")
     };
 
-    let phases = json!([
-        {
-            "phase": "Phase 1 · Foundations",
-            "tasks": [
-                format!("Set up project structure for {lead}"),
-                "Configure routing and shell".to_string(),
-                "Initialise workspace and git repository".to_string(),
-            ],
-        },
-        {
-            "phase": "Phase 2 · Core surface",
-            "tasks": [
-                format!("Wire interactive controls for {lead}"),
-                "Connect cross-page state".to_string(),
-                "Add persisted preferences".to_string(),
-            ],
-        },
-        {
-            "phase": "Phase 3 · Polish & ship",
-            "tasks": [
-                "Verify interactions end-to-end".to_string(),
-                "Polish activity flows and accessibility".to_string(),
-                "Prepare launch report".to_string(),
-            ],
-        },
-    ]);
+    let phases = Value::Array(
+        deterministic_planner_phases(source_text)
+            .into_iter()
+            .map(|phase| {
+                json!({
+                    "phase": phase.name,
+                    "tasks": phase.tasks.into_iter().map(|task| task.title).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    );
 
     let requirements = json!([
         { "title": format!("MVP user surface for {lead}"), "priority": "must" },
@@ -3601,11 +3657,17 @@ async fn launch_project(
             },
         )
         .await?;
+        spec_document_sections::sync_for_document(
+            database.conn(),
+            &doc.id,
+            into_upserts(parse_sections(desc)),
+        )
+        .await?;
         spec_document_id = Some(doc.id);
         steps.push(launch_step(
             "spec-document",
             "ok",
-            "brief saved as a spec document",
+            "brief saved as a spec document and indexed for Planning",
         ));
     } else {
         steps.push(launch_step(
@@ -3674,22 +3736,32 @@ async fn launch_project(
 /// roles, then persist each phase as a `sprints` row and each task as a `tasks`
 /// row (round-robin assigned to existing agents whose role matches, else
 /// unassigned). On any failure returns a human-readable reason.
-async fn decompose_brief(
+#[derive(Clone, Debug)]
+struct PlannerPhase {
+    name: String,
+    tasks: Vec<PlannerTask>,
+}
+
+#[derive(Clone, Debug)]
+struct PlannerTask {
+    title: String,
+    priority: String,
+    assignee: Option<String>,
+}
+
+async fn planner_phases_from_llm(
     state: &AppState,
     project_id: &str,
     description: &str,
-) -> Result<(Vec<String>, Vec<String>), String> {
+    agents_list: &[hive_db::entities::agent::Model],
+) -> Result<Vec<PlannerPhase>, String> {
     let database = db(state).await;
-    let agents_list = agents::list_by_project(database.conn(), project_id)
-        .await
-        .map_err(|e| format!("list agents: {e}"))?;
-
     let (provider_id, model_id) = resolve_chat_target(state, None)
         .await
         .map_err(|e| format!("no planner model: {e}"))?;
     let provider_row = llm_providers::get(database.conn(), &provider_id)
         .await
-        .map_err(|e| format!("provider lookup: {e}"))?
+        .map_err(|e| format!("provider lookup for {project_id}: {e}"))?
         .ok_or_else(|| "planner provider not found".to_owned())?;
     let config = build_provider_config(state, &provider_row)
         .await
@@ -3701,13 +3773,18 @@ async fn decompose_brief(
     } else {
         format!(
             "Existing agent roles you may assign tasks to (use the role string verbatim, or \"\" to leave unassigned): {}",
-            agents_list.iter().map(|a| a.role.clone()).collect::<Vec<_>>().join(", ")
+            agents_list
+                .iter()
+                .map(|a| a.role.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     };
     let prompt = format!(
-        "You are the Hive project planner. Break the project brief into 3-5 phases. \
-         Each phase has a short name and 3-6 tasks; each task has a title, a priority \
-         (low|medium|high), and an assignee role. {roles_hint}\n\
+        "You are the Hive project planner. Break the project brief into as many phases as the scope deserves: \
+         usually 2-6 phases, never a fixed template. Each phase has a short name and 2-7 concrete tasks; \
+         each task has a title, a priority (low|medium|high), and an assignee role. {roles_hint}\n\
+         If the user uploaded a todo list, preserve its intent instead of replacing it with generic app tasks.\n\
          Respond ONLY with JSON, no markdown fences, no prose:\n\
          {{ \"phases\": [ {{ \"name\": \"...\", \"tasks\": [ {{ \"title\": \"...\", \"priority\": \"medium\", \"assignee\": \"\" }} ] }} ] }}"
     );
@@ -3737,6 +3814,234 @@ async fn decompose_brief(
         .filter(|p| !p.is_empty())
         .ok_or_else(|| "planner returned no phases".to_owned())?;
 
+    Ok(phases
+        .iter()
+        .enumerate()
+        .map(|(i, phase)| {
+            let name = phase
+                .get("name")
+                .or_else(|| phase.get("phase"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("Phase {}", i + 1));
+            let tasks = phase
+                .get("tasks")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(planner_task_from_value)
+                .collect();
+            PlannerPhase { name, tasks }
+        })
+        .filter(|phase| !phase.tasks.is_empty())
+        .collect())
+}
+
+fn planner_task_from_value(value: &Value) -> Option<PlannerTask> {
+    if let Some(title) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(PlannerTask {
+            title: title.to_owned(),
+            priority: "medium".to_owned(),
+            assignee: None,
+        });
+    }
+
+    let title = value
+        .get("title")
+        .or_else(|| value.get("task"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let priority = value
+        .get("priority")
+        .and_then(Value::as_str)
+        .map(|p| p.trim().to_lowercase())
+        .filter(|p| ["low", "medium", "high"].contains(&p.as_str()))
+        .unwrap_or_else(|| "medium".to_owned());
+    let assignee = value
+        .get("assignee")
+        .or_else(|| value.get("agentRole"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    Some(PlannerTask {
+        title: title.to_owned(),
+        priority,
+        assignee,
+    })
+}
+
+fn has_explicit_checklist(description: &str) -> bool {
+    description.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("- [ ] ")
+            || trimmed.starts_with("* [ ] ")
+            || trimmed.starts_with("- [x] ")
+            || trimmed.starts_with("- [X] ")
+            || trimmed.starts_with("* [x] ")
+            || trimmed.starts_with("* [X] ")
+    })
+}
+
+fn deterministic_planner_phases(description: &str) -> Vec<PlannerPhase> {
+    let sections = parse_sections(description);
+    let mut phases: Vec<PlannerPhase> = sections
+        .iter()
+        .filter_map(|section| {
+            let tasks = task_titles_from_text(&section.body);
+            if tasks.is_empty() {
+                None
+            } else {
+                Some(PlannerPhase {
+                    name: section.title.clone(),
+                    tasks: tasks
+                        .into_iter()
+                        .map(|title| PlannerTask {
+                            title,
+                            priority: "medium".to_owned(),
+                            assignee: None,
+                        })
+                        .collect(),
+                })
+            }
+        })
+        .collect();
+
+    if phases.is_empty() {
+        let lead = description
+            .split_whitespace()
+            .filter(|w| w.len() > 3 && w.chars().any(char::is_alphabetic))
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let subject = if lead.is_empty() { "project" } else { &lead };
+        phases = vec![
+            PlannerPhase {
+                name: "Clarify scope".to_owned(),
+                tasks: vec![
+                    PlannerTask {
+                        title: format!(
+                            "Extract goals, constraints, and acceptance criteria for {subject}"
+                        ),
+                        priority: "high".to_owned(),
+                        assignee: None,
+                    },
+                    PlannerTask {
+                        title: "Identify user journeys and data model assumptions".to_owned(),
+                        priority: "medium".to_owned(),
+                        assignee: None,
+                    },
+                ],
+            },
+            PlannerPhase {
+                name: "Build core path".to_owned(),
+                tasks: vec![
+                    PlannerTask {
+                        title: format!("Implement the first usable vertical slice for {subject}"),
+                        priority: "high".to_owned(),
+                        assignee: None,
+                    },
+                    PlannerTask {
+                        title: "Wire persistence, runtime behaviour, and UI states".to_owned(),
+                        priority: "medium".to_owned(),
+                        assignee: None,
+                    },
+                ],
+            },
+            PlannerPhase {
+                name: "Verify and polish".to_owned(),
+                tasks: vec![
+                    PlannerTask {
+                        title: "Run end-to-end verification and fix launch blockers".to_owned(),
+                        priority: "high".to_owned(),
+                        assignee: None,
+                    },
+                    PlannerTask {
+                        title: "Polish copy, empty states, and failure handling".to_owned(),
+                        priority: "medium".to_owned(),
+                        assignee: None,
+                    },
+                ],
+            },
+        ];
+    }
+
+    phases
+}
+
+fn task_titles_from_text(text: &str) -> Vec<String> {
+    let mut tasks = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let candidate = trimmed
+            .strip_prefix("- [ ] ")
+            .or_else(|| trimmed.strip_prefix("* [ ] "))
+            .or_else(|| trimmed.strip_prefix("- [x] "))
+            .or_else(|| trimmed.strip_prefix("- [X] "))
+            .or_else(|| trimmed.strip_prefix("* [x] "))
+            .or_else(|| trimmed.strip_prefix("* [X] "))
+            .or_else(|| trimmed.strip_prefix("- "))
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| {
+                let (prefix, rest) = trimmed.split_once(". ")?;
+                prefix.parse::<u32>().ok()?;
+                Some(rest)
+            })
+            .map(str::trim);
+        if let Some(title) = candidate.filter(|s| !s.is_empty()) {
+            tasks.push(title.to_owned());
+        }
+    }
+
+    if tasks.is_empty() {
+        let summary = text
+            .split_terminator(['.', '\n'])
+            .map(str::trim)
+            .filter(|s| s.split_whitespace().count() >= 4)
+            .take(4)
+            .map(|s| {
+                if s.len() > 120 {
+                    format!("{}...", s.chars().take(117).collect::<String>())
+                } else {
+                    s.to_owned()
+                }
+            });
+        tasks.extend(summary);
+    }
+    tasks
+}
+
+async fn decompose_brief(
+    state: &AppState,
+    project_id: &str,
+    description: &str,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let database = db(state).await;
+    let agents_list = agents::list_by_project(database.conn(), project_id)
+        .await
+        .map_err(|e| format!("list agents: {e}"))?;
+
+    let llm_phases = if has_explicit_checklist(description) {
+        None
+    } else {
+        match planner_phases_from_llm(state, project_id, description, &agents_list).await {
+            Ok(phases) if !phases.is_empty() => Some(phases),
+            Ok(_) => None,
+            Err(err) => {
+                tracing::warn!(
+                    project_id = %project_id,
+                    error = %err,
+                    "planner LLM unavailable or invalid; using deterministic onboarding decomposition"
+                );
+                None
+            }
+        }
+    };
+    let phases = llm_phases.unwrap_or_else(|| deterministic_planner_phases(description));
+
     let role_to_agent: std::collections::HashMap<String, String> = agents_list
         .iter()
         .map(|a| (a.role.to_lowercase(), a.id.clone()))
@@ -3745,13 +4050,12 @@ async fn decompose_brief(
     let mut sprint_ids = Vec::new();
     let mut task_ids = Vec::new();
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    for (i, phase) in phases.iter().enumerate() {
-        let name = phase
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|s| !s.trim().is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("Phase {}", i + 1));
+    for (i, phase) in phases.into_iter().enumerate() {
+        let name = if phase.name.trim().is_empty() {
+            format!("Phase {}", i + 1)
+        } else {
+            phase.name
+        };
         let sprint = sprints::create(
             database.conn(),
             sprints::CreateSprint {
@@ -3773,29 +4077,18 @@ async fn decompose_brief(
         .map_err(|e| format!("create sprint: {e}"))?;
         sprint_ids.push(sprint.id.clone());
 
-        let tasks_arr = phase
-            .get("tasks")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        for t in tasks_arr {
-            let title = t
-                .get("title")
-                .and_then(Value::as_str)
+        for task_plan in phase.tasks {
+            let title = task_plan.title.trim();
+            if title.is_empty() {
+                continue;
+            }
+            let priority = task_plan.priority;
+            let agent_id = task_plan
+                .assignee
+                .as_deref()
                 .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let Some(title) = title else { continue };
-            let priority = t
-                .get("priority")
-                .and_then(Value::as_str)
-                .map(|p| p.to_lowercase())
-                .filter(|p| ["low", "medium", "high"].contains(&p.as_str()))
-                .unwrap_or_else(|| "medium".to_owned());
-            let agent_id = t
-                .get("assignee")
-                .and_then(Value::as_str)
-                .map(|r| r.trim().to_lowercase())
                 .filter(|r| !r.is_empty())
+                .map(str::to_lowercase)
                 .and_then(|r| role_to_agent.get(&r).cloned());
             let task = tasks::create(
                 database.conn(),
@@ -6170,7 +6463,7 @@ When `web_search` or `web_fetch` is available in this session, use it before ass
 </knowledge_and_search>
 
 <tools_registry>
-Use ONLY tools the host exposes in this session. Do not invent names (there is no `file_write` or generic write tool beyond `fs_write`).
+Use ONLY tools the host exposes in this session. The complete JSON catalog with input schemas is appended to your system prompt by the runtime — read it before assuming a tool's signature. Do not invent names (there is no `file_write` or generic write tool beyond `fs_write`).
 
 Filesystem (workspace-relative paths):
 - `fs_list`: optional `path` (defaults to ".") and optional `maxEntries`.
@@ -6184,7 +6477,19 @@ Web:
 - `web_fetch`: REQUIRED `url` (absolute http/https); optional `maxBytes`.
 - `web_search`: REQUIRED `query` (string); optional `maxResults`. Only present when the deployment configured a search provider.
 
-Always pass complete JSON arguments matching the tool schema shown to you; missing required fields return structured errors.
+Project-state tools (often available — check the appended catalog):
+- Memory: `hive_mind_write`, `hive_mind_list`, `hive_mind_read`, `hive_mind_delete`. Persist durable decisions instead of repeating them in-context.
+- Planning: `add_task`, `set_task_status` (status: pending/in-progress/queued/completed/blocked/cancelled), `list_spec_docs`, `read_spec_doc`, `add_tech_debt`, `update_tech_debt`, `record_drift`.
+- Skills: `list_skills`, `read_skill`.
+- Self: `todo` (multi-step internal checklist — action: add/complete/remove/list).
+
+Agent-team tools (when this thread is driven by an agent, not the operator):
+- `spawn_agent`, `delegate_task`, `message_agent`, `monitor_agent`, `delete_agent`, `list_visible_agents`, `request_relay`.
+
+Git (sovereignty-gated):
+- `git_status`, `git_diff`, `git_log`, `git_commit` always available on a project. `git_pull`, `git_push` only on cloud-tier projects.
+
+Always pass complete JSON arguments matching the tool schema shown to you; missing required fields return structured errors. If a tool you'd reach for isn't in the appended catalog, it isn't enabled for this session — pick the closest one that IS.
 </tools_registry>
 
 <workflow>
@@ -6267,21 +6572,58 @@ Your role is `{role}`. Your display name is `{name}`.\n\
 - If a tool fails, diagnose the failure once, then try a smaller, better-scoped action or report the precise blocker.\n\
 </tool_policy>\n\
 \n\
+<available_tools>\n\
+The host exposes more than just fs/web/shell. The full JSON catalog is appended after this prompt by the runtime — read it. The categories below tell you WHEN to reach for each one. Project-state tools are NOT optional decoration; the scheduler depends on you calling them.\n\
+\n\
+Code + filesystem (workspace-relative paths only):\n\
+- `fs_list`(path?, maxEntries?), `fs_read`(path, maxBytes?), `fs_write`(path, content). `fs_write` requires BOTH keys — partial JSON is rejected. Caps: 16 MiB read, 32 MiB write.\n\
+\n\
+Shell (sandboxed, env-scrubbed):\n\
+- `shell_exec`(command, args?, timeoutSeconds?). On Windows, fall back from `python3` to `python`.\n\
+\n\
+Research (fresh time-sensitive facts):\n\
+- `web_search`(query, maxResults?) — provider-gated.\n\
+- `web_fetch`(url, maxBytes?) — 5 MiB hard cap; private/loopback/AWS-metadata IPs are blocked.\n\
+\n\
+Project memory — DURABLE, USE INSTEAD OF IN-CONTEXT MEMORY:\n\
+- `hive_mind_write`(category, title, content) — categories: Architecture / Decisions / Patterns / Issues / Auto-generated.\n\
+- `hive_mind_list`(category?), `hive_mind_read`(id), `hive_mind_delete`(id) — project-isolated.\n\
+\n\
+Planning + task closure (THIS IS HOW YOU TELL THE RUNTIME YOU'RE DONE):\n\
+- `list_spec_docs`(), `read_spec_doc`(id) — ground every decision in the spec instead of paraphrasing it.\n\
+- `add_task`(title, agentId?, phase?, priority?) — file follow-up work for the team. The scheduler will pick it up.\n\
+- `set_task_status`(taskId, status, summary?) — status one of: `pending`, `in-progress`, `queued`, `completed`, `blocked`, `cancelled`. **CRITICAL: the autonomous scheduler keeps re-dispatching the same task until you mark it `completed` or `blocked`. If you finish work and don't call this, the system hands the task back to you next tick.**\n\
+- `add_tech_debt`(title, description?, file?, impact?, severity?, lines?), `update_tech_debt`(id, ...) — file shortcuts so they don't vanish.\n\
+- `record_drift`(kind, subjectId, severity, evidenceJson) — when your work, the code, or behaviour has diverged from its intent.\n\
+\n\
+Skills (playbooks bound to YOU):\n\
+- `list_skills`() — what's bound to this agent right now.\n\
+- `read_skill`(slug) — full playbook (system prompt fragment, allowed tools/paths, capability tags, markdown body).\n\
+\n\
+Coordination (direct parents + your own descendants only):\n\
+- `list_visible_agents`() — who you can reach.\n\
+- `message_agent`(toAgentId, content) — short coordination only, not for handing off work.\n\
+- `request_relay`(throughAgentId, toAgentId, content) — route through a parent for distant agents.\n\
+- `spawn_agent`(role, name, model?, systemPrompt?, ...) — create a sub-agent with a concrete brief + ownership boundary.\n\
+- `delegate_task`(toAgentId, title, content, ...) — hand a bounded unit of work; creates a tracked task and dispatches in one call.\n\
+- `monitor_agent`(agentId) — peek at status + recent inbox without interrupting.\n\
+- `delete_agent`(agentId) — retire a direct sub-agent when done.\n\
+\n\
+Git (sovereignty-gated):\n\
+- `git_status`, `git_diff`(reference?), `git_log`(limit?) — inspect.\n\
+- `git_commit`(message, paths?) — coherent checkpoint.\n\
+- `git_pull`, `git_push` — cloud-tier projects only; refused with a clear error on local-tier.\n\
+\n\
+Self:\n\
+- `todo`(action, ...) — internal multi-step checklist; actions: add / complete / remove / list.\n\
+</available_tools>\n\
+\n\
 <delegation>\n\
 - Delegate only when parallel specialist work materially improves speed or quality.\n\
-- Use `spawn_agent` with a concrete role, bounded task, expected output, and file or responsibility ownership.\n\
+- `spawn_agent` = create new specialist with a bounded brief; `delegate_task` = hand existing work to an agent you can see; `message_agent` = short coordination only.\n\
 - Do not spawn agents that would edit the same files or resources in parallel.\n\
-- Use `delegate_task` to hand a bounded unit of work to an agent you can see (creates a tracked task and dispatches it); `monitor_agent` to check a sub-agent's status and recent inbox; `delete_agent` to retire one of your direct sub-agents when it's done.\n\
-- Use `message_agent` for short coordination updates, handoffs, or clarifying facts. You may only message your direct parents and your own descendants — call `list_visible_agents` to see who that is, and `request_relay` to route a message through a parent that can see a more distant agent.\n\
 - Integrate delegated results critically; verify before treating them as complete.\n\
 </delegation>\n\
-\n\
-<project_memory>\n\
-- Use `hive_mind_write` to record durable decisions, conventions, and facts other agents should know; `hive_mind_list` / `hive_mind_read` to recall them; `hive_mind_delete` to prune.\n\
-- Use `list_spec_docs` / `read_spec_doc` to ground your work in the project's spec; `add_task` to file follow-up work; `set_task_status` (with a short `summary`) to mark your own task `completed` / `blocked` / `in-progress` — this closes the autonomous scheduler loop and stops re-dispatch; `add_tech_debt` / `update_tech_debt` to track shortcuts; `record_drift` when your work, the code, or behaviour has diverged from its intent.\n\
-- Skills bound to you are listed in the prompt header. Call `list_skills` to enumerate them and `read_skill('slug')` to pull the full playbook (system prompt fragment, allowed tools / paths, capability tags, and markdown body) before applying it.\n\
-- Use `git_status` / `git_diff` / `git_log` to inspect the working tree, and `git_commit` to checkpoint coherent units of work. `git_pull` / `git_push` only work on cloud-tier projects.\n\
-</project_memory>\n\
 \n\
 <quality_bar>\n\
 - Match the repository's architecture, naming, formatting, dependency choices, and testing style.\n\
@@ -6322,6 +6664,19 @@ mod prompt_tests {
     }
 
     #[test]
+    fn default_chat_prompt_mentions_project_state_tools() {
+        // The bug we're guarding against: LLMs only ever called fs/shell/web
+        // because the prompt didn't tell them anything else exists. Lock in
+        // that the prompt enumerates the non-basic surface at least once.
+        let prompt = default_chat_system_prompt();
+        assert!(prompt.contains("hive_mind_write"));
+        assert!(prompt.contains("set_task_status"));
+        assert!(prompt.contains("read_spec_doc"));
+        assert!(prompt.contains("list_skills"));
+        assert!(prompt.contains("git_status"));
+    }
+
+    #[test]
     fn agent_prompt_matches_composite_roles() {
         let prompt = default_agent_system_prompt("Frontend Architect", "UI Lead");
 
@@ -6331,6 +6686,69 @@ mod prompt_tests {
         assert!(prompt.contains("<operating_loop>"));
         assert!(prompt.contains("spawn_agent"));
         assert!(prompt.contains("Verify"));
+    }
+
+    #[test]
+    fn agent_prompt_lists_every_project_state_tool() {
+        // Same guard rail as above but on the agent prompt: if a tool gets
+        // added to the runtime and the prompt forgets to mention it, the
+        // LLM will keep ignoring it (we've already seen this fail with
+        // set_task_status in practice).
+        let prompt = default_agent_system_prompt("Coordinator", "CEO");
+        for tool in [
+            "fs_read",
+            "fs_write",
+            "shell_exec",
+            "web_search",
+            "hive_mind_write",
+            "hive_mind_read",
+            "hive_mind_list",
+            "hive_mind_delete",
+            "list_spec_docs",
+            "read_spec_doc",
+            "add_task",
+            "set_task_status",
+            "add_tech_debt",
+            "update_tech_debt",
+            "record_drift",
+            "list_skills",
+            "read_skill",
+            "spawn_agent",
+            "delegate_task",
+            "message_agent",
+            "monitor_agent",
+            "list_visible_agents",
+            "request_relay",
+            "delete_agent",
+            "git_status",
+            "git_commit",
+        ] {
+            assert!(
+                prompt.contains(tool),
+                "agent system prompt is missing mention of `{tool}` — LLMs that haven't seen it in the prompt body tend to ignore it even when the JSON catalog lists it"
+            );
+        }
+    }
+
+    #[test]
+    fn coordinator_prompt_mentions_set_task_status_explicitly() {
+        // Coordinator forgetting to close tasks was the main symptom of
+        // the autonomous scheduler looping forever. Lock the call-out in.
+        let prompt = coordinator_system_prompt(Some(true));
+        assert!(prompt.contains("set_task_status"));
+        assert!(prompt.contains("spawn_agent"));
+        assert!(prompt.contains("delegate_task"));
+        assert!(prompt.contains("hive_mind_write"));
+        assert!(prompt.contains("team_mode"));
+    }
+
+    #[test]
+    fn coordinator_prompt_disables_spawn_in_solo_mode() {
+        let prompt = coordinator_system_prompt(Some(false));
+        assert!(prompt.contains("OFF"));
+        // Don't tell the solo coordinator to spawn — the system removes
+        // the tool from its allowlist and a spawn call would just fail.
+        assert!(prompt.to_lowercase().contains("do not call `spawn_agent`"));
     }
 
     #[test]
@@ -6357,6 +6775,29 @@ mod prompt_tests {
 
         assert_eq!(effective, coordinator);
         assert!(effective.contains(&"spawn_agent".to_owned()));
+    }
+
+    #[test]
+    fn deterministic_planner_preserves_uploaded_todo_items() {
+        let phases = deterministic_planner_phases(
+            "# Gameplay\n\n- [ ] Build route editor\n- Add station timetable UI\n\n## QA\n\n1. Verify save/load roundtrip",
+        );
+
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].name, "Gameplay");
+        assert_eq!(phases[0].tasks[0].title, "Build route editor");
+        assert_eq!(phases[0].tasks[1].title, "Add station timetable UI");
+        assert_eq!(phases[1].tasks[0].title, "Verify save/load roundtrip");
+    }
+
+    #[test]
+    fn deterministic_planner_is_not_hardcoded_to_three_phases() {
+        let phases = deterministic_planner_phases(
+            "# One\n\n- task one\n\n## Two\n\n- task two\n\n## Three\n\n- task three\n\n## Four\n\n- task four",
+        );
+
+        assert_eq!(phases.len(), 4);
+        assert_eq!(phases[3].name, "Four");
     }
 }
 

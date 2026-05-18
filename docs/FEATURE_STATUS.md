@@ -20,11 +20,11 @@ Legend
 | Sovereignty tier: Cloud | planned | server | — | Disabled card |
 | Sovereignty tier: Hybrid | removed | — | 1 | Removed entirely |
 | Estimated cost | removed | — | 1 | Fake heuristic removed from onboarding and the agent-spawn modal; `lib/cost-estimate.ts` deleted. Real cost projection still planned |
-| Connect LLMs | done | cloud-llm | 2 | All four provider clients (`anthropic`/`openai`/`gemini`/`ollama`) implement live `list_models`; the onboarding step shows them per provider |
+| Connect LLMs | done | cloud-llm | 2 | All four provider clients (`anthropic`/`openai`/`gemini`/`ollama`) implement live `list_models`; the onboarding step shows them per provider, but launch can continue without a connected provider by using the deterministic planner fallback |
 | Describe step (interview) | partial | cloud-llm | 3 | Single textarea + spec upload; merged chat-style capture is planned |
-| Describe step (import spec) | partial | local | 3 | Spec text becomes description; not yet decomposed into per-agent task tree |
+| Describe step (import spec) | partial | local | 3 | Spec text becomes the launch brief; uploaded checklist/numbered TODOs are preserved by the deterministic planner instead of being rewritten into generic tasks |
 | Team mode toggle | partial | cloud-llm | 3 | Persisted; runtime side reads on `/coordinator/converse` |
-| Plan review | partial | cloud-llm | 3 | Calls `/v1/projects/genesis/preview`; phases shown but not editable yet |
+| Plan review | partial | local | 3 | Calls `/v1/projects/genesis/preview`; LLM preview is used when available, otherwise the deterministic planner previews phases from the brief. Phases shown but not editable yet |
 | Real launch sequence (sandbox provision, git init, migrate ping, search probe) | done | local | 2 | `POST /v1/projects/:id/launch` runs the steps and returns a per-step report; onboarding shows it before navigating to the dashboard |
 
 ## Chat Central
@@ -66,9 +66,9 @@ Legend
 
 | Feature | Status | Dep | Phase | Notes |
 |---|---|---|---|---|
-| Spec doc list | partial | local | 2 | Read-only |
+| Spec doc list | partial | local | 2 | Read-only; docs with no parsed sections still render their raw markdown so onboarding-created specs are visible |
 | Import multiple spec docs | planned | local | 2 | Currently one-at-a-time via onboarding only |
-| Spec → roadmap → per-agent tasks | done | cloud-llm | 2 | Onboarding `/launch` decomposes the brief into `sprints` + `tasks` (per-task assignee role → matched to an existing agent), and Planning → Spec → "Decompose Spec" runs the same via `POST /v1/spec-documents/:id/auto-decompose`. Section-anchored decomposition (`/v1/spec-documents/:id/decompose`) is the alternate path |
+| Spec → roadmap → per-agent tasks | done | local | 2 | Onboarding `/launch` decomposes the brief into `sprints` + `tasks` (per-task assignee role → matched to an existing agent when an LLM planner is used). If no planner model is reachable, or the brief is an explicit checklist, Hive preserves those TODOs with a deterministic local decomposition. Planning → Spec → "Decompose Spec" runs the same via `POST /v1/spec-documents/:id/auto-decompose`. Section-anchored decomposition (`/v1/spec-documents/:id/decompose`) is the alternate path |
 | Tech debt board (Planning) | partial | local | 1 | Move + create supported; fine-grained edit/delete still missing |
 | Hive Mind notes (Planning) | partial | local | 1 | Create + filter in the UI; agents read/write via `hive_mind_*` tools. UI edit/delete still missing |
 | Drift visualization | partial | local | 5 | UI panel present; agents can write events via `record_drift`, but the runtime does not auto-detect drift yet |

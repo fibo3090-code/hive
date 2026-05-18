@@ -67,8 +67,15 @@ struct ToolInvocation {
     raw: Value,
 }
 
-fn tool_protocol_prompt(registry: &ToolRegistry) -> String {
+fn tool_protocol_prompt(registry: &ToolRegistry, provider_kind: ProviderKind) -> String {
     let manifests = registry.manifests();
+    let local_hint = if matches!(provider_kind, ProviderKind::Ollama) {
+        "\nLocal/Ollama compatibility:\n\
+- If you are not certain your native tool call will be emitted correctly, use the XML fallback block instead.\n\
+- Small Ollama models often answer with prose while intending to use a tool; do not do that. Emit either a native tool call or exactly one XML fallback block.\n"
+    } else {
+        ""
+    };
     format!(
         "Tool protocol:\n\
 - Prefer the provider's native tool-calling interface whenever it is available.\n\
@@ -83,6 +90,7 @@ Fallback compatibility mode only: if native tool calling is unavailable, respond
 or for multiple sequential tool calls:\n\
 <tool_calls>[{{\"tool\":\"tool_name\",\"arguments\":{{...}}}}]</tool_calls>\n\
 Do not use this XML format when native tool calling works.\n\
+{local_hint}\
 \n\
 Tool catalog:\n{}",
         serde_json::to_string_pretty(&manifests).unwrap_or_else(|_| "[]".into())
@@ -578,7 +586,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
             Some(format!(
                 "Use tools when they materially improve accuracy or execution. \
                  Call tools using the provider's native tool interface.\n\n{}",
-                tool_protocol_prompt(r)
+                tool_protocol_prompt(r, provider_kind)
             ))
         }
     });
@@ -1321,7 +1329,7 @@ mod tests {
     #[test]
     fn tool_protocol_prompt_prefers_native_tools_and_guards_output() {
         let registry = ToolRegistry::new();
-        let prompt = tool_protocol_prompt(&registry);
+        let prompt = tool_protocol_prompt(&registry, ProviderKind::Openai);
 
         assert!(prompt.contains("native tool-calling"));
         assert!(prompt.contains("Follow each tool's JSON schema exactly"));

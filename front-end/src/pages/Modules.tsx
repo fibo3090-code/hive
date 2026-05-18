@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Cpu,
   Download,
+  Info,
   Layers,
   Loader2,
   Package,
@@ -25,6 +26,7 @@ import type { ModuleCatalogItem } from '@/types/domain';
 import { toast } from 'sonner';
 import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
 import { useWorkspace } from '@/context/WorkspaceContext';
+import { DisabledFeature } from '@/components/shared/DisabledFeature';
 
 const categories = ['All', 'Installed', 'Core', 'Community', 'Project', 'Synthesizer'];
 
@@ -182,6 +184,21 @@ export default function Modules() {
       </div>
 
       <div className="flex-1 overflow-auto scrollbar-thin p-6 animate-fade-in">
+        {/* Honesty banner — explain what modules are and the current state.
+            Modules are full-privilege code; the synthesis pipeline ships
+            a metadata stub today (runtime exec lands later). Community
+            download + publish-to-public are server-only and disabled
+            below. */}
+        <div className="mb-6 rounded-lg border border-warning/30 bg-warning/5 p-4 flex items-start gap-3">
+          <Info className="h-4 w-4 text-warning shrink-0 mt-0.5" />
+          <div className="text-xs text-foreground/80 space-y-1.5">
+            <p className="font-medium">Modules are full-privilege app extensions — treat installing one like installing a trusted plugin.</p>
+            <p className="text-muted-foreground">
+              Synthesis is currently a <span className="font-mono">local stub</span> (metadata only — modules don't yet execute custom code at runtime).
+              Publishing to a public registry and downloading community modules require the Hive central server and are disabled in this build.
+            </p>
+          </div>
+        </div>
         {showSynthesizer ? (
           <div className="max-w-2xl space-y-6">
             <h2 className="text-lg font-semibold">Module Synthesizer</h2>
@@ -244,17 +261,18 @@ export default function Modules() {
                 {/* preview the generated files first, then publish in one click. */}
                 {jobQuery.data && (jobQuery.data.status === 'completed' || jobQuery.data.status === 'complete' || jobQuery.data.status === 'succeeded') && (
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPublishJobId(jobQuery.data!.id);
-                        setPublishOpen(true);
-                      }}
-                      className="rounded-md bg-primary px-3 py-2 text-xs text-primary-foreground hover:bg-primary/90 inline-flex items-center gap-1"
+                    <DisabledFeature
+                      kind="server-only"
+                      reason="Publishing to the public registry requires the Hive central server (not yet available)."
                     >
-                      <Plus className="h-3 w-3" />
-                      {jobQuery.data.publishedAt ? 'Update publication' : 'Publish to catalog'}
-                    </button>
+                      <span
+                        className="rounded-md bg-primary px-3 py-2 text-xs text-primary-foreground inline-flex items-center gap-1"
+                        aria-disabled="true"
+                      >
+                        <Plus className="h-3 w-3" />
+                        {jobQuery.data.publishedAt ? 'Update publication' : 'Publish to catalog'}
+                      </span>
+                    </DisabledFeature>
                     {jobQuery.data.publishedAt && (
                       <span className="text-xs text-success">
                         Published · {jobQuery.data.publishedVisibility}
@@ -277,16 +295,14 @@ export default function Modules() {
                   placeholder="Search modules..."
                 />
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setPublishJobId(null);
-                  setPublishOpen(true);
-                }}
-                className="flex items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary hover:bg-primary/20"
+              <DisabledFeature
+                kind="server-only"
+                reason="Publishing to the public registry requires the Hive central server (not yet available)."
               >
-                <Plus className="h-3.5 w-3.5" /> Publish Module
-              </button>
+                <span className="flex items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary">
+                  <Plus className="h-3.5 w-3.5" /> Publish Module
+                </span>
+              </DisabledFeature>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -306,6 +322,20 @@ export default function Modules() {
                       </div>
                       {module.status === 'installed' ? (
                         <span className="text-micro text-success bg-success/10 px-2 py-0.5 rounded-full">Installed</span>
+                      ) : module.category === 'Community' ? (
+                        // Community modules live on the public registry,
+                        // which is gated by the (not-yet-built) Hive
+                        // central server. Local/Core/Project modules
+                        // install fine.
+                        <DisabledFeature
+                          kind="server-only"
+                          reason="Downloading community modules requires the Hive central server (not yet available)."
+                          showBadge={false}
+                        >
+                          <span className="text-micro text-muted-foreground bg-surface-2 px-2 py-0.5 rounded-full">
+                            Install
+                          </span>
+                        </DisabledFeature>
                       ) : (
                         <button
                           type="button"

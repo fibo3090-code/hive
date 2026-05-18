@@ -1,7 +1,15 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useHiveData } from '@/api/queries/useHiveData';
-import { useSpawnRequests, useSpawnRequest, type AgentSpawnRequest, type SpawnStatus } from '@/api/spawn-requests';
+import {
+  useSpawnRequests,
+  useSpawnRequest,
+  useApproveSpawnRequest,
+  useRejectSpawnRequest,
+  type AgentSpawnRequest,
+  type SpawnStatus,
+} from '@/api/spawn-requests';
+import { toast } from 'sonner';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { JsonViewer } from '@/components/shared/JsonViewer';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -106,8 +114,18 @@ function SpawnRow({
   );
 }
 
-function SpawnDetail({ spawnId, onClose }: { readonly spawnId: string; readonly onClose: () => void }) {
+function SpawnDetail({
+  spawnId,
+  projectId,
+  onClose,
+}: {
+  readonly spawnId: string;
+  readonly projectId: string | null;
+  readonly onClose: () => void;
+}) {
   const { data: req, isLoading } = useSpawnRequest(spawnId);
+  const approve = useApproveSpawnRequest(projectId);
+  const reject = useRejectSpawnRequest(projectId);
   if (isLoading || !req) {
     return (
       <div className="space-y-3 p-4">
@@ -249,6 +267,44 @@ function SpawnDetail({ spawnId, onClose }: { readonly spawnId: string; readonly 
           <JsonViewer value={req.contextJson} label="context" previewChars={300} />
         </section>
       </div>
+
+      {req.status === 'awaiting-approval' && (
+        <div className="border-t border-border bg-surface-2 p-3 flex items-center justify-between gap-3">
+          <div className="text-xs text-muted-foreground">
+            Operator review required before the pipeline materialises the agent.
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={reject.isPending || approve.isPending}
+              onClick={() => {
+                reject.mutate(req.id, {
+                  onSuccess: () => toast.success('Spawn request rejected'),
+                  onError: (e: unknown) =>
+                    toast.error(`Reject failed: ${e instanceof Error ? e.message : 'unknown error'}`),
+                });
+              }}
+              className="rounded-md border border-border bg-card px-3 py-1.5 text-xs hover:border-destructive/40 hover:text-destructive transition-colors disabled:opacity-50"
+            >
+              Reject
+            </button>
+            <button
+              type="button"
+              disabled={approve.isPending || reject.isPending}
+              onClick={() => {
+                approve.mutate(req.id, {
+                  onSuccess: () => toast.success('Approved — pipeline resuming'),
+                  onError: (e: unknown) =>
+                    toast.error(`Approve failed: ${e instanceof Error ? e.message : 'unknown error'}`),
+                });
+              }}
+              className="rounded-md bg-primary text-primary-foreground px-3 py-1.5 text-xs hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              {approve.isPending ? 'Approving…' : 'Approve'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -360,7 +416,7 @@ export default function SpawnRequests() {
       </div>
       <div className="flex-1 min-w-0 bg-background">
         {selected ? (
-          <SpawnDetail spawnId={selected} onClose={() => setSelected(null)} />
+          <SpawnDetail spawnId={selected} projectId={projectId} onClose={() => setSelected(null)} />
         ) : (
           <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1">

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { api } from '@/api/client';
 import { useHiveData } from '@/api/queries/useHiveData';
-import { useSpecDocuments, useSpecDocumentSections } from '@/api/spec-documents';
+import { useSpecDocument, useSpecDocuments, useSpecDocumentSections } from '@/api/spec-documents';
 import { useDriftEvents, useUpdateDriftStatus } from '@/api/drift';
 import { useAssignments } from '@/api/assignments';
 import { useTechDebtData, useMoveTechDebt, useNotesData, useCreateNote } from '@/api/queries/useServerData';
@@ -70,6 +70,7 @@ function SpecDocumentTab() {
   const docs = useSpecDocuments(activeProjectId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const effectiveId = selectedId ?? docs.data?.[0]?.id ?? null;
+  const selectedDoc = useSpecDocument(effectiveId);
   const sections = useSpecDocumentSections(effectiveId);
   const [decomposing, setDecomposing] = useState(false);
 
@@ -144,9 +145,17 @@ function SpecDocumentTab() {
             </section>
           ))
         ) : (
-          <div className="rounded-lg border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
-            This document has no parsed sections yet.
-          </div>
+          <section className="rounded-lg border border-border bg-card p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h4 className="text-sm font-semibold">{selectedDoc.data?.title ?? 'Spec document'}</h4>
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                raw markdown
+              </span>
+            </div>
+            <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">
+              {selectedDoc.data?.markdown?.trim() || 'This document has no parsed sections yet.'}
+            </pre>
+          </section>
         )}
       </main>
     </div>

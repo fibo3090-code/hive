@@ -17,6 +17,7 @@ import { WorkingTreeStatus } from '@/components/layout/code-versioning/WorkingTr
 import { GitFileTree, type GitFileEntry } from '@/components/layout/code-versioning/GitFileTree';
 import { GitOperationsPanel } from '@/components/layout/code-versioning/GitOperationsPanel';
 import { FileCode, Terminal, HardDrive } from 'lucide-react';
+import { useConfirmDelete } from '@/components/shared/useConfirmDelete';
 
 function classifyStatus(index: string, worktree: string): GitFileEntry['status'] {
   const flags = `${index}${worktree}`;
@@ -119,10 +120,15 @@ export default function CodeVersioning() {
     if (selectedFile) fileQuery.refetch();
   };
 
-  const handleDiscard = () => {
+  const [confirmModal, confirmDelete] = useConfirmDelete();
+  const handleDiscard = async () => {
     const paths = unstagedFiles.map((f) => f.path);
     if (paths.length === 0) return;
-    if (!window.confirm(`Discard local changes to ${paths.length} file(s)? This cannot be undone.`)) return;
+    const ok = await confirmDelete({
+      title: 'Discard local changes?',
+      description: `Discard local changes to ${paths.length} file(s)? This cannot be undone.`,
+    });
+    if (!ok) return;
     restoreMutation.mutate(paths, {
       onSuccess: () => toast.success('Discarded local changes'),
       onError: (err) => toast.error(`Discard failed: ${err instanceof Error ? err.message : String(err)}`),
@@ -142,6 +148,7 @@ export default function CodeVersioning() {
 
   return (
     <div className="flex h-full bg-background">
+      {confirmModal}
       {/* Sidebar: File Tree & Controls */}
       <div className="w-80 border-r border-border flex flex-col bg-surface-1">
         <div className="p-4 border-b border-border space-y-4">

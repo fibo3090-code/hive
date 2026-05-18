@@ -22,4 +22,26 @@ export default defineConfig(({ mode }) => ({
     },
     dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime", "@tanstack/react-query", "@tanstack/query-core"],
   },
+  build: {
+    // Page-level chunks come from React.lazy(); these manualChunks group
+    // the heavy shared runtime deps into their own files so every lazy
+    // page that uses them hits the same cache entry instead of bundling
+    // a copy of each. Cuts the per-page download substantially after the
+    // first visit. Drop the warning ceiling since the new chunks are
+    // intentionally larger than the default 500 KB threshold.
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom', 'react/jsx-runtime'],
+          'vendor-router': ['react-router-dom'],
+          'vendor-query': ['@tanstack/react-query'],
+          'vendor-charts': ['recharts'],
+          'vendor-flow': ['@xyflow/react'],
+          'vendor-motion': ['framer-motion'],
+          'vendor-icons': ['lucide-react'],
+        },
+      },
+    },
+  },
 }));

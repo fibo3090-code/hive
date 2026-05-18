@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
@@ -43,16 +43,6 @@ export default function Onboarding() {
   const step = onboardingDraft.step;
   const nextStep = () => updateOnboardingDraft((draft) => ({ ...draft, step: Math.min(draft.step + 1, LAST_STEP_INDEX) }));
   const prevStep = () => updateOnboardingDraft((draft) => ({ ...draft, step: Math.max(draft.step - 1, 0) }));
-
-  // Step gating. The Connect-LLMs step (2) won't let you advance until
-  // at least one provider key has been confirmed — without one the CEO
-  // chat in the next step would silently fail.
-  const canAdvance = useMemo(() => {
-    if (step === 2) {
-      return onboardingDraft.connectedProviderIds.length > 0;
-    }
-    return true;
-  }, [step, onboardingDraft.connectedProviderIds]);
 
   const LAUNCH_STEP_NAMES = ['provision-workspace', 'migrate-db', 'probe-search', 'spec-document', 'decompose-plan'];
 
@@ -233,8 +223,6 @@ export default function Onboarding() {
         <Button
           onClick={step === PLAN_REVIEW_INDEX ? () => { void launchProject(); } : nextStep}
           className="gap-1.5"
-          disabled={!canAdvance}
-          title={canAdvance ? undefined : 'Connect at least one provider to continue'}
         >
           {step === PLAN_REVIEW_INDEX ? 'Launch' : 'Next'} <ChevronRight className="h-4 w-4" />
         </Button>

@@ -26,6 +26,7 @@ import { useSkills, useCreateSkill, useDeleteSkill, useUpdateSkill, type Skill }
 import { useConnectors, useCreateConnector, useDeleteConnector, type ConnectorKind, type ConnectorAuthKind } from '@/api/connectors';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { useConfirmDelete } from '@/components/shared/useConfirmDelete';
 
 const ModulesPage = lazy(() => import('./Modules'));
 const AgentForgePage = lazy(() => import('./AgentForge'));
@@ -113,6 +114,7 @@ function SkillsTab() {
   const createSkill = useCreateSkill(projectId);
   const deleteSkill = useDeleteSkill(projectId);
   const items = skills.data ?? [];
+  const [confirmModal, confirmDelete] = useConfirmDelete();
 
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
@@ -146,6 +148,7 @@ function SkillsTab() {
 
   return (
     <div className="space-y-4">
+      {confirmModal}
       <div className="flex items-center justify-between">
         <p className="text-xs text-muted-foreground">
           A skill is a reusable package — system-prompt fragment + allowed tools + allowed paths — an agent can mount.
@@ -221,8 +224,12 @@ function SkillsTab() {
             <div className="flex gap-3">
               <button onClick={() => setEditing(s)} className="text-foreground/80 hover:underline">Edit</button>
               <button
-                onClick={() => {
-                  if (!window.confirm(`Delete skill "${s.name}"?`)) return;
+                onClick={async () => {
+                  const ok = await confirmDelete({
+                    title: 'Delete skill?',
+                    description: `Permanently delete the skill "${s.name}". Agents that have it bound will lose access on their next turn.`,
+                  });
+                  if (!ok) return;
                   deleteSkill.mutate(s.id, {
                     onSuccess: () => toast.success('Skill deleted'),
                     onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed'),
@@ -330,6 +337,19 @@ function ConnectorsTab() {
   const items = connectors.data ?? [];
   const apis = items.filter((c) => c.kind === 'api');
   const mcps = items.filter((c) => c.kind === 'mcp');
+  const [confirmModal, confirmDelete] = useConfirmDelete();
+
+  const handleDelete = async (id: string, name: string) => {
+    const ok = await confirmDelete({
+      title: 'Delete connector?',
+      description: `Permanently delete the connector "${name}". Any agent using it will lose access on its next turn.`,
+    });
+    if (!ok) return;
+    deleteConnector.mutate(id, {
+      onSuccess: () => toast.success('Connector deleted'),
+      onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed'),
+    });
+  };
 
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState<ConnectorKind>('api');
@@ -368,6 +388,7 @@ function ConnectorsTab() {
 
   return (
     <div className="space-y-4">
+      {confirmModal}
       <div className="flex items-center justify-between">
         <p className="text-xs text-muted-foreground">
           Connect an external HTTP API (with an encrypted credential) or an MCP server. Credentials encrypt at rest like LLM provider keys.
@@ -432,19 +453,13 @@ function ConnectorsTab() {
           {apis.length > 0 && (
             <section>
               <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">HTTP APIs</h3>
-              <ConnectorList items={apis} onDelete={(id, name) => {
-                if (!window.confirm(`Delete connector "${name}"?`)) return;
-                deleteConnector.mutate(id, { onSuccess: () => toast.success('Connector deleted'), onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed') });
-              }} />
+              <ConnectorList items={apis} onDelete={handleDelete} />
             </section>
           )}
           {mcps.length > 0 && (
             <section>
               <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">MCP Servers</h3>
-              <ConnectorList items={mcps} onDelete={(id, name) => {
-                if (!window.confirm(`Delete connector "${name}"?`)) return;
-                deleteConnector.mutate(id, { onSuccess: () => toast.success('Connector deleted'), onError: (e) => toast.error(e instanceof Error ? e.message : 'Delete failed') });
-              }} />
+              <ConnectorList items={mcps} onDelete={handleDelete} />
             </section>
           )}
         </div>

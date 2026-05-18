@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
 
-export type SpecDocumentSource = 'ceo-conversation' | 'upload' | 'manual';
+export type SpecDocumentSource = 'ceo-conversation' | 'onboarding' | 'upload' | 'manual';
 
 export interface SpecDocument {
   id: string;
