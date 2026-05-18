@@ -15,6 +15,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { useWorkspace } from '@/context/WorkspaceContext';
 import { AgentSpawnModal } from '@/components/modals/AgentSpawnModal';
 import { AgentConfigDialog } from '@/components/modals/AgentConfigDialog';
+import { ConfirmDeleteModal } from '@/components/modals/ConfirmDeleteModal';
 import { toast } from 'sonner';
 
 const lockedAgents = new Set<string>();
@@ -284,11 +285,7 @@ function AgentDetailDrawer({
           <Settings className="h-3.5 w-3.5" /> Config
         </button>
         <button
-          onClick={() => {
-            if (window.confirm(`Delete agent "${agent.name}"? This permanently removes the agent and its history.`)) {
-              onTerminate(agent.id);
-            }
-          }}
+          onClick={() => onTerminate(agent.id)}
           className="flex items-center gap-1 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 ml-auto"
         ><Trash2 className="h-3.5 w-3.5" /> Delete</button>
       </div>
