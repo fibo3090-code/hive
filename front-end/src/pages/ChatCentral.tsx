@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { JsonViewer } from '@/components/shared/JsonViewer';
+import { MetadataFooter } from '@/components/shared/MetadataFooter';
 import { CodeViewerDialog } from '@/components/modals/CodeViewerDialog';
-import { Send, Paperclip, AtSign, Hexagon, Copy, Eye, Code, AlertTriangle, ArrowDown, Check, Square, Plus, Settings2, X, FileText, Image as ImageIcon, FileBox, Trash2, LayoutList } from 'lucide-react';
+import { Send, Paperclip, AtSign, Hexagon, Copy, Eye, Code, AlertTriangle, ArrowDown, Check, Square, Plus, Settings2, X, FileText, Image as ImageIcon, FileBox, Trash2, LayoutList, RefreshCcw } from 'lucide-react';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
@@ -679,11 +680,6 @@ export default function ChatCentral() {
                   </div>
                 )}
                 <div className={cn('rounded-lg px-4 py-2.5', isUser ? 'bg-primary/10 text-foreground' : 'bg-card border border-border')}>
-                  {!isUser && message.model && (
-                    <span className="text-micro font-medium text-primary block mb-1">
-                      {message.providerId ?? 'model'} · {message.model}
-                    </span>
-                  )}
                   <div className="text-sm whitespace-pre-wrap leading-relaxed">
                     {thinking && (
                       <details className="mb-2 rounded-md border border-border bg-surface-2 px-3 py-2" open={isStreaming}>
@@ -702,21 +698,40 @@ export default function ChatCentral() {
                 <ToolCallList toolCalls={message.toolCalls ?? []} />
                 {code && <CodeBlock language={code.language} code={code.code} />}
                 {isUser && <MessageAttachments messageId={message.id} />}
-                <div className="flex items-center gap-2 mt-1.5">
-                  <span className="text-micro text-muted-foreground font-mono">{formatTimestamp(message.createdAt)}</span>
-                  {(message.tokensIn > 0 || message.tokensOut > 0) && (
-                    <span className="text-micro text-muted-foreground font-mono">
-                      {message.tokensIn + message.tokensOut} tok
-                    </span>
-                  )}
-                  {message.costCents > 0 && (
-                    <span className="text-micro text-muted-foreground font-mono">
-                      {centsToDollars(message.costCents)}
-                    </span>
-                  )}
-                  {isCancelled && <span className="text-micro text-warning">cancelled</span>}
-                  {isError && <span className="text-micro text-destructive">error</span>}
-                </div>
+                {!isUser ? (
+                  <div className="flex items-center justify-between gap-2 mt-1.5">
+                    <MetadataFooter
+                      model={message.model}
+                      providerId={message.providerId}
+                      tokensIn={message.tokensIn}
+                      tokensOut={message.tokensOut}
+                      costCents={message.costCents}
+                      timestamp={message.createdAt}
+                      status={message.status}
+                    />
+                    {isError && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          processMessage.mutate(message.id, {
+                            onSuccess: () => toast.success('Retrying…'),
+                            onError: (e) => toast.error(e instanceof Error ? e.message : 'Retry failed'),
+                          });
+                        }}
+                        disabled={processMessage.isPending}
+                        className="flex items-center gap-1 rounded-md border border-destructive/30 px-2 py-0.5 text-micro text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                        aria-label="Retry message"
+                      >
+                        <RefreshCcw className="h-3 w-3" /> Retry
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <span className="text-micro text-muted-foreground font-mono">{formatTimestamp(message.createdAt)}</span>
+                    {isCancelled && <span className="text-micro text-warning">cancelled</span>}
+                  </div>
+                )}
               </div>
             </motion.div>
           );
