@@ -52,8 +52,7 @@ in `back-end/config/local.toml` (`[database] url = …`). To wipe state, delete
 |---|---|
 | `back-end/` | Cargo workspace: `hive-api`, `hive-domain`, `hive-db` (+ `migration/`), `hive-runtime`, `hive-llm`, `hive-tools`, `hive-sandbox`, `hive-search`, `hive-git`, `hive-crypto`, `hive-seed`. See [`back-end/README.md`](back-end/README.md). |
 | `front-end/` | React + TypeScript SPA. See [`front-end/README.md`](front-end/README.md). |
-| `docs/` | [`architecture.md`](docs/architecture.md) (design reference), [`FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) (the living feature matrix), [`ROADMAP.md`](docs/ROADMAP.md) (the forward plan). |
-| `back-end/docs/` | Operator notes ([`CHAT_OPERATOR.md`](back-end/docs/CHAT_OPERATOR.md)), a design sketch for richer todo tools, and the historical fix plans. |
+| `docs/` | [`architecture.md`](docs/architecture.md) (design reference), [`FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) (the living feature matrix), [`ROADMAP.md`](docs/ROADMAP.md) (the forward plan), [`BACKLOG.md`](docs/BACKLOG.md) (remaining issues), and [`OPERATOR_NOTES.md`](docs/OPERATOR_NOTES.md) (runtime tips). |
 
 ## Configuration
 
@@ -87,7 +86,9 @@ Backend CLI (in `back-end/`): `cargo run -p hive-api -- serve` (runs migrations
 
 ## More
 
-- [`docs/architecture.md`](docs/architecture.md) — topology, crates, core concepts (project / agent / coordinator / skills vs modules vs connectors / wires & visibility / drift / budget), the chat-turn flow, the SSE event taxonomy, the HTTP surface, the agent-tool catalog, security defaults.
+- [`docs/architecture.md`](docs/architecture.md) — topology, crates, core concepts, the chat-turn flow, technical schema, and future design sketches.
 - [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) — what's `done` / `partial` / `mock` / `planned` / `removed`, with dependency profile.
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — the forward plan (coordinator-led onboarding, skill mounting, autonomous task loop, auto-MCP pipeline, drift auto-detection, …).
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — the high-level forward plan.
+- [`docs/BACKLOG.md`](docs/BACKLOG.md) — exhaustive list of remaining issues and planned technical solutions.
+- [`docs/OPERATOR_NOTES.md`](docs/OPERATOR_NOTES.md) — technical notes for running the chat runner and small-model tips.
 - [`back-end/README.md`](back-end/README.md) · [`front-end/README.md`](front-end/README.md) — dev setup per half.

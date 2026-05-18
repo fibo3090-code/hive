@@ -2,10 +2,7 @@
 
 The forward plan. For *current* status of every feature see
 [`FEATURE_STATUS.md`](FEATURE_STATUS.md); for how the built parts work see
-[`architecture.md`](architecture.md). The original 6-phase cleanup plan (mostly
-delivered) is preserved at [`../back-end/docs/plan fix evything.md`](../back-end/docs/plan%20fix%20evything.md);
-the original backend-dependency list (mostly delivered) at
-[`../back-end/docs/PHASE_2_TO_5_BACKEND_TODO.md`](../back-end/docs/PHASE_2_TO_5_BACKEND_TODO.md).
+[`architecture.md`](architecture.md). Actionable technical debt and remaining bugs are tracked in [`BACKLOG.md`](BACKLOG.md).
 
 Each item below is a multi-commit effort; rough descending priority.
 

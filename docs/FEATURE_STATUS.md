@@ -106,7 +106,7 @@ Legend
 | `fs_read` / `fs_write` | done | local | 0 | |
 | `shell_exec` | done | local | 0 | |
 | `web_search` | done | server | 0 | |
-| `todo` | done | local | 0 | Single tool with `action` ∈ {add, complete, remove, list} over `.hive/todo.json`. Not the richer `todo_create`/`todo_update`/… surface sketched in `back-end/docs/TODO_TOOL_SPEC.md` (still a design sketch) |
+| `todo` | done | local | 0 | Single tool with `action` ∈ {add, complete, remove, list} over `.hive/todo.json`. Not the richer `todo_create`/`todo_update`/… surface sketched in [`architecture.md`](architecture.md#6-future-design-richer-workspace-todo-tools) (still a design sketch) |
 | `hive_mind_write` / `_read` / `_list` / `_delete` | done | local | 5 | `hive-runtime::db_tools`, backed by `hive_mind_notes` (topic = `category`). Enabled by default for every agent |
 | `spawn_agent` / `message_agent` | done | local | 4 | `hive-runtime::agent_tools`. Coordinator-scoped (in `coordinator_tools`, not the global default) |
 | `list_spec_docs` / `read_spec_doc` | done | local | 5 | `hive-runtime::db_tools` — read project spec docs + section anchors |

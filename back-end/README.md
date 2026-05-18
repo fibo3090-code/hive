@@ -108,12 +108,9 @@ Cost columns (`cost_events.cost_cents`, `chat_messages.cost_cents`,
 ## Operator notes
 
 - Chat-runner round limits, the empty-final-answer fallback, and small-model
-  tips: [`docs/CHAT_OPERATOR.md`](docs/CHAT_OPERATOR.md).
-- A design sketch for richer `todo_*` tools (the shipped `todo` tool is a
-  simpler single-tool version): [`docs/TODO_TOOL_SPEC.md`](docs/TODO_TOOL_SPEC.md).
-- The historical 6-phase fix plan (mostly delivered): [`docs/plan fix evything.md`](docs/plan%20fix%20evything.md).
-  The historical backend-dependency list (mostly delivered): [`docs/PHASE_2_TO_5_BACKEND_TODO.md`](docs/PHASE_2_TO_5_BACKEND_TODO.md).
-  The forward plan: [`../docs/ROADMAP.md`](../docs/ROADMAP.md).
+  - Chat-runner operator notes (round limits, small-model tips): [`../docs/OPERATOR_NOTES.md`](../docs/OPERATOR_NOTES.md).
+  - The exhaustive backlog of remaining issues: [`../docs/BACKLOG.md`](../docs/BACKLOG.md).
+  - The forward plan: [`../docs/ROADMAP.md`](../docs/ROADMAP.md).
 
 ## Contributing
 
