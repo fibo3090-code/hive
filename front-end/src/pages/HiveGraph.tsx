@@ -313,8 +313,11 @@ export default function HiveGraph() {
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [showLocks, setShowLocks] = useState(false);
+  const [showLegend, setShowLegend] = useState(true);
   const [spawnModalOpen, setSpawnModalOpen] = useState(false);
   const [configAgent, setConfigAgent] = useState<Agent | null>(null);
+  const [pendingDeleteAgent, setPendingDeleteAgent] = useState<Agent | null>(null);
+  const [pendingDeleteWireId, setPendingDeleteWireId] = useState<string | null>(null);
   const wires = useMemo(() => wiresQuery.data ?? [], [wiresQuery.data]);
   const graph = useMemo(() => buildGraph(state.agents, wires), [state.agents, wires]);
 
@@ -334,13 +337,18 @@ export default function HiveGraph() {
       toast.info('That edge comes from the spawn lineage — wire it explicitly to manage it.');
       return;
     }
-    const wireId = edge.id.slice('wire-'.length);
-    if (!window.confirm('Delete this wire?')) return;
+    setPendingDeleteWireId(edge.id.slice('wire-'.length));
+  }, []);
+
+  const confirmDeleteWire = useCallback(() => {
+    if (!pendingDeleteWireId) return;
+    const wireId = pendingDeleteWireId;
+    setPendingDeleteWireId(null);
     deleteWireMutation.mutate(wireId, {
       onSuccess: () => toast.success('Wire removed'),
       onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not remove wire'),
     });
-  }, [deleteWireMutation]);
+  }, [pendingDeleteWireId, deleteWireMutation]);
 
   useEffect(() => {
     if (graphFocusAgentId) {
