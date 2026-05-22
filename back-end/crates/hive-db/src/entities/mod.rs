@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_eval_run;
 pub mod agent_mcp_binding;
 pub mod agent_message;
 pub mod agent_skill_binding;

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { cn } from '@/lib/utils';
+import { cn, formatDate } from '@/lib/utils';
 import {
   Activity,
   BarChart3,
@@ -13,6 +13,7 @@ import {
 import { useHiveData } from '@/api/queries/useHiveData';
 import {
   useActivityFeedData,
+  useEvalRunsData,
   useSpendTimelineData,
   useTaskThroughputData,
 } from '@/api/queries/useServerData';
@@ -352,18 +353,46 @@ function ProjectMetricsTab() {
 }
 
 function LeaderboardTab() {
-  const { state } = useHiveData();
+  const { state, activeProject } = useHiveData();
+  const evalRunsQuery = useEvalRunsData(activeProject?.id ?? null);
+  const evalRuns = evalRunsQuery.data ?? [];
   const sortedAgents = [...state.agents].sort((left, right) => (right.qualityScore ?? 0) - (left.qualityScore ?? 0));
+
+  // Most-recent eval-run timestamp per agent, for the "Last eval" column.
+  const lastEvalByAgent = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const run of evalRuns) {
+      if (!map.has(run.agentId)) map.set(run.agentId, run.createdAt);
+    }
+    return map;
+  }, [evalRuns]);
 
   if (sortedAgents.length === 0) {
     return <EmptyState title="No leaderboard yet" message="Agent evals will appear here as soon as quality metrics are recorded." />;
   }
 
+  // All-zero detector (BACKLOG C16): if no agent has ever been scored, the
+  // table is just zero rows — say so honestly instead of showing a wall of 0%.
+  const anyScored = sortedAgents.some(
+    (a) => (a.qualityScore ?? 0) > 0 || evalRuns.length > 0,
+  );
+  if (!anyScored) {
+    return (
+      <EmptyState
+        title="No eval data yet"
+        message="No agent has been scored. An evaluator agent calls record_eval to score work — the leaderboard fills in as eval runs land."
+      />
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold">Eval Leaderboard</h2>
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-lg font-semibold">Eval Leaderboard</h2>
+        <span className="text-xs text-muted-foreground">{evalRuns.length} eval run{evalRuns.length === 1 ? '' : 's'} recorded</span>
+      </div>
       <div className="rounded-lg border border-border bg-card overflow-x-auto">
-        <table className="w-full text-xs min-w-[640px]">
+        <table className="w-full text-xs min-w-[760px]">
           <thead>
             <tr className="border-b border-border text-muted-foreground">
               <th scope="col" className="text-left px-4 py-2">#</th>
@@ -373,20 +402,31 @@ function LeaderboardTab() {
               <th scope="col" className="text-left px-4 py-2">Correctness</th>
               <th scope="col" className="text-left px-4 py-2">Style</th>
               <th scope="col" className="text-left px-4 py-2">Efficiency</th>
+              <th scope="col" className="text-left px-4 py-2">Test</th>
+              <th scope="col" className="text-left px-4 py-2">Docs</th>
+              <th scope="col" className="text-left px-4 py-2">Last eval</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {sortedAgents.map((agent, index) => (
-              <tr key={agent.id} className="hover:bg-surface-2/50">
-                <td className="px-4 py-2 font-mono text-muted-foreground">{index + 1}</td>
-                <td className="px-4 py-2 font-medium">{agent.name}</td>
-                <td className="px-4 py-2 text-muted-foreground">{agent.role}</td>
-                <td className="px-4 py-2 font-mono text-primary">{agent.qualityScore ?? 0}%</td>
-                <td className="px-4 py-2 font-mono text-muted-foreground">{agent.evalScores?.correctness ?? 0}%</td>
-                <td className="px-4 py-2 font-mono text-muted-foreground">{agent.evalScores?.style ?? 0}%</td>
-                <td className="px-4 py-2 font-mono text-muted-foreground">{agent.evalScores?.efficiency ?? 0}%</td>
-              </tr>
-            ))}
+            {sortedAgents.map((agent, index) => {
+              const lastEval = lastEvalByAgent.get(agent.id);
+              return (
+                <tr key={agent.id} className="hover:bg-surface-2/50">
+                  <td className="px-4 py-2 font-mono text-muted-foreground">{index + 1}</td>
+                  <td className="px-4 py-2 font-medium">{agent.name}</td>
+                  <td className="px-4 py-2 text-muted-foreground">{agent.role}</td>
+                  <td className="px-4 py-2 font-mono text-primary">{agent.qualityScore ?? 0}%</td>
+                  <td className="px-4 py-2 font-mono text-muted-foreground">{agent.evalScores?.correctness ?? 0}%</td>
+                  <td className="px-4 py-2 font-mono text-muted-foreground">{agent.evalScores?.style ?? 0}%</td>
+                  <td className="px-4 py-2 font-mono text-muted-foreground">{agent.evalScores?.efficiency ?? 0}%</td>
+                  <td className="px-4 py-2 font-mono text-muted-foreground">{agent.evalScores?.testQuality ?? 0}%</td>
+                  <td className="px-4 py-2 font-mono text-muted-foreground">{agent.evalScores?.docQuality ?? 0}%</td>
+                  <td className="px-4 py-2 text-muted-foreground">
+                    {lastEval ? formatDate(lastEval, 'relative') : '—'}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

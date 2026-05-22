@@ -22,11 +22,12 @@ use clap::{Parser, Subcommand};
 use hive_crypto::{mask_key, Crypto};
 use hive_db::{
     repos::{
-        agent_mcp_bindings, agent_messages, agent_skill_bindings, agent_spawn_requests,
-        agent_task_assignments, agent_wires, agents, alerts, audit, chat_attachments,
-        chat_messages, chat_threads, connectors, cost_events, custom_mcp_servers, drift_events,
-        llm_providers, notes, notifications, project_workspaces, projects, sessions, settings,
-        skills, spec_document_sections, spec_documents, sprints, synthesis_jobs, tasks, tech_debt,
+        agent_eval_runs, agent_mcp_bindings, agent_messages, agent_skill_bindings,
+        agent_spawn_requests, agent_task_assignments, agent_wires, agents, alerts, audit,
+        chat_attachments, chat_messages, chat_threads, connectors, cost_events, custom_mcp_servers,
+        drift_events, llm_providers, notes, notifications, project_workspaces, projects, sessions,
+        settings, skills, spec_document_sections, spec_documents, sprints, synthesis_jobs, tasks,
+        tech_debt,
     },
     seed::seed_demo,
     Db,
@@ -855,6 +856,11 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route(
             "/v1/drift-events/:event_id",
             patch(update_drift_event_status),
+        )
+        // Eval runs (D1 leaderboard pipeline)
+        .route(
+            "/v1/projects/:project_id/eval-runs",
+            get(list_eval_runs),
         )
         // Custom MCP servers (auto-spawn output)
         .route(
@@ -2687,7 +2693,7 @@ fn tool_category(name: &str) -> &'static str {
         | "delegate_task" => "coordination",
         "hive_mind_write" | "hive_mind_read" | "hive_mind_list" | "hive_mind_delete" => "memory",
         "list_spec_docs" | "read_spec_doc" | "add_task" | "set_task_status" | "add_tech_debt"
-        | "update_tech_debt" | "record_drift" => "planning",
+        | "update_tech_debt" | "record_drift" | "record_eval" => "planning",
         "list_skills" | "read_skill" => "skills",
         "todo" => "planning",
         "git_status" | "git_diff" | "git_log" | "git_commit" | "git_pull" | "git_push" => "git",
@@ -6622,7 +6628,7 @@ Web:
 
 Project-state tools (often available — check the appended catalog):
 - Memory: `hive_mind_write`, `hive_mind_list`, `hive_mind_read`, `hive_mind_delete`. Persist durable decisions instead of repeating them in-context.
-- Planning: `add_task`, `set_task_status` (status: pending/in-progress/queued/completed/blocked/cancelled), `list_spec_docs`, `read_spec_doc`, `add_tech_debt`, `update_tech_debt`, `record_drift`.
+- Planning: `add_task`, `set_task_status` (status: pending/in-progress/queued/completed/blocked/cancelled), `list_spec_docs`, `read_spec_doc`, `add_tech_debt`, `update_tech_debt`, `record_drift`, `record_eval`.
 - Skills: `list_skills`, `read_skill`.
 - Self: `todo` (multi-step internal checklist — action: add/complete/remove/list).
 
@@ -6738,6 +6744,7 @@ Planning + task closure (THIS IS HOW YOU TELL THE RUNTIME YOU'RE DONE):\n\
 - `set_task_status`(taskId, status, summary?) — status one of: `pending`, `in-progress`, `queued`, `completed`, `blocked`, `cancelled`. **CRITICAL: the autonomous scheduler keeps re-dispatching the same task until you mark it `completed` or `blocked`. If you finish work and don't call this, the system hands the task back to you next tick.**\n\
 - `add_tech_debt`(title, description?, file?, impact?, severity?, lines?), `update_tech_debt`(id, ...) — file shortcuts so they don't vanish.\n\
 - `record_drift`(kind, subjectId, severity, evidenceJson) — when your work, the code, or behaviour has diverged from its intent.\n\
+- `record_eval`(agentId, correctness?, style?, efficiency?, testQuality?, docQuality?, sampleSize?, notes?) — score another agent's recent work 0-100; feeds the Stats leaderboard.\n\
 \n\
 Skills (playbooks bound to YOU):\n\
 - `list_skills`() — what's bound to this agent right now.\n\
@@ -6854,6 +6861,7 @@ mod prompt_tests {
             "add_tech_debt",
             "update_tech_debt",
             "record_drift",
+            "record_eval",
             "list_skills",
             "read_skill",
             "spawn_agent",
@@ -7357,6 +7365,19 @@ async fn list_drift_events(
     let database = db(&state).await;
     Ok(Json(json!(
         drift_events::list_for_project(database.conn(), &project_id, query.open_only).await?
+    )))
+}
+
+/// `GET /v1/projects/:id/eval-runs` — the D1 eval history for a project,
+/// newest first. The Stats leaderboard reads the agent snapshot columns
+/// for the table itself; this feed powers a per-agent trend view.
+async fn list_eval_runs(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    Ok(Json(json!(
+        agent_eval_runs::list_for_project(database.conn(), &project_id).await?
     )))
 }
 

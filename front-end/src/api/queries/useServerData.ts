@@ -53,6 +53,22 @@ export const useUserStoriesData = (projectId?: string | null) =>
   useProjectResourceQuery<UserStoryItem[]>(projectId, 'user-stories', 'user-stories');
 export const useActivityFeedData = (projectId?: string | null) =>
   useProjectResourceQuery<ActivityFeedItem[]>(projectId, 'activity', 'activity');
+
+/** One row of the D1 eval pipeline — a scoring pass over an agent. */
+export interface EvalRun {
+  id: string;
+  projectId: string;
+  agentId: string;
+  evaluator: string;
+  scoresJson: Record<string, number>;
+  overallScore: number;
+  sampleSize: number;
+  notes: string | null;
+  createdAt: string;
+}
+
+export const useEvalRunsData = (projectId?: string | null) =>
+  useProjectResourceQuery<EvalRun[]>(projectId, 'eval-runs', 'eval-runs');
 export const useSessionHistoryData = (projectId?: string | null) =>
   useProjectResourceQuery<SessionHistoryItem[]>(projectId, 'session-history', 'sessions/history');
 export const useQualityTimelineData = (projectId?: string | null) =>

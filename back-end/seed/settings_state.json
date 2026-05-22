@@ -39,6 +39,7 @@
       "add_tech_debt",
       "update_tech_debt",
       "record_drift",
+      "record_eval",
       "list_skills",
       "read_skill",
       "git_status",

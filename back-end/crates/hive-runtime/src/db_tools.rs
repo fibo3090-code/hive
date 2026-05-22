@@ -9,8 +9,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use hive_db::{
     repos::{
-        agent_skill_bindings, drift_events, notes, spec_document_sections, spec_documents, tasks,
-        tech_debt,
+        agent_eval_runs, agent_skill_bindings, agents, drift_events, notes, spec_document_sections,
+        spec_documents, tasks, tech_debt,
     },
     Db,
 };
@@ -39,6 +39,7 @@ pub const RUNTIME_TOOL_NAMES: &[&str] = &[
     "add_tech_debt",
     "update_tech_debt",
     "record_drift",
+    "record_eval",
     "list_skills",
     "read_skill",
 ];
@@ -57,6 +58,7 @@ pub const RUNTIME_DEFAULT_TOOL_NAMES: &[&str] = &[
     "add_tech_debt",
     "update_tech_debt",
     "record_drift",
+    "record_eval",
     "list_skills",
     "read_skill",
 ];
@@ -547,6 +549,127 @@ impl Tool for RecordDrift {
     }
 }
 
+// ── Eval ────────────────────────────────────────────────────────────────────
+
+/// Clamp a raw score argument to the 0-100 range. Missing → `None`.
+fn score_arg(args: &Value, key: &str) -> Option<i32> {
+    args.get(key)
+        .and_then(Value::as_i64)
+        .map(|v| v.clamp(0, 100) as i32)
+}
+
+/// `record_eval` — a judge/evaluator agent scores another agent's recent
+/// work. Writes a history row in `agent_eval_runs` AND updates the target
+/// agent's `quality_score` / `eval_scores` snapshot so the Stats
+/// leaderboard reflects it immediately (no join needed).
+pub struct RecordEval {
+    db: Db,
+}
+#[async_trait]
+impl Tool for RecordEval {
+    fn manifest(&self) -> ToolManifest {
+        ToolManifest {
+            name: "record_eval".into(),
+            description: "Score another agent's recent work on 0-100 metrics. Records an eval run \
+                 and updates the agent's leaderboard standing. Supply at least one metric."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "agentId": { "type": "string", "description": "Id of the agent being scored." },
+                    "correctness": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "style": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "efficiency": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "testQuality": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "docQuality": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "sampleSize": { "type": "integer", "minimum": 0, "description": "How many tasks/turns/diffs were reviewed." },
+                    "notes": { "type": "string", "description": "Optional one-line justification." }
+                },
+                "required": ["agentId"]
+            }),
+            side_effects: true,
+        }
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
+        let agent_id = str_arg(&args, "agentId")?;
+
+        // Project isolation: the scored agent must belong to the caller's
+        // project. Without this an evaluator could score a foreign agent.
+        let agent = agents::get(self.db.conn(), agent_id)
+            .await
+            .map_err(|e| ToolError::Other(format!("lookup agent: {e}")))?
+            .filter(|a| a.project_id == ctx.project_id)
+            .ok_or_else(|| {
+                ToolError::Other(format!("agent {agent_id} not found in this project"))
+            })?;
+
+        // Collect whichever metrics were supplied.
+        let metrics = [
+            ("correctness", score_arg(&args, "correctness")),
+            ("style", score_arg(&args, "style")),
+            ("efficiency", score_arg(&args, "efficiency")),
+            ("testQuality", score_arg(&args, "testQuality")),
+            ("docQuality", score_arg(&args, "docQuality")),
+        ];
+        let present: Vec<(&str, i32)> =
+            metrics.iter().filter_map(|(k, v)| v.map(|s| (*k, s))).collect();
+        if present.is_empty() {
+            return Err(ToolError::InvalidArgs(
+                "supply at least one metric (correctness / style / efficiency / testQuality / docQuality)".into(),
+            ));
+        }
+        let overall =
+            (present.iter().map(|(_, s)| *s).sum::<i32>() as f64 / present.len() as f64).round()
+                as i32;
+        let scores_json: serde_json::Map<String, Value> = present
+            .iter()
+            .map(|(k, s)| ((*k).to_owned(), json!(s)))
+            .collect();
+        let scores_value = Value::Object(scores_json);
+
+        let sample_size = args
+            .get("sampleSize")
+            .and_then(Value::as_i64)
+            .map(|v| v.max(0) as i32)
+            .unwrap_or(0);
+
+        let run = agent_eval_runs::create(
+            self.db.conn(),
+            agent_eval_runs::CreateEvalRun {
+                project_id: ctx.project_id.clone(),
+                agent_id: agent_id.to_owned(),
+                evaluator: format!("agent:{}", author_of(ctx)),
+                scores_json: scores_value.clone(),
+                overall_score: overall,
+                sample_size,
+                notes: opt_str(&args, "notes"),
+            },
+        )
+        .await
+        .map_err(|e| ToolError::Other(format!("record eval: {e}")))?;
+
+        // Update the snapshot columns the existing leaderboard reads.
+        let _ = agents::update(
+            self.db.conn(),
+            &agent.project_id,
+            agent_id,
+            agents::UpdateAgent {
+                quality_score: Some(Some(overall)),
+                eval_scores: Some(scores_value),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        Ok(json!({
+            "evalRunId": run.id,
+            "agentId": agent_id,
+            "overall": overall,
+            "metricsScored": present.len(),
+        }))
+    }
+}
+
 // ── Skills ──────────────────────────────────────────────────────────────────
 
 pub struct ListSkills {
@@ -647,6 +770,7 @@ pub fn register_db_tools(registry: &mut ToolRegistry, db: Db) {
     registry.insert(Arc::new(AddTechDebt { db: db.clone() }));
     registry.insert(Arc::new(UpdateTechDebt { db: db.clone() }));
     registry.insert(Arc::new(RecordDrift { db: db.clone() }));
+    registry.insert(Arc::new(RecordEval { db: db.clone() }));
     registry.insert(Arc::new(ListSkills { db: db.clone() }));
     registry.insert(Arc::new(ReadSkill { db }));
 }
