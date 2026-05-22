@@ -835,7 +835,77 @@ async fn ensure_project_scope_settings(
 const SEED_SENTINEL_SCOPE: &str = "system";
 const SEED_SENTINEL_KEY: &str = "seed.demo.completed";
 
+/// The exact `enabledTools` list early demo databases were seeded with —
+/// only the six basic fs/web/shell tools. Databases carrying *exactly*
+/// this set never saw the project-state / coordination / git tools, so
+/// agents literally could not call them (the tool registry is allowlist-
+/// filtered against this setting). [`heal_enabled_tools`] upgrades that
+/// stale fingerprint to the current canonical default.
+const STALE_ENABLED_TOOLS: &[&str] = &[
+    "web_search",
+    "web_fetch",
+    "fs_read",
+    "fs_write",
+    "fs_list",
+    "shell_exec",
+];
+
+/// One-time heal for databases seeded before `settings_state.json` grew
+/// its full tool list. Runs on every boot, *outside* the seed sentinel
+/// (the sentinel would otherwise skip it forever on an already-seeded
+/// DB). Only acts when `enabledTools` is byte-identical to the known
+/// stale six-tool set — if the operator customised the list at all, it
+/// is left untouched.
+async fn heal_enabled_tools(db: &DatabaseConnection) -> Result<(), DbErr> {
+    let Some(mut state) = settings::get_value(db, "global", "settingsState").await? else {
+        return Ok(());
+    };
+    let current: Vec<String> = state
+        .get("toolsSandbox")
+        .and_then(|t| t.get("enabledTools"))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let is_stale = current.len() == STALE_ENABLED_TOOLS.len()
+        && STALE_ENABLED_TOOLS
+            .iter()
+            .all(|t| current.iter().any(|c| c == t));
+    if !is_stale {
+        return Ok(());
+    }
+
+    // Pull the canonical list from the seed snapshot so this heal stays
+    // in lockstep with whatever a fresh install ships.
+    let canonical = json_value(include_str!("../../../seed/settings_state.json"));
+    let Some(tools) = canonical
+        .get("toolsSandbox")
+        .and_then(|t| t.get("enabledTools"))
+        .cloned()
+    else {
+        return Ok(());
+    };
+    if let Some(sandbox) = state
+        .get_mut("toolsSandbox")
+        .and_then(|t| t.as_object_mut())
+    {
+        sandbox.insert("enabledTools".to_owned(), tools);
+        settings::put_value(db, "global", "settingsState", state).await?;
+        tracing::info!("healed stale enabledTools — agents now see the full tool catalog");
+    }
+    Ok(())
+}
+
 pub async fn seed_demo(db: &DatabaseConnection) -> Result<(), DbErr> {
+    // Run the enabled-tools heal on *every* boot, before the sentinel
+    // early-return — otherwise an already-seeded DB stuck on the old
+    // six-tool list would never recover.
+    heal_enabled_tools(db).await?;
+
     // Idempotency guard: if a previous boot completed seeding, skip.
     // Avoids races on simultaneous startup (two processes both finding
     // an empty `projects` table) and avoids re-creating notifications
