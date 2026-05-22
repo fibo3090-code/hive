@@ -165,6 +165,67 @@ export function useMoveTechDebt(projectId?: string | null) {
   });
 }
 
+export function useUpdateNote(projectId?: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      noteId,
+      patch,
+    }: {
+      noteId: string;
+      patch: { category?: string; title?: string; content?: string };
+    }) =>
+      api<NoteItem>(`/v1/notes/${noteId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notes', projectId] }),
+  });
+}
+
+export function useDeleteNote(projectId?: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (noteId: string) =>
+      api<{ ok: boolean }>(`/v1/notes/${noteId}`, { method: 'DELETE' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notes', projectId] }),
+  });
+}
+
+export function useUpdateTechDebt(projectId?: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      itemId,
+      patch,
+    }: {
+      itemId: string;
+      patch: {
+        title?: string;
+        description?: string | null;
+        file?: string | null;
+        impact?: string | null;
+        severity?: string;
+        lines?: number;
+      };
+    }) =>
+      api<TechDebtItem>(`/v1/tech-debt/${itemId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tech-debt', projectId] }),
+  });
+}
+
+export function useDeleteTechDebt(projectId?: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (itemId: string) =>
+      api<{ ok: boolean }>(`/v1/tech-debt/${itemId}`, { method: 'DELETE' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tech-debt', projectId] }),
+  });
+}
+
 export function useReorderSprints(projectId?: string | null) {
   const queryClient = useQueryClient();
   return useMutation({

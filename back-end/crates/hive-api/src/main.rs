@@ -293,6 +293,33 @@ struct MoveTechDebtBody {
     severity: String,
 }
 
+/// Partial update for a Hive Mind note. Every field optional — only the
+/// supplied ones are written.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateNoteBody {
+    category: Option<String>,
+    title: Option<String>,
+    content: Option<String>,
+}
+
+/// Partial update for a tech-debt item. `description` / `file` / `impact`
+/// use the double-Option so an explicit `null` clears the column while an
+/// absent key leaves it untouched.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateTechDebtBody {
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<Option<String>>,
+    #[serde(default)]
+    file: Option<Option<String>>,
+    #[serde(default)]
+    impact: Option<Option<String>>,
+    severity: Option<String>,
+    lines: Option<i32>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ReorderSprintsBody {
@@ -587,8 +614,16 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/projects/:project_id/notes",
             get(list_notes).post(create_note),
         )
+        .route(
+            "/v1/notes/:note_id",
+            patch(update_note).delete(delete_note),
+        )
         .route("/v1/projects/:project_id/tech-debt", get(list_tech_debt))
         .route("/v1/tech-debt/:item_id/move", post(move_tech_debt_item))
+        .route(
+            "/v1/tech-debt/:item_id",
+            patch(update_tech_debt_item).delete(delete_tech_debt_item),
+        )
         .route("/v1/projects/:project_id/sprints", get(list_sprints))
         .route(
             "/v1/projects/:project_id/sprints/reorder",
@@ -3087,6 +3122,68 @@ async fn move_tech_debt_item(
     Ok(Json(json!(updated)))
 }
 
+async fn update_tech_debt_item(
+    State(state): State<AppState>,
+    Path(item_id): Path<String>,
+    Json(body): Json<UpdateTechDebtBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let updated = tech_debt::update(
+        database.conn(),
+        &item_id,
+        tech_debt::UpdateTechDebt {
+            title: body.title,
+            description: body.description,
+            file: body.file,
+            impact: body.impact,
+            severity: body.severity,
+            lines: body.lines,
+            position: None,
+        },
+    )
+    .await?;
+    Ok(Json(json!(updated)))
+}
+
+async fn delete_tech_debt_item(
+    State(state): State<AppState>,
+    Path(item_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    tech_debt::delete(database.conn(), &item_id).await?;
+    Ok(Json(json!({ "ok": true, "id": item_id })))
+}
+
+async fn update_note(
+    State(state): State<AppState>,
+    Path(note_id): Path<String>,
+    Json(body): Json<UpdateNoteBody>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    let updated = notes::update(
+        database.conn(),
+        &note_id,
+        notes::UpdateNote {
+            category: body.category,
+            title: body.title,
+            content: body.content,
+            auto: None,
+            author: None,
+        },
+    )
+    .await?;
+    Ok(Json(json!(updated)))
+}
+
+async fn delete_note(
+    State(state): State<AppState>,
+    Path(note_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    notes::delete(database.conn(), &note_id).await?;
+    Ok(Json(json!({ "ok": true, "id": note_id })))
+}
+
 async fn list_sprints(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
@@ -4981,6 +5078,32 @@ async fn update_settings(
                 .await?;
             }
         }
+    }
+
+    // Derive the dedicated `audit.retention_days` row from the UI's
+    // `security.auditLogRetention` dropdown so the retention purge job
+    // (spawned in `serve`) actually honours the operator's choice. The
+    // UI sends a human label; map it to an integer day count (0 =
+    // keep forever).
+    if let Some(label) = next_settings
+        .get("security")
+        .and_then(|v| v.get("auditLogRetention"))
+        .and_then(Value::as_str)
+    {
+        let days: i64 = match label {
+            "30 days" => 30,
+            "90 days" => 90,
+            "1 year" => 365,
+            "Forever" => 0,
+            _ => 90,
+        };
+        settings::put_value(
+            database.conn(),
+            "global",
+            "audit.retention_days",
+            json!(days),
+        )
+        .await?;
     }
 
     if let Some(api_key) = pending_tavily_key {

@@ -4,13 +4,23 @@ import { useHiveData } from '@/api/queries/useHiveData';
 import { useSpecDocument, useSpecDocuments, useSpecDocumentSections } from '@/api/spec-documents';
 import { useDriftEvents, useUpdateDriftStatus } from '@/api/drift';
 import { useAssignments } from '@/api/assignments';
-import { useTechDebtData, useMoveTechDebt, useNotesData, useCreateNote } from '@/api/queries/useServerData';
+import {
+  useTechDebtData,
+  useMoveTechDebt,
+  useNotesData,
+  useCreateNote,
+  useUpdateNote,
+  useDeleteNote,
+  useUpdateTechDebt,
+  useDeleteTechDebt,
+} from '@/api/queries/useServerData';
 import type { TechDebtItem, NoteItem } from '@/types/domain';
 import { AgentStateChip } from '@/components/shared/AgentStateChip';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { Plus, Search } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useConfirmDelete } from '@/components/shared/useConfirmDelete';
 
 type Tab = 'spec' | 'sprint' | 'techdebt' | 'hivemind' | 'drift';
 
@@ -288,8 +298,15 @@ function TechDebtTab() {
   const activeProjectId = activeProject?.id ?? null;
   const techDebtQuery = useTechDebtData(activeProjectId);
   const moveMutation = useMoveTechDebt(activeProjectId);
+  const updateMutation = useUpdateTechDebt(activeProjectId);
+  const deleteMutation = useDeleteTechDebt(activeProjectId);
   const [draggedId, setDraggedId] = useState<string | null>(null);
-  
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editImpact, setEditImpact] = useState('');
+  const [confirmModal, confirmDelete] = useConfirmDelete();
+
   const items = (techDebtQuery.data ?? []) as TechDebtItem[];
   const columns = ['high', 'medium', 'low'] as const;
   const colors: Record<typeof columns[number], string> = {
@@ -311,8 +328,51 @@ function TechDebtTab() {
     }
   };
 
+  const startEdit = (item: TechDebtItem) => {
+    setEditingId(item.id);
+    setEditTitle(item.title ?? '');
+    setEditDescription(item.description ?? '');
+    setEditImpact(item.impact ?? '');
+  };
+
+  const saveEdit = async (itemId: string) => {
+    if (!editTitle.trim()) {
+      toast.error('Title is required');
+      return;
+    }
+    try {
+      await updateMutation.mutateAsync({
+        itemId,
+        patch: {
+          title: editTitle.trim(),
+          description: editDescription.trim() || null,
+          impact: editImpact.trim() || null,
+        },
+      });
+      toast.success('Tech debt item updated');
+      setEditingId(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to update item');
+    }
+  };
+
+  const handleDelete = async (item: TechDebtItem) => {
+    const ok = await confirmDelete({
+      title: 'Delete tech debt item?',
+      description: `Permanently delete "${item.title}". This cannot be undone.`,
+    });
+    if (!ok) return;
+    try {
+      await deleteMutation.mutateAsync(item.id);
+      toast.success('Tech debt item deleted');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to delete item');
+    }
+  };
+
   return (
     <div className="space-y-4">
+      {confirmModal}
       {items.length === 0 ? (
         <EmptyState title="No tech debt recorded" message="Tech debt items will appear here when the backend has findings for the active project." />
       ) : (
@@ -323,24 +383,83 @@ function TechDebtTab() {
               <div className="space-y-2 min-h-[220px] rounded-lg border border-dashed border-border/60 p-2">
                 {items
                   .filter((item: TechDebtItem) => item.severity === column)
-                  .map((item: TechDebtItem) => (
-                    <button
-                      type="button"
-                      key={item.id}
-                      draggable
-                      onDragStart={() => setDraggedId(item.id)}
-                      onDragEnd={() => setDraggedId(null)}
-                      className="rounded-lg border border-border bg-card p-3 hover:border-primary/30 cursor-grab active:cursor-grabbing transition-colors w-full text-left"
-                    >
-                      <h5 className="text-sm font-medium mb-1">{item.title}</h5>
-                      <p className="text-micro text-muted-foreground mb-1">{item.description}</p>
-                      <p className="text-micro text-muted-foreground italic mb-1">Impact: {item.impact}</p>
-                      <div className="flex items-center gap-2">
-                        <span className="text-micro font-mono text-muted-foreground">{item.file}</span>
-                        {item.lines > 0 && <span className="text-micro text-muted-foreground">{item.lines} lines</span>}
+                  .map((item: TechDebtItem) =>
+                    editingId === item.id ? (
+                      <div key={item.id} className="rounded-lg border border-primary/40 bg-card p-3 space-y-2">
+                        <input
+                          value={editTitle}
+                          onChange={(e) => setEditTitle(e.target.value)}
+                          placeholder="Title"
+                          className="w-full h-8 rounded-md border border-border bg-surface-2 px-2 text-xs"
+                        />
+                        <textarea
+                          value={editDescription}
+                          onChange={(e) => setEditDescription(e.target.value)}
+                          placeholder="Description"
+                          className="w-full rounded-md border border-border bg-surface-2 p-2 text-xs h-16 resize-none"
+                        />
+                        <input
+                          value={editImpact}
+                          onChange={(e) => setEditImpact(e.target.value)}
+                          placeholder="Impact"
+                          className="w-full h-8 rounded-md border border-border bg-surface-2 px-2 text-xs"
+                        />
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setEditingId(null)}
+                            className="rounded-md border border-border px-2 py-1 text-micro"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void saveEdit(item.id)}
+                            disabled={updateMutation.isPending}
+                            className="rounded-md bg-primary px-2 py-1 text-micro text-primary-foreground disabled:opacity-50"
+                          >
+                            Save
+                          </button>
+                        </div>
                       </div>
-                    </button>
-                  ))}
+                    ) : (
+                      <div
+                        key={item.id}
+                        draggable
+                        onDragStart={() => setDraggedId(item.id)}
+                        onDragEnd={() => setDraggedId(null)}
+                        className="group rounded-lg border border-border bg-card p-3 hover:border-primary/30 cursor-grab active:cursor-grabbing transition-colors"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <h5 className="text-sm font-medium mb-1">{item.title}</h5>
+                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                            <button
+                              type="button"
+                              aria-label="Edit item"
+                              onClick={() => startEdit(item)}
+                              className="text-muted-foreground hover:text-foreground p-0.5"
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="Delete item"
+                              onClick={() => void handleDelete(item)}
+                              className="text-muted-foreground hover:text-destructive p-0.5"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </div>
+                        </div>
+                        <p className="text-micro text-muted-foreground mb-1">{item.description}</p>
+                        <p className="text-micro text-muted-foreground italic mb-1">Impact: {item.impact}</p>
+                        <div className="flex items-center gap-2">
+                          <span className="text-micro font-mono text-muted-foreground">{item.file}</span>
+                          {item.lines > 0 && <span className="text-micro text-muted-foreground">{item.lines} lines</span>}
+                        </div>
+                      </div>
+                    ),
+                  )}
               </div>
             </div>
           ))}
@@ -357,12 +476,55 @@ function HiveMindTab() {
   const activeProjectId = activeProject?.id ?? null;
   const notesQuery = useNotesData(activeProjectId);
   const createNote = useCreateNote(activeProjectId);
+  const updateNote = useUpdateNote(activeProjectId);
+  const deleteNote = useDeleteNote(activeProjectId);
   const [category, setCategory] = useState('all');
   const [search, setSearch] = useState('');
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editContent, setEditContent] = useState('');
+  const [confirmModal, confirmDelete] = useConfirmDelete();
   const categories = ['all', 'Architecture', 'Decisions', 'Patterns', 'Issues', 'Auto-generated'];
+
+  const startEdit = (note: NoteItem) => {
+    setEditingId(note.id);
+    setEditTitle(note.title ?? '');
+    setEditContent(note.content ?? '');
+  };
+
+  const saveEdit = async (noteId: string) => {
+    if (!editTitle.trim() || !editContent.trim()) {
+      toast.error('Title and content are required');
+      return;
+    }
+    try {
+      await updateNote.mutateAsync({
+        noteId,
+        patch: { title: editTitle.trim(), content: editContent.trim() },
+      });
+      toast.success('Note updated');
+      setEditingId(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to update note');
+    }
+  };
+
+  const handleDelete = async (note: NoteItem) => {
+    const ok = await confirmDelete({
+      title: 'Delete Hive Mind note?',
+      description: `Permanently delete "${note.title}". Agents that recall this note will no longer see it.`,
+    });
+    if (!ok) return;
+    try {
+      await deleteNote.mutateAsync(note.id);
+      toast.success('Note deleted');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to delete note');
+    }
+  };
 
   const notes = notesQuery.data ?? [];
   const filtered = notes.filter((note: NoteItem) => {
@@ -394,6 +556,7 @@ function HiveMindTab() {
 
   return (
     <div className="space-y-4">
+      {confirmModal}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 flex-1 max-w-xl">
           <div className="relative flex-1 max-w-sm">
@@ -460,24 +623,76 @@ function HiveMindTab() {
         <EmptyState title="No matching notes" message="Create a note or adjust the filters to see saved Hive Mind entries." />
       ) : (
         <div className="grid grid-cols-2 gap-4">
-          {filtered.map((note: NoteItem) => (
-            <div
-              key={note.id}
-              className={cn(
-                'rounded-lg border bg-card p-4 hover:border-primary/30 transition-colors flex flex-col',
-                note.auto ? 'border-primary/20' : 'border-border'
-              )}
-            >
-              <div className="flex items-center gap-2 mb-2">
-                {note.auto && <span className="text-micro bg-primary/10 text-primary px-1.5 py-0.5 rounded">auto</span>}
-                <span className="text-micro bg-surface-2 px-1.5 py-0.5 rounded text-muted-foreground">{note.category}</span>
-                <span className="text-micro text-muted-foreground ml-auto">{note.time}</span>
+          {filtered.map((note: NoteItem) =>
+            editingId === note.id ? (
+              <div key={note.id} className="rounded-lg border border-primary/40 bg-card p-4 space-y-2">
+                <input
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  placeholder="Note title"
+                  className="w-full h-9 rounded-md border border-border bg-surface-2 px-3 text-sm"
+                />
+                <textarea
+                  value={editContent}
+                  onChange={(e) => setEditContent(e.target.value)}
+                  placeholder="Note content"
+                  className="w-full rounded-md border border-border bg-surface-2 p-3 text-sm h-28 resize-none"
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingId(null)}
+                    className="rounded-md border border-border px-3 py-1.5 text-xs"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void saveEdit(note.id)}
+                    disabled={updateNote.isPending}
+                    className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                </div>
               </div>
-              <h4 className="text-sm font-semibold mb-2">{note.title}</h4>
-              <div className="text-xs text-muted-foreground whitespace-pre-wrap line-clamp-4 flex-1">{note.content}</div>
-              <div className="mt-3 text-[10px] font-medium text-muted-foreground border-t border-border/50 pt-2">— {note.author}</div>
-            </div>
-          ))}
+            ) : (
+              <div
+                key={note.id}
+                className={cn(
+                  'group rounded-lg border bg-card p-4 hover:border-primary/30 transition-colors flex flex-col',
+                  note.auto ? 'border-primary/20' : 'border-border'
+                )}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  {note.auto && <span className="text-micro bg-primary/10 text-primary px-1.5 py-0.5 rounded">auto</span>}
+                  <span className="text-micro bg-surface-2 px-1.5 py-0.5 rounded text-muted-foreground">{note.category}</span>
+                  <span className="text-micro text-muted-foreground ml-auto">{note.time}</span>
+                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      type="button"
+                      aria-label="Edit note"
+                      onClick={() => startEdit(note)}
+                      className="text-muted-foreground hover:text-foreground p-0.5"
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Delete note"
+                      onClick={() => void handleDelete(note)}
+                      className="text-muted-foreground hover:text-destructive p-0.5"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
+                <h4 className="text-sm font-semibold mb-2">{note.title}</h4>
+                <div className="text-xs text-muted-foreground whitespace-pre-wrap line-clamp-4 flex-1">{note.content}</div>
+                <div className="mt-3 text-[10px] font-medium text-muted-foreground border-t border-border/50 pt-2">— {note.author}</div>
+              </div>
+            )
+          )}
         </div>
       )}
     </div>
