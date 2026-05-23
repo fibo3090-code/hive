@@ -137,6 +137,18 @@ impl Tool for FsWriteTool {
             }
         }
 
+        // D2: take a sandbox-lock for the duration of the write so the
+        // HiveGraph lock-overlay reflects real activity. RAII — drop
+        // releases. `agent_id` falls back to "unknown" for chat-driven
+        // writes that aren't bound to a named agent (rare).
+        let _lock = ctx.sandbox_locks.as_ref().map(|reg| {
+            reg.acquire(
+                ctx.project_id.clone(),
+                ctx.agent_id.clone().unwrap_or_else(|| "unknown".to_owned()),
+                args.path.clone(),
+            )
+        });
+
         ctx.sandbox
             .write(&args.path, args.content.as_bytes())
             .await?;

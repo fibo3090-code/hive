@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 async-trait = "0.1"
+chrono = { workspace = true }
 futures-util = { workspace = true }
 hive-sandbox = { workspace = true }
 hive-search = { workspace = true }

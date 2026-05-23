@@ -69,6 +69,27 @@ export interface EvalRun {
 
 export const useEvalRunsData = (projectId?: string | null) =>
   useProjectResourceQuery<EvalRun[]>(projectId, 'eval-runs', 'eval-runs');
+
+/** D2 — one row per agent currently writing to a sandbox file. */
+export interface SandboxLock {
+  agentId: string;
+  path: string;
+  takenAt: string;
+}
+
+/**
+ * D2 — poll-based lock visibility for the HiveGraph overlay. Polls every
+ * 2 s while mounted because writes are typically short-lived (seconds);
+ * a no-op tick is cheap (in-memory snapshot endpoint).
+ */
+export function useSandboxLocks(projectId?: string | null) {
+  return useQuery({
+    queryKey: ['sandbox-locks', projectId],
+    queryFn: () => api<SandboxLock[]>(`/v1/projects/${projectId}/sandbox-locks`),
+    enabled: Boolean(projectId),
+    refetchInterval: 2000,
+  });
+}
 export const useSessionHistoryData = (projectId?: string | null) =>
   useProjectResourceQuery<SessionHistoryItem[]>(projectId, 'session-history', 'sessions/history');
 export const useQualityTimelineData = (projectId?: string | null) =>

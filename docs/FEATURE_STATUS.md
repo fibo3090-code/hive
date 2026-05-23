@@ -58,7 +58,7 @@ Legend
 | Wire creation by drag | done | local | 4 | Drag node→node in HiveGraph (`onConnect` → `POST …/wires`) |
 | Wire deletion (left-click) | done | local | 4 | Click a wire edge → confirm → `DELETE /v1/wires/:id` (lineage edges are not deletable) |
 | Cycle prevention | done | local | 4 | `agent_wires::create` BFS-rejects any edge that would close a loop |
-| Lock-overlay toggle | mock | server | 1 | Toggle renders, but the locked-agent set in `HiveGraph.tsx` is a hardcoded empty `Set` — the runtime doesn't expose held sandbox locks yet, so the overlay is always empty |
+| Lock-overlay toggle | done | local | 5 | D2: `SandboxLockRegistry` in `hive-tools` tracks active `fs_write` calls per project via RAII guards. `GET /v1/projects/:id/sandbox-locks` returns the live set; `useSandboxLocks` polls every 2 s and feeds the node + minimap overlay. |
 | Filters (status) | done | local | 1 | |
 | Search | done | local | 1 | |
 

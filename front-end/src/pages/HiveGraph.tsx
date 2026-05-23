@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useHiveData } from '@/api/queries/useHiveData';
+import { useSandboxLocks } from '@/api/queries/useServerData';
 import { useAgentLineage, useAgentMessages, useDispatchAgentTask, usePauseAgent, useResumeAgent, useTerminateAgent, useWires, useCreateWire, useDeleteWire, type AgentWire } from '@/api/agents';
 import type { Agent } from '@/types/domain';
 import { StatusDot } from '@/components/shared/StatusDot';
@@ -18,7 +19,6 @@ import { AgentConfigDialog } from '@/components/modals/AgentConfigDialog';
 import { ConfirmDeleteModal } from '@/components/modals/ConfirmDeleteModal';
 import { toast } from 'sonner';
 
-const lockedAgents = new Set<string>();
 const nodeTypes = { agentNode: AgentNode };
 
 type AgentNodeData = {
@@ -321,6 +321,15 @@ export default function HiveGraph() {
   const wires = useMemo(() => wiresQuery.data ?? [], [wiresQuery.data]);
   const graph = useMemo(() => buildGraph(state.agents, wires), [state.agents, wires]);
 
+  // D2: real lock overlay. Polls every 2 s while the page is mounted.
+  // The Set is what the node renderer + minimap query for the "locked"
+  // visual. Empty when no writes are in flight (the common case).
+  const sandboxLocksQuery = useSandboxLocks(projectId);
+  const lockedAgents = useMemo(
+    () => new Set((sandboxLocksQuery.data ?? []).map((l) => l.agentId)),
+    [sandboxLocksQuery.data],
+  );
+
   const onConnect = useCallback((conn: Connection) => {
     if (!conn.source || !conn.target || conn.source === conn.target) return;
     createWireMutation.mutate(
@@ -401,7 +410,7 @@ export default function HiveGraph() {
         onTogglePause: (agentValue: Agent) => { void togglePause(agentValue); },
       },
     };
-  }), [filteredIds, graph.nodes, navigate, searchLower, setChatTargetAgentId, showLocks, state.agents, togglePause]);
+  }), [filteredIds, graph.nodes, lockedAgents, navigate, searchLower, setChatTargetAgentId, showLocks, state.agents, togglePause]);
 
   const selectedAgent = selectedAgentId ? state.agents.find((agent) => agent.id === selectedAgentId) ?? null : null;
 

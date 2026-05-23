@@ -355,7 +355,9 @@ function ProjectMetricsTab() {
 function LeaderboardTab() {
   const { state, activeProject } = useHiveData();
   const evalRunsQuery = useEvalRunsData(activeProject?.id ?? null);
-  const evalRuns = evalRunsQuery.data ?? [];
+  // Stabilise the array identity across refetches so the downstream
+  // useMemo doesn't churn its dependency list on every render.
+  const evalRuns = useMemo(() => evalRunsQuery.data ?? [], [evalRunsQuery.data]);
   const sortedAgents = [...state.agents].sort((left, right) => (right.qualityScore ?? 0) - (left.qualityScore ?? 0));
 
   // Most-recent eval-run timestamp per agent, for the "Last eval" column.

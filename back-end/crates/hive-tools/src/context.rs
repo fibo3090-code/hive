@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use hive_sandbox::Sandbox;
 
+use crate::locks::SandboxLockRegistry;
 use crate::permission::PermissionMatrix;
 
 /// Per-invocation environment handed to `Tool::invoke`.
@@ -27,6 +28,13 @@ pub struct ToolContext {
     permissions: PermissionMatrix,
     /// User-defined files that are blocked from modification.
     pub protected_files: Vec<String>,
+    /// D2: shared registry tracking which agent currently holds a write
+    /// on which sandbox path. `fs_write` (and any future mutating tool)
+    /// takes a RAII lock for the duration of the I/O so the HiveGraph
+    /// lock-overlay can show real activity. `None` = the runner didn't
+    /// wire one (test fixtures); the tool then skips the visibility
+    /// hook but still performs the write.
+    pub sandbox_locks: Option<std::sync::Arc<SandboxLockRegistry>>,
 }
 
 impl ToolContext {
@@ -39,7 +47,16 @@ impl ToolContext {
             sandbox,
             permissions: PermissionMatrix::default(),
             protected_files: Vec::new(),
+            sandbox_locks: None,
         }
+    }
+
+    /// Wire the process-wide [`SandboxLockRegistry`] for D2 lock-overlay
+    /// visibility. Without it, `fs_write` still works — but the HiveGraph
+    /// lock-overlay will show nothing for this turn's writes.
+    pub fn with_sandbox_locks(mut self, registry: Arc<SandboxLockRegistry>) -> Self {
+        self.sandbox_locks = Some(registry);
+        self
     }
 
     pub fn with_agent(mut self, id: impl Into<String>) -> Self {

@@ -14,6 +14,7 @@
 pub mod builtins;
 pub mod context;
 pub mod error;
+pub mod locks;
 pub mod manifest;
 pub mod permission;
 pub mod registry;
@@ -21,6 +22,7 @@ pub mod registry;
 pub use builtins::{default_names, register_defaults, register_web_search};
 pub use context::ToolContext;
 pub use error::{ToolError, ToolResult};
+pub use locks::{LockGuard, LockHandle, SandboxLockRegistry};
 pub use manifest::ToolManifest;
 pub use permission::{ActionClass, PermissionDecision, PermissionMatrix, ToolOverride};
 pub use registry::ToolRegistry;

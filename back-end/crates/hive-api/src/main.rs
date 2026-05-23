@@ -84,6 +84,10 @@ struct AppState {
     model_cache: ModelCache,
     chat_jobs: ChatJobRegistry,
     executors: Arc<hive_runtime::ExecutorRegistry>,
+    /// D2: process-wide registry of active sandbox file-write holds. Each
+    /// `fs_write` takes an RAII lock for its duration; the HiveGraph
+    /// lock-overlay queries this via `GET /v1/projects/:id/sandbox-locks`.
+    sandbox_locks: Arc<hive_tools::SandboxLockRegistry>,
 }
 
 type ModelCache = Arc<RwLock<HashMap<String, (Instant, Vec<ModelInfo>)>>>;
@@ -488,6 +492,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         model_cache: Arc::new(RwLock::new(HashMap::new())),
         chat_jobs: ChatJobRegistry::default(),
         executors: executors.clone(),
+        sandbox_locks: hive_tools::SandboxLockRegistry::new(),
     };
 
     // W1-A2: audit_log retention purge. Reads `audit.retention_days` (default
@@ -569,6 +574,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
             "/v1/projects/:project_id/agents",
             get(list_agents).post(create_agent),
         )
+        .route(
+            "/v1/projects/:project_id/sandbox-locks",
+            get(list_sandbox_locks),
+        )
         .route("/v1/agents/:agent_id/set-status", post(set_agent_status))
         .route("/v1/agents/:agent_id", patch(update_agent))
         .route("/v1/agents/:agent_id/messages", get(get_agent_messages))
@@ -590,6 +599,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route(
             "/v1/projects/:project_id/coordinator/ensure",
             post(ensure_coordinator),
+        )
+        .route(
+            "/v1/projects/:project_id/coordinator/converse",
+            post(coordinator_converse),
         )
         .route(
             "/v1/projects/:project_id/tasks",
@@ -1493,7 +1506,9 @@ async fn build_tooling(
             }
         }
     }
-    context = context.with_protected_files(protected_files);
+    context = context
+        .with_protected_files(protected_files)
+        .with_sandbox_locks(state.sandbox_locks.clone());
 
     Ok(Some((registry, context)))
 }
@@ -2141,6 +2156,17 @@ async fn list_agents(
     )))
 }
 
+/// `GET /v1/projects/:id/sandbox-locks` — D2. Snapshot of agents
+/// currently holding a write on a sandbox file in this project. The
+/// HiveGraph lock-overlay polls this (cheap, in-memory).
+async fn list_sandbox_locks(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let locks = state.sandbox_locks.list_for_project(&project_id);
+    Ok(Json(json!(locks)))
+}
+
 async fn create_agent(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
@@ -2634,6 +2660,35 @@ async fn ensure_coordinator(
     .await?;
     let _ = state.executors.ensure(&created.id, &project_id).await;
     Ok(Json(json!(created)))
+}
+
+/// `POST /v1/projects/:id/coordinator/converse` — find-or-create both the
+/// project's coordinator agent **and** the canonical "CEO Onboarding"
+/// chat thread bound to it. Returns the thread id + coordinator id; the
+/// frontend then runs the conversation through the standard chat hooks
+/// (`useChatMessages` / `useSendChatMessage` / `useChatStream`) against
+/// that thread. Idempotent — repeated calls always resolve to the same
+/// thread for the project.
+async fn coordinator_converse(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    body: Option<Json<EnsureCoordinatorBody>>,
+) -> Result<Json<Value>, AppError> {
+    let team_mode = body.as_ref().and_then(|b| b.team_mode);
+    let database = db(&state).await;
+    let coord = ensure_coordinator_inline(&state, &database, &project_id, team_mode).await?;
+    let thread = chat_threads::get_or_create_for_agent(
+        database.conn(),
+        &project_id,
+        Some(&coord.id),
+        "CEO Onboarding",
+    )
+    .await?;
+    Ok(Json(json!({
+        "threadId": thread.id,
+        "coordinatorAgentId": coord.id,
+        "threadTitle": thread.title,
+    })))
 }
 
 async fn list_tool_manifests(State(state): State<AppState>) -> Result<Json<Value>, AppError> {

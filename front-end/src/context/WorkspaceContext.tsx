@@ -26,6 +26,15 @@ export interface OnboardingDraft {
    *  rather than masked keys so the Settings UI is the single source of
    *  truth for the actual credentials. */
   connectedProviderIds: string[];
+  /** B1: the project is created when the operator enters the Describe
+   *  step so the CEO chat has somewhere to live. Persisted so a refresh
+   *  mid-onboarding doesn't orphan / re-create the project. Reset on
+   *  successful launch and on explicit reset. */
+  projectId: string | null;
+  /** B1: the canonical "CEO Onboarding" chat thread bound to the
+   *  coordinator for this project. Resolved lazily by the StepDescribe
+   *  component on first mount. */
+  coordinatorThreadId: string | null;
 }
 
 export type AccentPresetId = 'amber' | 'blue' | 'green' | 'red' | 'violet';
@@ -143,6 +152,8 @@ const defaultOnboardingDraft: OnboardingDraft = {
   uploadedSpecName: null,
   teamMode: true,
   connectedProviderIds: [],
+  projectId: null,
+  coordinatorThreadId: null,
 };
 
 export const defaultSettings: SettingsState = {
