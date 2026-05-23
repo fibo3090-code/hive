@@ -26,6 +26,35 @@ import { useConnectGitHub, useGitHubStatus } from '@/api/git';
 import { toast } from 'sonner';
 import { ConfirmDeleteModal } from '@/components/modals/ConfirmDeleteModal';
 
+/**
+ * Section-level "this whole panel is parked" banner. Use it at the top
+ * of a Settings section whose controls don't yet drive a backend.
+ * Wrapping every individual control in `<DisabledFeature>` would be
+ * noisy; the banner + a dimmed body conveys "honesty pass" cleanly.
+ */
+function PlannedSectionBanner({ children }: { readonly children: React.ReactNode }) {
+  return (
+    <div className="rounded-md border border-warning/30 bg-warning/5 p-3 flex items-start gap-2 text-xs">
+      <Info className="h-4 w-4 text-warning shrink-0 mt-0.5" />
+      <div className="text-foreground/80">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Same idea for a section whose controls would need the (not-yet-built)
+ * Hive central server. Distinct copy so the operator knows it's not a
+ * local-only "later" — the dependency is external.
+ */
+function ServerOnlySectionBanner({ children }: { readonly children: React.ReactNode }) {
+  return (
+    <div className="rounded-md border border-info/30 bg-info/5 p-3 flex items-start gap-2 text-xs">
+      <Info className="h-4 w-4 text-info shrink-0 mt-0.5" />
+      <div className="text-foreground/80">{children}</div>
+    </div>
+  );
+}
+
 const settingsNav = [
   { id: 'general', label: 'General', icon: SettingsIcon },
   { id: 'llm', label: 'LLM Providers', icon: Cpu },
@@ -128,6 +157,7 @@ function SelectField<T extends string>({
 }
 
 export default function Settings() {
+  const navigate = useNavigate();
   const [section, setSection] = useState<(typeof settingsNav)[number]['id']>('general');
   const { accentPresets } = useWorkspace();
   const { activeProject } = useHiveData();
@@ -291,33 +321,43 @@ export default function Settings() {
         {section === 'router' && (
           <div className="space-y-6 max-w-2xl">
             <h2 className="text-lg font-semibold">Adaptive Router</h2>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-lg border border-border bg-card p-3"><span className="text-micro text-muted-foreground">Routing Mode</span><span className="block text-sm font-semibold mt-1">Multi-Armed Bandit</span></div>
-              <div className="rounded-lg border border-border bg-card p-3"><span className="text-micro text-muted-foreground">Exploration Rate</span><span className="block text-sm font-semibold mt-1 font-mono">ε = {(draft.router.explorationRate / 100).toFixed(2)}</span></div>
-              <div className="rounded-lg border border-success/30 bg-success/5 p-3"><span className="text-micro text-muted-foreground">Est. Savings</span><span className="block text-sm font-semibold mt-1 text-success font-mono">-23%</span></div>
-            </div>
-            <div className="rounded-lg border border-border bg-card">
-              <table className="w-full text-xs">
-                <thead><tr className="border-b border-border text-muted-foreground"><th className="text-left px-4 py-2">Task Type</th><th className="text-left px-4 py-2">Best Model</th><th className="text-left px-4 py-2">Score</th><th className="text-left px-4 py-2">Cost</th></tr></thead>
-                <tbody className="divide-y divide-border">
-                  {routingTable.map((row) => <tr key={row.task} className="hover:bg-surface-2/50"><td className="px-4 py-2 font-medium">{row.task}</td><td className="px-4 py-2 font-mono text-muted-foreground">{row.model}</td><td className="px-4 py-2 font-mono text-primary">{row.score}</td><td className="px-4 py-2 font-mono text-muted-foreground">{row.cost}</td></tr>)}
-                </tbody>
-              </table>
-            </div>
-            <Row label="Enable Router" desc="Auto-select best model per task"><Switch checked={draft.router.enabled} onCheckedChange={(checked) => patch('router', { ...draft.router, enabled: checked })} /></Row>
-            <Row label="Exploration Rate" desc="Probability of trying a non-optimal model">
-              <div className="flex items-center gap-4">
-                <Slider value={[draft.router.explorationRate]} onValueChange={([value]) => patch('router', { ...draft.router, explorationRate: value })} max={50} step={5} className="w-48" />
-                <span className="text-sm font-mono text-primary">{draft.router.explorationRate}%</span>
+            <PlannedSectionBanner>
+              <strong>Planned.</strong> Smart per-task model routing (pick the cheapest provider that can handle the prompt) isn't wired yet — toggling these controls writes settings but the runtime doesn't read them. Today every chat uses the provider+model the operator picks explicitly.
+            </PlannedSectionBanner>
+            <div className="opacity-60 pointer-events-none select-none space-y-6">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-lg border border-border bg-card p-3"><span className="text-micro text-muted-foreground">Routing Mode</span><span className="block text-sm font-semibold mt-1">Multi-Armed Bandit</span></div>
+                <div className="rounded-lg border border-border bg-card p-3"><span className="text-micro text-muted-foreground">Exploration Rate</span><span className="block text-sm font-semibold mt-1 font-mono">ε = {(draft.router.explorationRate / 100).toFixed(2)}</span></div>
+                <div className="rounded-lg border border-success/30 bg-success/5 p-3"><span className="text-micro text-muted-foreground">Est. Savings</span><span className="block text-sm font-semibold mt-1 text-success font-mono">-23%</span></div>
               </div>
-            </Row>
+              <div className="rounded-lg border border-border bg-card">
+                <table className="w-full text-xs">
+                  <thead><tr className="border-b border-border text-muted-foreground"><th className="text-left px-4 py-2">Task Type</th><th className="text-left px-4 py-2">Best Model</th><th className="text-left px-4 py-2">Score</th><th className="text-left px-4 py-2">Cost</th></tr></thead>
+                  <tbody className="divide-y divide-border">
+                    {routingTable.map((row) => <tr key={row.task} className="hover:bg-surface-2/50"><td className="px-4 py-2 font-medium">{row.task}</td><td className="px-4 py-2 font-mono text-muted-foreground">{row.model}</td><td className="px-4 py-2 font-mono text-primary">{row.score}</td><td className="px-4 py-2 font-mono text-muted-foreground">{row.cost}</td></tr>)}
+                  </tbody>
+                </table>
+              </div>
+              <Row label="Enable Router" desc="Auto-select best model per task"><Switch checked={draft.router.enabled} onCheckedChange={(checked) => patch('router', { ...draft.router, enabled: checked })} /></Row>
+              <Row label="Exploration Rate" desc="Probability of trying a non-optimal model">
+                <div className="flex items-center gap-4">
+                  <Slider value={[draft.router.explorationRate]} onValueChange={([value]) => patch('router', { ...draft.router, explorationRate: value })} max={50} step={5} className="w-48" />
+                  <span className="text-sm font-mono text-primary">{draft.router.explorationRate}%</span>
+                </div>
+              </Row>
+            </div>
           </div>
         )}
 
         {section === 'modules' && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-semibold">HCM Modules</h2>
-            {Object.entries(draft.modules).map(([name, enabled]) => <div key={name} className="flex items-center justify-between py-3 border-b border-border"><div><span className="text-sm font-medium">{name}</span><span className="text-micro font-mono text-muted-foreground ml-2">managed</span></div><Switch checked={enabled} onCheckedChange={(checked) => patch('modules', { ...draft.modules, [name]: checked })} /></div>)}
+            <PlannedSectionBanner>
+              <strong>Planned.</strong> Modules are full-privilege code extensions; runtime exec is not implemented yet (synthesis is currently a local stub — see Forge → Modules). Toggling these switches writes a setting but no module code runs.
+            </PlannedSectionBanner>
+            <div className="opacity-60 pointer-events-none select-none">
+              {Object.entries(draft.modules).map(([name, enabled]) => <div key={name} className="flex items-center justify-between py-3 border-b border-border"><div><span className="text-sm font-medium">{name}</span><span className="text-micro font-mono text-muted-foreground ml-2">managed</span></div><Switch checked={enabled} onCheckedChange={(checked) => patch('modules', { ...draft.modules, [name]: checked })} /></div>)}
+            </div>
           </div>
         )}
 
@@ -373,7 +413,12 @@ export default function Settings() {
         {section === 'integrations' && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-semibold">Integrations</h2>
-            {Object.entries(draft.integrations).map(([name, status]) => <div key={name} className="flex items-center justify-between py-3 border-b border-border"><span className="text-sm font-medium">{name}</span><button onClick={() => patch('integrations', { ...draft.integrations, [name]: status === 'connected' ? 'disconnected' : 'connected' })} className={cn('text-micro px-2 py-0.5 rounded-full', status === 'connected' ? 'text-success bg-success/10 hover:bg-success/20' : 'text-primary bg-primary/10 hover:bg-primary/20')}>{status === 'connected' ? 'Connected' : 'Connect'}</button></div>)}
+            <ServerOnlySectionBanner>
+              <strong>Redundant with Forge → Connectors.</strong> External-service hookups (APIs + MCP servers, with encrypted credentials) live there now and are the supported path. The toggles below only flip a local flag; they don't wire any real integration. <button type="button" onClick={() => navigate('/forge?tab=connectors')} className="underline text-info hover:opacity-80">Open Forge → Connectors →</button>
+            </ServerOnlySectionBanner>
+            <div className="opacity-60 pointer-events-none select-none">
+              {Object.entries(draft.integrations).map(([name, status]) => <div key={name} className="flex items-center justify-between py-3 border-b border-border"><span className="text-sm font-medium">{name}</span><button onClick={() => patch('integrations', { ...draft.integrations, [name]: status === 'connected' ? 'disconnected' : 'connected' })} className={cn('text-micro px-2 py-0.5 rounded-full', status === 'connected' ? 'text-success bg-success/10 hover:bg-success/20' : 'text-primary bg-primary/10 hover:bg-primary/20')}>{status === 'connected' ? 'Connected' : 'Connect'}</button></div>)}
+            </div>
           </div>
         )}
 
@@ -398,11 +443,26 @@ export default function Settings() {
         {section === 'security' && (
           <div className="space-y-6 max-w-xl">
             <h2 className="text-lg font-semibold">Security & Compliance</h2>
-            <Row label="Outbound Prompt Warning" desc="Warn before sending prompts to external APIs"><Switch checked={draft.security.outboundPromptWarning} onCheckedChange={(checked) => patch('security', { ...draft.security, outboundPromptWarning: checked })} /></Row>
-            <Row label="API Risk Approval" desc="Require approval for risky API calls"><Switch checked={draft.security.apiRiskApproval} onCheckedChange={(checked) => patch('security', { ...draft.security, apiRiskApproval: checked })} /></Row>
-            <Row label="Secret Scanning" desc="Scan code for leaked credentials"><Switch checked={draft.security.secretScanning} onCheckedChange={(checked) => patch('security', { ...draft.security, secretScanning: checked })} /></Row>
+            <PlannedSectionBanner>
+              <strong>Audit Log Retention is live</strong> (drives the backend purge job).
+              The other toggles are planned: they persist their state but the
+              runtime doesn't yet act on them. They'll wire in incrementally as
+              the corresponding code paths land.
+            </PlannedSectionBanner>
+            <div className="opacity-60 pointer-events-none select-none space-y-6">
+              <Row label="Outbound Prompt Warning" desc="Warn before sending prompts to external APIs"><Switch checked={draft.security.outboundPromptWarning} onCheckedChange={(checked) => patch('security', { ...draft.security, outboundPromptWarning: checked })} /></Row>
+              <Row label="API Risk Approval" desc="Require approval for risky API calls"><Switch checked={draft.security.apiRiskApproval} onCheckedChange={(checked) => patch('security', { ...draft.security, apiRiskApproval: checked })} /></Row>
+              <Row label="Secret Scanning" desc="Scan code for leaked credentials"><Switch checked={draft.security.secretScanning} onCheckedChange={(checked) => patch('security', { ...draft.security, secretScanning: checked })} /></Row>
+              <Row label="IP Allowlist" desc="Restrict access to specific IPs"><Switch checked={draft.security.ipAllowlist} onCheckedChange={(checked) => patch('security', { ...draft.security, ipAllowlist: checked })} /></Row>
+            </div>
+            {/* Audit Log Retention is the live one — kept outside the dimmed block. */}
+            <div className="rounded-md border border-success/30 bg-success/5 p-3 flex items-start gap-2 text-xs">
+              <Check className="h-4 w-4 text-success shrink-0 mt-0.5" />
+              <div className="text-foreground/80">
+                <strong>Active:</strong> the retention dropdown below maps to <code className="font-mono text-[10px]">audit.retention_days</code> and the backend purge job honours it (0 = keep forever).
+              </div>
+            </div>
             <Row label="Audit Log Retention" desc="How long to keep audit logs"><SelectField value={draft.security.auditLogRetention} options={['30 days', '90 days', '1 year', 'Forever']} onChange={(value) => patch('security', { ...draft.security, auditLogRetention: value })} /></Row>
-            <Row label="IP Allowlist" desc="Restrict access to specific IPs"><Switch checked={draft.security.ipAllowlist} onCheckedChange={(checked) => patch('security', { ...draft.security, ipAllowlist: checked })} /></Row>
           </div>
         )}
 

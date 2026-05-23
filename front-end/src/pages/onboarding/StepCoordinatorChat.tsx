@@ -19,7 +19,7 @@
  * so `/launch` still sees a brief.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Hexagon, Send, Upload, MessagesSquare, FileText } from 'lucide-react';
+import { Hexagon, Send, Upload, MessagesSquare, FileText, ClipboardCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/api/client';
 import {
@@ -131,6 +131,8 @@ export function StepCoordinatorChat({
           resolving={resolving}
           resolveError={resolveError}
           teamMode={teamMode}
+          description={description}
+          onDescriptionChange={onDescriptionChange}
         />
       ) : (
         <PasteBriefPanel
@@ -151,11 +153,15 @@ function CoordinatorChatPanel({
   resolving,
   resolveError,
   teamMode,
+  description,
+  onDescriptionChange,
 }: {
   readonly threadId: string | null;
   readonly resolving: boolean;
   readonly resolveError: string | null;
   readonly teamMode: boolean;
+  readonly description: string;
+  readonly onDescriptionChange: (description: string) => void;
 }) {
   const messagesQuery = useChatMessages(threadId);
   const streaming = useChatStream(threadId);
@@ -189,6 +195,46 @@ function CoordinatorChatPanel({
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [renderMessages.length, lastContent]);
+
+  // Derive a brief from the conversation: the operator's intent is what
+  // *they* said, not what the model echoed back. Join user messages in
+  // arrival order. This is the text that feeds `/launch`'s decomposition
+  // when the user advances.
+  const derivedBrief = useMemo(
+    () =>
+      messages
+        .filter((m) => m.role === 'user' && m.content.trim())
+        .map((m) => m.content.trim())
+        .join('\n\n'),
+    [messages],
+  );
+  const briefSynced =
+    derivedBrief.length > 0 && derivedBrief === description.trim();
+
+  // Auto-save the brief on every user message landing — keeps the draft's
+  // `description` in sync without forcing the operator to remember a
+  // button. They can still edit manually in the "Skip — paste a brief"
+  // panel; doing so freezes the auto-sync until they switch back.
+  useEffect(() => {
+    if (!derivedBrief) return;
+    if (description.trim() === derivedBrief) return;
+    // Only auto-sync when description is empty or already matches an
+    // earlier auto-sync (= empty or a strict prefix of the new brief).
+    // If the operator typed their own brief, leave it alone.
+    if (description.trim() === '' || derivedBrief.startsWith(description.trim())) {
+      onDescriptionChange(derivedBrief);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derivedBrief]);
+
+  const saveBrief = () => {
+    if (!derivedBrief) {
+      toast.error('Send at least one message first');
+      return;
+    }
+    onDescriptionChange(derivedBrief);
+    toast.success('Brief saved — proceed to Plan Review');
+  };
 
   const submit = async () => {
     const trimmed = input.trim();
@@ -233,9 +279,26 @@ function CoordinatorChatPanel({
             Team mode: {teamMode ? 'ON' : 'OFF'}
           </span>
         </div>
-        <span className="text-micro text-muted-foreground">
-          {messages.length} message{messages.length === 1 ? '' : 's'}
-        </span>
+        <div className="flex items-center gap-2">
+          {briefSynced && (
+            <span className="flex items-center gap-1 text-micro text-success">
+              <ClipboardCheck className="h-3 w-3" /> brief synced
+            </span>
+          )}
+          {!briefSynced && derivedBrief && (
+            <button
+              type="button"
+              onClick={saveBrief}
+              className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-0.5 text-micro hover:border-primary/40 hover:text-foreground"
+              title="Persist the conversation as the brief that will feed /launch"
+            >
+              <ClipboardCheck className="h-3 w-3" /> Save as brief
+            </button>
+          )}
+          <span className="text-micro text-muted-foreground">
+            {messages.length} message{messages.length === 1 ? '' : 's'}
+          </span>
+        </div>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin p-4 space-y-3">
