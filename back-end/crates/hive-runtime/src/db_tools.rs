@@ -28,6 +28,8 @@ pub const RUNTIME_TOOL_NAMES: &[&str] = &[
     "delete_agent",
     "monitor_agent",
     "delegate_task",
+    "request_capability",
+    "monitor_spawn_request",
     "hive_mind_write",
     "hive_mind_read",
     "hive_mind_list",

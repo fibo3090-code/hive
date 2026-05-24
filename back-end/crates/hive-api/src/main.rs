@@ -88,6 +88,12 @@ struct AppState {
     /// `fs_write` takes an RAII lock for its duration; the HiveGraph
     /// lock-overlay queries this via `GET /v1/projects/:id/sandbox-locks`.
     sandbox_locks: Arc<hive_tools::SandboxLockRegistry>,
+    /// B4: outbound channel for agent-initiated `request_capability` calls.
+    /// The agent tool persists a spawn_request row + pushes its id here;
+    /// a dedicated consumer task in `serve` owns the LLM/search deps,
+    /// builds a `PipelineDeps`, and runs the synthesis pipeline. Keeps
+    /// hive-runtime free of hive-api dependencies (it would be a cycle).
+    spawn_pipeline_tx: tokio::sync::mpsc::UnboundedSender<String>,
 }
 
 type ModelCache = Arc<RwLock<HashMap<String, (Instant, Vec<ModelInfo>)>>>;
@@ -483,6 +489,13 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     // `loop_detected` notifications the LoopDetectionModal renders.
     hive_runtime::loop_detector::spawn(runtime.db.clone(), EventBus::new(events.clone()));
 
+    // B4: channel for agent `request_capability` calls. Unbounded so a
+    // bursty agent can't deadlock waiting for backpressure; in practice
+    // the consumer drains immediately and synthesis itself is slow
+    // enough (LLM round-trips) that the queue stays tiny.
+    let (spawn_pipeline_tx, mut spawn_pipeline_rx) =
+        tokio::sync::mpsc::unbounded_channel::<String>();
+
     let state = AppState {
         inner: Arc::new(RwLock::new(runtime)),
         events,
@@ -493,7 +506,61 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         chat_jobs: ChatJobRegistry::default(),
         executors: executors.clone(),
         sandbox_locks: hive_tools::SandboxLockRegistry::new(),
+        spawn_pipeline_tx,
     };
+
+    // B4: drain the spawn-pipeline channel — every `request_capability`
+    // call from an agent lands here. Build deps fresh per request so
+    // settings changes (provider keys, search URL) are picked up live.
+    {
+        let pipeline_state = state.clone();
+        tokio::spawn(async move {
+            while let Some(spawn_request_id) = spawn_pipeline_rx.recv().await {
+                let row = match agent_spawn_requests::get(
+                    db(&pipeline_state).await.conn(),
+                    &spawn_request_id,
+                )
+                .await
+                {
+                    Ok(Some(r)) => r,
+                    Ok(None) => {
+                        tracing::warn!(
+                            spawn_request_id, "agent-initiated pipeline: row vanished"
+                        );
+                        continue;
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            spawn_request_id, error = %err,
+                            "agent-initiated pipeline: lookup failed"
+                        );
+                        continue;
+                    }
+                };
+                let deps = match build_pipeline_deps(&pipeline_state, &row.project_id).await {
+                    Ok(d) => d,
+                    Err(err) => {
+                        tracing::warn!(
+                            spawn_request_id, error = %err,
+                            "agent-initiated pipeline: build_pipeline_deps failed"
+                        );
+                        continue;
+                    }
+                };
+                let bus = EventBus::new(pipeline_state.events.clone());
+                let conn = db(&pipeline_state).await;
+                let id = spawn_request_id.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = run_pipeline(conn.conn(), &bus, deps, &id).await {
+                        tracing::error!(
+                            spawn_request_id = id, error = %e,
+                            "agent-initiated pipeline: run failed"
+                        );
+                    }
+                });
+            }
+        });
+    }
 
     // W1-A2: audit_log retention purge. Reads `audit.retention_days` (default
     // 90; 0 = keep forever) from settings and deletes rows older than that,
@@ -1481,6 +1548,7 @@ async fn build_tooling(
         db(state).await.clone(),
         state.executors.clone(),
         EventBus::new(state.events.clone()),
+        Some(state.spawn_pipeline_tx.clone()),
     );
     hive_runtime::register_db_tools(&mut registry, db(state).await.clone());
     hive_runtime::register_git_tools(&mut registry, db(state).await.clone());
@@ -2489,6 +2557,10 @@ fn coordinator_tools(team_mode: Option<bool>) -> Vec<String> {
                 "delete_agent".to_owned(),
                 "monitor_agent".to_owned(),
                 "delegate_task".to_owned(),
+                // B4: capability synthesis — the coordinator decides when
+                // a missing capability is worth the synthesis cost.
+                "request_capability".to_owned(),
+                "monitor_spawn_request".to_owned(),
             ]);
             tools
         }
@@ -2529,6 +2601,8 @@ Coordination (most important — you are the CEO):\n\
 - `delegate_task` — hand a bounded unit of work to an agent you can see (creates a tracked task and dispatches it in one call). Prefer this over freeform `message_agent` for actual work.\n\
 - `monitor_agent` — peek at a sub-agent's status + recent inbox without interrupting it. Use this before re-tasking.\n\
 - `message_agent` — short coordination updates / clarifications. Only to direct parents and your own descendants.\n\
+- `request_capability(role, capabilities[], description?, mcpStrategy?)` — when the team needs a brand-new connector or external integration (e.g. \"we need to read Stripe customers\"), file a capability request. The auto-MCP synthesis pipeline researches an API, generates an MCP server, optionally pauses for your approval, and materialises a new sub-agent bound to it. Use sparingly — synthesis is slow and the result is fresh code an agent will own.\n\
+- `monitor_spawn_request(spawnRequestId)` — check the state of a `request_capability` call (queued → planning → matching → researching → synthesising → composing → awaiting-approval → materialising → completed / failed). Returns the child agent id when complete.\n\
 - `list_visible_agents` — see who you can reach right now.\n\
 - `request_relay` — when you need to message an agent outside your visibility, route through a parent that can see them.\n\
 - `delete_agent` — retire a sub-agent that's done its job.\n\
@@ -2711,6 +2785,7 @@ async fn list_tool_manifests(State(state): State<AppState>) -> Result<Json<Value
         database.clone(),
         state.executors.clone(),
         EventBus::new(state.events.clone()),
+        Some(state.spawn_pipeline_tx.clone()),
     );
     hive_runtime::register_db_tools(&mut registry, database.clone());
     hive_runtime::register_git_tools(&mut registry, database.clone());
@@ -2745,7 +2820,9 @@ fn tool_category(name: &str) -> &'static str {
         | "request_relay"
         | "delete_agent"
         | "monitor_agent"
-        | "delegate_task" => "coordination",
+        | "delegate_task"
+        | "request_capability"
+        | "monitor_spawn_request" => "coordination",
         "hive_mind_write" | "hive_mind_read" | "hive_mind_list" | "hive_mind_delete" => "memory",
         "list_spec_docs" | "read_spec_doc" | "add_task" | "set_task_status" | "add_tech_debt"
         | "update_tech_debt" | "record_drift" | "record_eval" => "planning",
@@ -6813,6 +6890,8 @@ Coordination (direct parents + your own descendants only):\n\
 - `delegate_task`(toAgentId, title, content, ...) — hand a bounded unit of work; creates a tracked task and dispatches in one call.\n\
 - `monitor_agent`(agentId) — peek at status + recent inbox without interrupting.\n\
 - `delete_agent`(agentId) — retire a direct sub-agent when done.\n\
+- `request_capability`(role, capabilities[], description?, mcpStrategy?) — file a capability request for the auto-MCP synthesis pipeline. Use when you need a brand-new external integration (e.g. \"I need to query Linear issues\") and the existing connectors don't cover it. Returns a spawnRequestId; poll with `monitor_spawn_request`.\n\
+- `monitor_spawn_request`(spawnRequestId) — check pipeline state for a capability request you filed.\n\
 \n\
 Git (sovereignty-gated):\n\
 - `git_status`, `git_diff`(reference?), `git_log`(limit?) — inspect.\n\
@@ -6926,6 +7005,8 @@ mod prompt_tests {
             "list_visible_agents",
             "request_relay",
             "delete_agent",
+            "request_capability",
+            "monitor_spawn_request",
             "git_status",
             "git_commit",
         ] {
@@ -6972,6 +7053,8 @@ mod prompt_tests {
             "request_relay",
             "list_visible_agents",
             "delete_agent",
+            "request_capability",
+            "monitor_spawn_request",
         ] {
             assert!(
                 !solo.contains(&forbidden.to_owned()),
@@ -6985,7 +7068,14 @@ mod prompt_tests {
     #[test]
     fn team_coordinator_keeps_full_coordination_surface() {
         let team = coordinator_tools(Some(true));
-        for required in ["spawn_agent", "delegate_task", "monitor_agent", "message_agent"] {
+        for required in [
+            "spawn_agent",
+            "delegate_task",
+            "monitor_agent",
+            "message_agent",
+            "request_capability",
+            "monitor_spawn_request",
+        ] {
             assert!(
                 team.contains(&required.to_owned()),
                 "team coordinator must have `{required}` available"
