@@ -92,4 +92,89 @@ impl ToolContext {
     pub fn permissions(&self) -> &PermissionMatrix {
         &self.permissions
     }
+
+    /// Return `Err(ToolError::InvalidArgs)` if `path` (workspace-relative) is
+    /// a system-protected file (`.env*`, `.git/`) or a user-protected entry
+    /// from `protected_files`. Centralised here so every tool — fs_read,
+    /// fs_list, fs_write, shell_exec, anything new — enforces the same
+    /// File Protection Zone surface ("Zero Data Leakage" guarantee).
+    ///
+    /// Normalisation: backslashes → forward slashes, leading `./` stripped,
+    /// trailing `/` stripped, case-folded on Windows where filesystems are
+    /// case-insensitive. This blocks `./.env`, `.env/`, `.\.env` and the
+    /// upper/lower-case variants that previously slipped through.
+    pub fn check_path_allowed(&self, path: &str) -> crate::ToolResult<()> {
+        let norm = normalize_protected_path(path);
+        if is_system_protected(&norm) {
+            return Err(crate::ToolError::InvalidArgs(format!(
+                "Access denied: {path} is a system-protected file"
+            )));
+        }
+        for protected in &self.protected_files {
+            let p = normalize_protected_path(protected);
+            if norm == p || norm.starts_with(&format!("{p}/")) {
+                return Err(crate::ToolError::InvalidArgs(format!(
+                    "Access denied: {path} is a user-protected file"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Normalise a workspace-relative path for protection comparison:
+/// - backslashes → forward slashes,
+/// - strip leading `./`,
+/// - strip trailing `/`,
+/// - lowercase on Windows (case-insensitive filesystems).
+fn normalize_protected_path(path: &str) -> String {
+    let mut s = path.replace('\\', "/");
+    while let Some(rest) = s.strip_prefix("./") {
+        s = rest.to_owned();
+    }
+    while s.ends_with('/') && s.len() > 1 {
+        s.pop();
+    }
+    if cfg!(windows) {
+        s = s.to_lowercase();
+    }
+    s
+}
+
+fn is_system_protected(norm: &str) -> bool {
+    norm == ".env"
+        || norm.starts_with(".env.")
+        || norm == ".env/"
+        || norm == ".git"
+        || norm.starts_with(".git/")
+}
+
+#[cfg(test)]
+mod path_protection_tests {
+    use super::*;
+
+    #[test]
+    fn blocks_dot_env_and_variants() {
+        assert!(is_system_protected(&normalize_protected_path(".env")));
+        assert!(is_system_protected(&normalize_protected_path("./.env")));
+        assert!(is_system_protected(&normalize_protected_path(".\\.env")));
+        assert!(is_system_protected(&normalize_protected_path(".env.local")));
+        if cfg!(windows) {
+            assert!(is_system_protected(&normalize_protected_path(".ENV")));
+        }
+    }
+
+    #[test]
+    fn blocks_git_directory() {
+        assert!(is_system_protected(&normalize_protected_path(".git")));
+        assert!(is_system_protected(&normalize_protected_path(".git/config")));
+        assert!(is_system_protected(&normalize_protected_path("./.git/HEAD")));
+    }
+
+    #[test]
+    fn allows_unrelated_paths() {
+        assert!(!is_system_protected(&normalize_protected_path("src/main.rs")));
+        assert!(!is_system_protected(&normalize_protected_path("README.md")));
+        assert!(!is_system_protected(&normalize_protected_path("env-vars.json")));
+    }
 }

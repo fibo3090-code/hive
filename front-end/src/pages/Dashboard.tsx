@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useHiveData } from '@/api/queries/useHiveData';
-import type { AlertItem } from '@/types/domain';
+import type { AlertItem, TaskItem } from '@/types/domain';
 import {
   useActivityFeedData,
   useAgentTokenUsageData,
@@ -33,7 +33,7 @@ import {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { state, activeProject } = useHiveData();
+  const { state, activeProject, dismissAlert, updateTaskStatus } = useHiveData();
   const { alerts, tasks, agents } = state;
   const [alertsExpanded, setAlertsExpanded] = useState(true);
   const [showMoreActivity, setShowMoreActivity] = useState(false);
@@ -60,12 +60,24 @@ export default function Dashboard() {
   };
   const taskStatusColor = (status: string) => TASK_STATUS_COLORS[status.toLowerCase()] ?? 'var(--muted-foreground)';
 
-  const handleToggleTaskStatus = (_id: string, _status: string) => {
-    // In a real app, this would be a mutation call
+  const handleToggleTaskStatus = async (id: string, status: string) => {
+    try {
+      await updateTaskStatus(id, status as TaskItem['status']);
+    } catch (err) {
+      toast.error('Failed to update task', {
+        description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    }
   };
 
-  const handleDismissAlert = (id: string) => {
-    toast.info(`Alert ${id} dismissed`);
+  const handleDismissAlert = async (id: string) => {
+    try {
+      await dismissAlert(id);
+    } catch (err) {
+      toast.error('Failed to dismiss alert', {
+        description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    }
   };
 
   const handleAlertAction = (alert: AlertItem) => {
@@ -125,7 +137,7 @@ export default function Dashboard() {
                     <XAxis dataKey="time" hide />
                     <YAxis hide />
                     <Tooltip contentStyle={{ backgroundColor: 'var(--card)', borderColor: 'var(--border)', fontSize: '10px' }} />
-                    <Area type="monotone" dataKey="cost" stroke="var(--primary)" fillOpacity={1} fill="url(#colorCost)" />
+                    <Area type="monotone" dataKey="cents" stroke="var(--primary)" fillOpacity={1} fill="url(#colorCost)" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -158,7 +170,7 @@ export default function Dashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={agentTokenUsage} layout="vertical">
                   <XAxis type="number" hide />
-                  <YAxis dataKey="name" type="category" width={60} style={{ fontSize: '10px' }} />
+                  <YAxis dataKey="agentId" type="category" width={60} style={{ fontSize: '10px' }} />
                   <Tooltip />
                   <Bar dataKey="tokens" fill="var(--primary)" radius={[0, 4, 4, 0]} />
                 </BarChart>

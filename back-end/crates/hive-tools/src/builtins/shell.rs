@@ -15,6 +15,15 @@ use crate::{Tool, ToolContext, ToolError, ToolManifest, ToolResult};
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Decide whether a shell arg looks like a path we should run through
+/// `check_path_allowed`. Catches the obvious cases (`.env`, `./foo`,
+/// `dir/file`, `\Users\…`) without flagging every flag (`--verbose`,
+/// `-rf`, `HEAD~1`).
+fn path_like(s: &str) -> bool {
+    !s.starts_with('-')
+        && (s.contains('/') || s.contains('\\') || s.starts_with('.') || s == ".env")
+}
+
 pub struct ShellExecTool;
 
 #[derive(Deserialize)]
@@ -68,6 +77,17 @@ impl Tool for ShellExecTool {
             .timeout_seconds
             .map(|s| Duration::from_secs(s).min(MAX_TIMEOUT))
             .unwrap_or(DEFAULT_TIMEOUT);
+
+        // Zero Data Leakage: refuse shell invocations that reference a
+        // protected path (`.env`, `.git`, user-protected) as command or
+        // arg. Defence-in-depth — doesn't catch metaprogramming, but
+        // blocks the obvious exfil patterns.
+        ctx.check_path_allowed(&args.command)?;
+        for a in &args.args {
+            if path_like(a) {
+                ctx.check_path_allowed(a)?;
+            }
+        }
 
         let out = ctx.sandbox.exec(&args.command, &args.args, timeout).await?;
         Ok(json!({

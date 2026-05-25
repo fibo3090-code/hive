@@ -426,6 +426,14 @@ struct CancelledTurnState<'a> {
     total_tokens_out: u32,
     total_cost: i64,
     executed_calls: &'a [Value],
+    /// Zero Financial Surprise: even a cancelled / timed-out turn burned
+    /// tokens and we must record them so `budget_total_cents` enforces
+    /// the cap on the next turn. These fields let `finalize_cancelled`
+    /// write a `cost_events` row parallel to the happy path.
+    project_id: &'a str,
+    agent_id: Option<&'a str>,
+    provider_id: &'a str,
+    model: &'a str,
 }
 
 async fn finalize_cancelled(
@@ -448,6 +456,38 @@ async fn finalize_cancelled(
         "cancelled",
     )
     .await?;
+
+    // Persist the partial cost so the budget tally stays honest even
+    // when the operator cancelled or the wall-clock timeout fired.
+    // Best-effort: a DB error here is logged but never fails the cancel
+    // path the operator already observed.
+    let memo = format!(
+        "provider={} model={} status=cancelled",
+        state.provider_id, state.model
+    );
+    if let Err(err) = cost_events::insert(
+        db.conn(),
+        cost_events::NewCostEvent {
+            project_id: state.project_id,
+            session_id: None,
+            agent_id: state.agent_id,
+            kind: "chat.cancelled",
+            tokens_in: state.total_tokens_in as i32,
+            tokens_out: state.total_tokens_out as i32,
+            cost_cents: state.total_cost,
+            memo: Some(&memo),
+        },
+    )
+    .await
+    {
+        tracing::warn!(
+            thread_id,
+            assistant_message_id,
+            error = %err,
+            "finalize_cancelled: cost_events insert failed",
+        );
+    }
+
     bus.emit(
         format!("chat.{thread_id}.cancelled"),
         json!({ "threadId": thread_id, "messageId": assistant_message_id }),
@@ -775,6 +815,10 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                     total_tokens_out,
                     total_cost,
                     executed_calls: &executed_calls,
+                    project_id: &project_id,
+                    agent_id: agent_id.as_deref(),
+                    provider_id: &provider_id,
+                    model: &model,
                 },
             )
             .await?;
@@ -818,6 +862,24 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                     "error",
                 )
                 .await;
+                // Persist cost even on LLM error — tokens may have been
+                // consumed before the stream broke. Zero Financial Surprise.
+                let err_memo =
+                    format!("provider={provider_id} model={model} status=error");
+                let _ = cost_events::insert(
+                    db.conn(),
+                    cost_events::NewCostEvent {
+                        project_id: &project_id,
+                        session_id: None,
+                        agent_id: agent_id.as_deref(),
+                        kind: "chat.error",
+                        tokens_in: total_tokens_in as i32,
+                        tokens_out: total_tokens_out as i32,
+                        cost_cents: total_cost,
+                        memo: Some(&err_memo),
+                    },
+                )
+                .await;
                 bus.emit(
                     format!("chat.{thread_id}.error"),
                     json!({
@@ -858,6 +920,10 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                     total_tokens_out,
                     total_cost,
                     executed_calls: &executed_calls,
+                    project_id: &project_id,
+                    agent_id: agent_id.as_deref(),
+                    provider_id: &provider_id,
+                    model: &model,
                 },
             )
             .await?;
@@ -902,6 +968,10 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                         total_tokens_out,
                         total_cost,
                         executed_calls: &executed_calls,
+                        project_id: &project_id,
+                        agent_id: agent_id.as_deref(),
+                        provider_id: &provider_id,
+                        model: &model,
                     },
                 )
                 .await?;

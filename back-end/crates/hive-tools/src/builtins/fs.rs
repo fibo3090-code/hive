@@ -55,6 +55,9 @@ impl Tool for FsReadTool {
     async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
         let args: FsReadArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
+        // Zero Data Leakage: refuse reads of .env / .git / user-protected
+        // paths — same surface fs_write enforces.
+        ctx.check_path_allowed(&args.path)?;
         let bytes = ctx.sandbox.read(&args.path).await?;
         let limit = args.max_bytes.unwrap_or(DEFAULT_FS_READ_MAX);
         let total = bytes.len();
@@ -115,27 +118,9 @@ impl Tool for FsWriteTool {
         let args: FsWriteArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
 
-        // Part 10.6: Enforce File Protection Zones
-        let path_str = args.path.replace('\\', "/");
-        if path_str == ".env"
-            || path_str.starts_with(".env.")
-            || path_str == ".git"
-            || path_str.starts_with(".git/")
-        {
-            return Err(ToolError::InvalidArgs(format!(
-                "Access denied: {} is a system-protected file",
-                args.path
-            )));
-        }
-        for protected in &ctx.protected_files {
-            let p_str = protected.replace('\\', "/");
-            if path_str == p_str || path_str.starts_with(&format!("{}/", p_str)) {
-                return Err(ToolError::InvalidArgs(format!(
-                    "Access denied: {} is a user-protected file",
-                    args.path
-                )));
-            }
-        }
+        // Part 10.6: Enforce File Protection Zones — centralised in
+        // ToolContext so fs_read / fs_list / shell_exec share the surface.
+        ctx.check_path_allowed(&args.path)?;
 
         // D2: take a sandbox-lock for the duration of the write so the
         // HiveGraph lock-overlay reflects real activity. RAII — drop
@@ -211,6 +196,9 @@ impl Tool for FsListTool {
     async fn invoke(&self, args: Value, ctx: &ToolContext) -> ToolResult<Value> {
         let args: FsListArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
+        // Refuse listing of .git/ etc. — listing reveals filenames and
+        // structure that should stay opaque to the agent.
+        ctx.check_path_allowed(&args.path)?;
         let entries = ctx.sandbox.list(&args.path).await?;
         let limit = args.max_entries.unwrap_or(DEFAULT_FS_LIST_MAX);
         let total = entries.len();

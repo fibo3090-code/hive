@@ -2842,6 +2842,26 @@ async fn set_agent_status(
     let before = agents::get(database.conn(), &agent_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("agent {agent_id} not found")))?;
+
+    // Sync the in-process executor so inbox items don't keep flowing
+    // after the operator marked the agent paused (and resume when they
+    // un-pause it). Without this the DB row and the executor diverge:
+    // the UI shows "paused" but A2A dispatches still get processed.
+    let _ = state.executors.ensure(&agent_id, &before.project_id).await;
+    match body.status.as_str() {
+        "paused" => {
+            let _ = state.executors.pause(&agent_id).await;
+        }
+        "working" | "idle" => {
+            let _ = state.executors.resume(&agent_id).await;
+        }
+        "deprecated" => {
+            state.executors.cancel_subtree(&agent_id).await;
+            let _ = state.executors.terminate(&agent_id).await;
+        }
+        _ => {}
+    }
+
     let updated =
         agents::set_status(database.conn(), &before.project_id, &agent_id, &body.status).await?;
     audit::append(
@@ -3372,6 +3392,19 @@ async fn toggle_project_session(
         };
 
         if let Some(status) = next_status {
+            // Sync executor alongside the DB row so closing/opening a
+            // session actually parks/wakes in-flight agent work rather
+            // than just flipping the badge in the UI.
+            let _ = state.executors.ensure(&agent.id, &project_id).await;
+            match status {
+                "paused" => {
+                    let _ = state.executors.pause(&agent.id).await;
+                }
+                "working" => {
+                    let _ = state.executors.resume(&agent.id).await;
+                }
+                _ => {}
+            }
             let _ = agents::set_status(database.conn(), &project_id, &agent.id, status).await?;
         }
     }
