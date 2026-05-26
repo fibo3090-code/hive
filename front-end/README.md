@@ -78,7 +78,7 @@ src/
 ├── hooks/                # useToast, useMobile
 ├── lib/                  # utils
 ├── pages/                # one component per route (above)
-├── realtime/             # useSse — subscribes to /v1/events and invalidates TanStack Query keys per event name; useChatStream lives in api/chat.ts
+├── realtime/             # RealtimeProvider (singleton EventSource), useSse (subscribes to backend event names and invalidates TanStack Query keys), ConnectionStatusPill; useChatStream lives in api/chat.ts
 └── types/                # domain.ts — re-exports `components['schemas'][...]` from generated.ts
 ```
 
@@ -87,7 +87,7 @@ src/
 - **`api/client.ts`** — `api<T>(path, init?)` (throws `ApiError` on non-2xx), `API_BASE_URL`, `eventStreamUrl(path)`.
 - **Per-domain hooks** in `api/*.ts` (queries + mutations, TanStack Query).
 - **Cross-cutting** in `api/queries/`: `useHiveData()` (the everything-about-the-active-project hook + its mutations — `addProject`, `setActiveProject`, `createTask`, `updateTaskStatus`, `setAgentStatus`, …) and `useServerData()` (insights timelines, seed-backed activity/spend/throughput/blueprints/modules).
-- **Realtime**: `useSse()` opens one `EventSource('/v1/events')` and, for each event name, invalidates the relevant query keys (see the `EVENT_MAP` in `realtime/useSse.ts`). `useChatStream(threadId)` (in `api/chat.ts`) accumulates `chat.<id>.token` deltas + tool-call events into a per-message streaming state and refetches the thread on `complete`/`cancelled`/`error`/`message`.
+- **Realtime**: `RealtimeProvider` (`realtime/RealtimeProvider.tsx`) opens **exactly one** `EventSource('/v1/events')` for the whole app — browsers cap origins at 6 concurrent SSE connections, so duplicating this somewhere in a page is the #1 way to freeze navigation. Subscribe via `useRealtime().subscribe(name, fn)` (exact match) or `subscribePrefix(prefix, fn)` (family). `useSse()` bridges backend event names → `queryClient.invalidateQueries(...)`. `useChatStream(threadId)` (in `api/chat.ts`) accumulates `chat.<id>.token` deltas + tool-call events into a per-message streaming state and refetches the thread on `complete`/`cancelled`/`error`/`message`. `ConnectionStatusPill` and `BackendDownBanner` read connection health off the provider.
 - **LLM providers**: `useLlmProviders()` / `useProviderModels(id)` / `useSetProviderKey()` / `useTestProvider()` (in `api/llm.ts`); `<ModelPicker />` (cascading provider → model, auto-selects the first connected provider, empty state when none).
 - **Types**: `api/generated.ts` mirrors the OpenAPI schemas by hand (`sonar-project.properties` excludes it from analysis); re-exported via `types/domain.ts`. Update it when the API changes.
 

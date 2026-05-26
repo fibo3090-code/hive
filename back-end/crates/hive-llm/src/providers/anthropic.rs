@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 use async_trait::async_trait;
@@ -261,13 +262,21 @@ impl LlmProvider for AnthropicProvider {
         // so the runtime can decouple input-token capture from the final
         // `Complete` event — useful when `message_delta` omits the
         // input field.
+        //
+        // `tool_blocks` tracks open `tool_use` content blocks by their
+        // `index`, so `content_block_delta` (with `input_json_delta`) and
+        // `content_block_stop` events can correlate back to the right id
+        // and emit `ToolCallDelta` / `ToolCallEnd`.
         let input_tokens = Arc::new(AtomicU32::new(0));
+        let tool_blocks: Arc<Mutex<HashMap<u64, AnthropicToolBlock>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let mapped = sse.filter_map(move |item| {
             let input_tokens = input_tokens.clone();
+            let tool_blocks = tool_blocks.clone();
             async move {
                 match item {
                     Err(e) => Some(Err(LlmError::Http(e))),
-                    Ok(msg) => parse_event(&msg, &input_tokens).map(Ok),
+                    Ok(msg) => parse_event(&msg, &input_tokens, &tool_blocks).map(Ok),
                 }
             }
         });
@@ -317,7 +326,20 @@ impl LlmProvider for AnthropicProvider {
 ///   `delta.stop_reason`. We merge in the cached input tokens here.
 /// - `message_stop` — terminator. The HTTP stream ends right after.
 /// - `ping` — keep-alive; ignore.
-fn parse_event(msg: &crate::sse::SseMessage, input_tokens: &AtomicU32) -> Option<StreamEvent> {
+
+// Open `tool_use` content block — kept alive between `content_block_start`
+// and `content_block_stop` so partial arg deltas can be correlated back to
+// the block's `id` and emitted as `ToolCallDelta` events.
+#[derive(Debug, Clone)]
+struct AnthropicToolBlock {
+    id: String,
+}
+
+fn parse_event(
+    msg: &crate::sse::SseMessage,
+    input_tokens: &AtomicU32,
+    tool_blocks: &Mutex<HashMap<u64, AnthropicToolBlock>>,
+) -> Option<StreamEvent> {
     if msg.data.is_empty() {
         return None;
     }
@@ -347,20 +369,67 @@ fn parse_event(msg: &crate::sse::SseMessage, input_tokens: &AtomicU32) -> Option
             }
             None
         }
+        "content_block_start" => {
+            // A new content block is opening. If it's a `tool_use` block,
+            // record its `index → id` mapping so the matching
+            // `content_block_delta` (input_json_delta) and `content_block_stop`
+            // events can be correlated back, and emit `ToolCallStart` so
+            // the runtime can begin assembling the call. Text blocks are
+            // silent here — they surface via `content_block_delta` /
+            // `text_delta`.
+            let block = value.get("content_block")?;
+            let block_kind = block.get("type").and_then(Value::as_str).unwrap_or("");
+            if block_kind != "tool_use" {
+                return None;
+            }
+            let index = value.get("index").and_then(Value::as_u64)?;
+            let id = block.get("id").and_then(Value::as_str)?.to_owned();
+            let name = block.get("name").and_then(Value::as_str)?.to_owned();
+            tool_blocks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(index, AnthropicToolBlock { id: id.clone() });
+            Some(StreamEvent::ToolCallStart { id, name })
+        }
         "content_block_delta" => {
             let delta = value.get("delta")?;
             let delta_kind = delta.get("type").and_then(Value::as_str).unwrap_or("");
             // text_delta carries assistant text; input_json_delta carries
-            // partial tool-use arguments (handled by the non-streaming
-            // path on the next round).
+            // partial tool-use arguments — emit as `ToolCallDelta` so the
+            // runtime can accumulate them under the right tool-call id
+            // (lookup by content_block `index`).
             if delta_kind == "text_delta" || delta_kind.is_empty() {
                 let text = delta.get("text").and_then(Value::as_str)?;
                 Some(StreamEvent::Delta(StreamChunk {
                     delta: text.to_owned(),
                 }))
+            } else if delta_kind == "input_json_delta" {
+                let index = value.get("index").and_then(Value::as_u64)?;
+                let chunk = delta.get("partial_json").and_then(Value::as_str)?;
+                let id = tool_blocks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&index)?
+                    .id
+                    .clone();
+                Some(StreamEvent::ToolCallDelta {
+                    id,
+                    args_chunk: chunk.to_owned(),
+                })
             } else {
                 None
             }
+        }
+        "content_block_stop" => {
+            // Close a content block. For tool_use blocks, emit `ToolCallEnd`
+            // so the runtime can serialise the accumulated args and submit
+            // the call. Text-block closes are silent.
+            let index = value.get("index").and_then(Value::as_u64)?;
+            let removed = tool_blocks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&index)?;
+            Some(StreamEvent::ToolCallEnd { id: removed.id })
         }
         "message_delta" => {
             let usage = value.get("usage")?;
@@ -389,7 +458,9 @@ fn parse_event(msg: &crate::sse::SseMessage, input_tokens: &AtomicU32) -> Option
         }
         // Recognised-but-ignored events. Listing them explicitly stops the
         // generic `_ => None` arm from masking a new event we should handle.
-        "content_block_start" | "content_block_stop" | "message_stop" | "ping" | "error" => None,
+        // (`content_block_start` / `content_block_stop` are handled above
+        // for tool_use; text-block versions return None there.)
+        "message_stop" | "ping" | "error" => None,
         other => {
             tracing::trace!(event = %other, "anthropic: unrecognised sse event, ignoring");
             None
@@ -448,13 +519,17 @@ mod tests {
         }
     }
 
+    fn fresh_state() -> (AtomicU32, Mutex<HashMap<u64, AnthropicToolBlock>>) {
+        (AtomicU32::new(0), Mutex::new(HashMap::new()))
+    }
+
     #[test]
     fn message_start_emits_start_event_and_caches_input_tokens() {
-        let cache = AtomicU32::new(0);
+        let (cache, blocks) = fresh_state();
         let start = frame(
             r#"{"type":"message_start","message":{"usage":{"input_tokens":42,"output_tokens":0}}}"#,
         );
-        match parse_event(&start, &cache).expect("Start expected") {
+        match parse_event(&start, &cache, &blocks).expect("Start expected") {
             StreamEvent::Start { input_tokens } => assert_eq!(input_tokens, 42),
             other => panic!("expected Start, got {other:?}"),
         }
@@ -463,7 +538,7 @@ mod tests {
         let delta = frame(
             r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#,
         );
-        match parse_event(&delta, &cache).unwrap() {
+        match parse_event(&delta, &cache, &blocks).unwrap() {
             StreamEvent::Complete {
                 tokens_in,
                 tokens_out,
@@ -478,39 +553,86 @@ mod tests {
     }
 
     #[test]
-    fn ping_and_boundary_events_are_ignored() {
-        let cache = AtomicU32::new(0);
+    fn ping_and_boundary_events_are_ignored_for_non_tool_blocks() {
+        let (cache, blocks) = fresh_state();
         for raw in [
             r#"{"type":"ping"}"#,
-            r#"{"type":"content_block_start","index":0}"#,
-            r#"{"type":"content_block_stop","index":0}"#,
+            // Text-block content_block_start has no tool_use payload → silent.
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            // content_block_stop for a non-tracked index → silent.
+            r#"{"type":"content_block_stop","index":99}"#,
             r#"{"type":"message_stop"}"#,
         ] {
-            assert!(parse_event(&frame(raw), &cache).is_none(), "{raw}");
+            assert!(parse_event(&frame(raw), &cache, &blocks).is_none(), "{raw}");
         }
     }
 
     #[test]
     fn text_delta_is_extracted_only_for_text_blocks() {
-        let cache = AtomicU32::new(0);
+        let (cache, blocks) = fresh_state();
         let text =
             frame(r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}"#);
-        match parse_event(&text, &cache).unwrap() {
+        match parse_event(&text, &cache, &blocks).unwrap() {
             StreamEvent::Delta(chunk) => assert_eq!(chunk.delta, "hi"),
             other => panic!("expected Delta, got {other:?}"),
         }
-        // input_json_delta (tool args) is ignored in streaming; tool args
-        // are reconstructed by the non-streaming chat() path.
-        let json_delta = frame(
-            r#"{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\""}}"#,
+    }
+
+    #[test]
+    fn tool_use_streams_start_delta_end_events() {
+        // The streaming parser must surface tool-use content blocks. Before
+        // this fix, content_block_start/delta(input_json_delta)/stop were
+        // all dropped; the runtime then saw a stream with zero text and
+        // zero tool_calls and rendered "model returned an empty response."
+        let (cache, blocks) = fresh_state();
+
+        let start = frame(
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_abc","name":"web_search","input":{}}}"#,
         );
-        assert!(parse_event(&json_delta, &cache).is_none());
+        match parse_event(&start, &cache, &blocks).expect("ToolCallStart expected") {
+            StreamEvent::ToolCallStart { id, name } => {
+                assert_eq!(id, "toolu_abc");
+                assert_eq!(name, "web_search");
+            }
+            other => panic!("expected ToolCallStart, got {other:?}"),
+        }
+
+        let arg1 = frame(
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"qu"}}"#,
+        );
+        match parse_event(&arg1, &cache, &blocks).expect("ToolCallDelta expected") {
+            StreamEvent::ToolCallDelta { id, args_chunk } => {
+                assert_eq!(id, "toolu_abc");
+                assert_eq!(args_chunk, "{\"qu");
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+
+        let arg2 = frame(
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"ery\":\"rust\"}"}}"#,
+        );
+        match parse_event(&arg2, &cache, &blocks).expect("ToolCallDelta expected") {
+            StreamEvent::ToolCallDelta { id, args_chunk } => {
+                assert_eq!(id, "toolu_abc");
+                assert_eq!(args_chunk, "ery\":\"rust\"}");
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+
+        let stop = frame(r#"{"type":"content_block_stop","index":1}"#);
+        match parse_event(&stop, &cache, &blocks).expect("ToolCallEnd expected") {
+            StreamEvent::ToolCallEnd { id } => assert_eq!(id, "toolu_abc"),
+            other => panic!("expected ToolCallEnd, got {other:?}"),
+        }
+
+        // After stop, the block is forgotten — a second stop is silent.
+        assert!(parse_event(&stop, &cache, &blocks).is_none());
     }
 
     #[test]
     fn malformed_frames_do_not_panic() {
-        let cache = AtomicU32::new(0);
-        assert!(parse_event(&frame("{not json"), &cache).is_none());
-        assert!(parse_event(&frame(""), &cache).is_none());
+        let (cache, blocks) = fresh_state();
+        assert!(parse_event(&frame("{not json"), &cache, &blocks).is_none());
+        assert!(parse_event(&frame(""), &cache, &blocks).is_none());
     }
 }

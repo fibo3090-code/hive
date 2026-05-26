@@ -165,6 +165,27 @@ function extractMentionTarget(input: string, agents: Array<{ id: string; name: s
 }
 
 /**
+ * Tool results that come back as `{"ok": false, "error": "...", "hint": "..."}`
+ * deserve a friendly first-line message instead of dumping the JSON straight
+ * into the operator's face. Returns `null` if the result isn't an error-shaped
+ * object, in which case the caller falls back to the raw JsonViewer.
+ */
+function extractFriendlyError(value: unknown): { message: string; hint?: string } | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const obj = value as Record<string, unknown>;
+  const isError = obj.ok === false || typeof obj.error === 'string';
+  if (!isError) return null;
+  const message =
+    typeof obj.error === 'string'
+      ? obj.error
+      : typeof obj.message === 'string'
+        ? obj.message
+        : 'Tool returned an error.';
+  const hint = typeof obj.hint === 'string' ? obj.hint : undefined;
+  return { message, hint };
+}
+
+/**
  * Inline tool-call bubble used by [`MessageSegments`] when rendering a
  * live stream. Same styling as [`ToolCallList`]'s rows but standalone so
  * it can sit between two text spans in arrival order.
@@ -198,11 +219,27 @@ function InlineToolCall({ seg }: { readonly seg: Extract<ChatSegment, { kind: 't
             {seg.error}
           </div>
         )}
+        {(() => {
+          const friendly = extractFriendlyError(seg.result);
+          if (!friendly) return null;
+          return (
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive space-y-1">
+              <div className="font-medium">{friendly.message}</div>
+              {friendly.hint && (
+                <div className="text-muted-foreground text-micro">{friendly.hint}</div>
+              )}
+            </div>
+          );
+        })()}
         {seg.args !== undefined && (
           <JsonViewer value={seg.args} label="arguments" previewChars={240} />
         )}
         {seg.result !== undefined && (
-          <JsonViewer value={seg.result} label="result" previewChars={320} />
+          <JsonViewer
+            value={seg.result}
+            label={extractFriendlyError(seg.result) ? 'Inspect raw' : 'result'}
+            previewChars={320}
+          />
         )}
       </div>
     </details>
@@ -290,11 +327,27 @@ function ToolCallList({ toolCalls }: { readonly toolCalls: ToolCallTrace[] }) {
                   {call.error}
                 </div>
               )}
+              {(() => {
+                const friendly = extractFriendlyError(call.result);
+                if (!friendly) return null;
+                return (
+                  <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive space-y-1">
+                    <div className="font-medium">{friendly.message}</div>
+                    {friendly.hint && (
+                      <div className="text-muted-foreground text-micro">{friendly.hint}</div>
+                    )}
+                  </div>
+                );
+              })()}
               {call.arguments !== undefined && (
                 <JsonViewer value={call.arguments} label="arguments" previewChars={240} />
               )}
               {call.result !== undefined && (
-                <JsonViewer value={call.result} label="result" previewChars={320} />
+                <JsonViewer
+                  value={call.result}
+                  label={extractFriendlyError(call.result) ? 'Inspect raw' : 'result'}
+                  previewChars={320}
+                />
               )}
             </div>
           </details>

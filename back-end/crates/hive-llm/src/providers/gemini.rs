@@ -315,19 +315,49 @@ fn parse_event(msg: &crate::sse::SseMessage) -> Vec<StreamEvent> {
 
     let mut out = Vec::new();
 
-    if let Some(text) = value
+    // Walk every part in the first candidate's content. Gemini chunks can
+    // mix `text` parts and `functionCall` parts in the same frame, and
+    // unlike Anthropic/OpenAI, function-call args arrive complete in one
+    // part (not as incremental deltas). Mint a stable id per call so the
+    // runtime can correlate Start/Delta/End even though Gemini has no
+    // native id field — the existing non-streaming parser does the same.
+    if let Some(parts) = value
         .get("candidates")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("content"))
         .and_then(|c| c.get("parts"))
-        .and_then(|p| p.get(0))
-        .and_then(|p| p.get("text"))
-        .and_then(Value::as_str)
+        .and_then(Value::as_array)
     {
-        if !text.is_empty() {
-            out.push(StreamEvent::Delta(StreamChunk {
-                delta: text.to_owned(),
-            }));
+        for part in parts {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                if !text.is_empty() {
+                    out.push(StreamEvent::Delta(StreamChunk {
+                        delta: text.to_owned(),
+                    }));
+                }
+                continue;
+            }
+            if let Some(fc) = part.get("functionCall") {
+                let Some(name) = fc.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let args = fc.get("args").cloned().unwrap_or(Value::Null);
+                let args_json =
+                    serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_owned());
+                // Before this fix the streaming parser dropped `functionCall`
+                // parts entirely; the runtime saw zero tool_calls + zero text
+                // and rendered "model returned an empty response."
+                let id = format!("call_{}", ulid::Ulid::new());
+                out.push(StreamEvent::ToolCallStart {
+                    id: id.clone(),
+                    name: name.to_owned(),
+                });
+                out.push(StreamEvent::ToolCallDelta {
+                    id: id.clone(),
+                    args_chunk: args_json,
+                });
+                out.push(StreamEvent::ToolCallEnd { id });
+            }
         }
     }
 
@@ -380,6 +410,38 @@ mod tests {
     #[test]
     fn missing_models_field_yields_empty() {
         assert!(parse_models(r#"{}"#).unwrap().is_empty());
+    }
+
+    #[test]
+    fn streaming_function_call_emits_start_delta_end() {
+        // Regression: Gemini streamGenerateContent emits a `functionCall`
+        // part with complete args in one frame. The old parser dropped
+        // them entirely (it only checked `parts[0].text`); the runtime
+        // then surfaced "model returned an empty response."
+        let frame = crate::sse::SseMessage {
+            event: None,
+            data: r#"{"candidates":[{"content":{"parts":[
+                { "text": "Searching…" },
+                { "functionCall": { "name": "web_search", "args": { "q": "rust" } } }
+            ]}}]}"#
+                .to_owned(),
+        };
+        let events = parse_event(&frame);
+        // Expected order: Delta(text), Start, Delta(args), End.
+        let has_text_delta = events.iter().any(|e| matches!(e, StreamEvent::Delta(c) if c.delta == "Searching…"));
+        let has_tool_start = events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolCallStart { name, .. } if name == "web_search"));
+        let has_tool_delta = events.iter().any(
+            |e| matches!(e, StreamEvent::ToolCallDelta { args_chunk, .. } if args_chunk.contains("\"q\":\"rust\"")),
+        );
+        let has_tool_end = events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolCallEnd { .. }));
+        assert!(has_text_delta, "expected text Delta, got {events:?}");
+        assert!(has_tool_start, "expected ToolCallStart, got {events:?}");
+        assert!(has_tool_delta, "expected ToolCallDelta, got {events:?}");
+        assert!(has_tool_end, "expected ToolCallEnd, got {events:?}");
     }
 
     #[test]

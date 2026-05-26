@@ -29,7 +29,7 @@ const tabLabels: Record<Tab, string> = {
   sprint: 'Skill Sprint',
   techdebt: 'Tech Debt',
   hivemind: 'Hive Mind',
-  drift: 'Drift & Delays',
+  drift: 'Drift',
 };
 
 function EmptyState({ title, message }: { readonly title: string; readonly message: string }) {

@@ -3,7 +3,7 @@
     "projectName": "HIVE Dashboard",
     "autoSave": true,
     "sessionTimeout": 30,
-    "sovereigntyTier": "hybrid",
+    "sovereigntyTier": "local",
     "telemetry": false,
     "language": "English"
   },

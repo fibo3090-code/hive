@@ -520,8 +520,8 @@ export default function Settings() {
               <h3 className="text-display-sm text-primary mb-2">HIVE v6.0</h3>
               <p className="text-sm text-muted-foreground mb-4">Autonomous Agent Orchestration Platform</p>
               <div className="space-y-2 text-xs text-muted-foreground">
-                <div className="flex justify-between"><span>Version</span><span className="font-mono">6.0.0-beta</span></div>
-                <div className="flex justify-between"><span>Build</span><span className="font-mono">2026.04.12</span></div>
+                <div className="flex justify-between"><span>Version</span><span className="font-mono">{__APP_VERSION__}</span></div>
+                <div className="flex justify-between"><span>Build</span><span className="font-mono">{__BUILD_DATE__}</span></div>
                 <div className="flex justify-between"><span>Runtime</span><span className="font-mono">React 18 + Vite 5</span></div>
                 <div className="flex justify-between"><span>UI Framework</span><span className="font-mono">Tailwind CSS + shadcn/ui</span></div>
                 <div className="flex justify-between"><span>Graph Engine</span><span className="font-mono">React Flow</span></div>

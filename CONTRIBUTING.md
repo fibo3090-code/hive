@@ -136,7 +136,10 @@ toggle is ON for the project.
 - Renaming public crates or shifting the workspace layout.
 - Schema changes to the audit_log table.
 - The Hive Mind RAG embedding pipeline (parked).
-- The custom-MCP synthesis pipeline (in progress under W3-B4).
+- The custom-MCP synthesis pipeline — W3-B4 has shipped the runtime tools
+  (`request_capability` / `monitor_spawn_request`) and the mpsc-decoupled
+  pipeline launcher. Frontend review/approval surface is still open; see
+  `docs/BACKLOG.md` §B4.
 
 If your idea touches any of the above, open a short issue first so we
 can scope it together.

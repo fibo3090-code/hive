@@ -89,7 +89,6 @@ export default {
         },
         tier: {
           local: "hsl(var(--tier-local))",
-          hybrid: "hsl(var(--tier-hybrid))",
           cloud: "hsl(var(--tier-cloud))",
         },
       },

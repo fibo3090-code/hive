@@ -176,6 +176,27 @@ fn coerce_tool_arguments(name: &str, raw: Option<&Value>) -> Value {
     Value::Object(serde_json::Map::new())
 }
 
+/// gpt-oss / Harmony-format models served by Ollama sometimes leak their
+/// format tokens into the `function.name` field — e.g. `assistant<|channel|>hive_mind_write`
+/// instead of `hive_mind_write`. The tool registry then can't find the call,
+/// the agent loops on "tool not registered", and the repeat-guard trips.
+///
+/// Strip any leading `<|...|>` channel tag (taking the segment after the
+/// *last* one) and trim any trailing Harmony tokens.
+pub(crate) fn normalize_harmony_name(raw: &str) -> &str {
+    let after_channel = raw.rsplit("<|channel|>").next().unwrap_or(raw);
+    let stripped = after_channel
+        .split("<|")
+        .next()
+        .unwrap_or(after_channel)
+        .trim();
+    if stripped.is_empty() {
+        raw
+    } else {
+        stripped
+    }
+}
+
 fn parse_chat_response(value: &Value) -> Result<ChatResponse, LlmError> {
     let message = value.get("message").cloned().unwrap_or(Value::Null);
     let text = message
@@ -190,10 +211,13 @@ fn parse_chat_response(value: &Value) -> Result<ChatResponse, LlmError> {
             let function = item
                 .get("function")
                 .ok_or_else(|| LlmError::Parse("missing ollama tool function".into()))?;
-            let name = function
+            let raw_name = function
                 .get("name")
                 .and_then(Value::as_str)
                 .ok_or_else(|| LlmError::Parse("missing ollama tool name".into()))?;
+            // Strip Harmony channel tokens (e.g. `assistant<|channel|>tool`)
+            // so the registry lookup matches the tool's canonical name.
+            let name = normalize_harmony_name(raw_name);
             tool_calls.push(ToolCall {
                 // Ollama doesn't surface a tool-call id; mint one so the
                 // runtime can disambiguate parallel calls in persisted
@@ -345,9 +369,11 @@ fn parse_line(line: &str) -> Vec<StreamEvent> {
                 let Some(function) = item.get("function") else {
                     continue;
                 };
-                let Some(name) = function.get("name").and_then(Value::as_str) else {
+                let Some(raw_name) = function.get("name").and_then(Value::as_str) else {
                     continue;
                 };
+                // Same Harmony-token strip as in `parse_chat_response`.
+                let name = normalize_harmony_name(raw_name);
                 let id = format!("call_{}", ulid::Ulid::new());
                 let args = coerce_tool_arguments(name, function.get("arguments"));
                 let chunk = serde_json::to_string(&args).unwrap_or_else(|_| "{}".into());
@@ -417,6 +443,51 @@ mod tests {
         assert!(!models[2].supports_tools, "gemma2 should not support tools");
         assert_eq!(models[3].label, "plain-model");
         assert!(!models[3].supports_tools);
+    }
+
+    #[test]
+    fn normalize_harmony_strips_assistant_channel_prefix() {
+        // gpt-oss / Harmony-format leak that triggered the "tool not registered" loop.
+        assert_eq!(
+            normalize_harmony_name("assistant<|channel|>hive_mind_write"),
+            "hive_mind_write",
+        );
+        assert_eq!(
+            normalize_harmony_name("assistant<|channel|>todo"),
+            "todo",
+        );
+        assert_eq!(
+            normalize_harmony_name("assistant<|channel|>functions"),
+            "functions",
+        );
+    }
+
+    #[test]
+    fn normalize_harmony_passthrough_for_clean_names() {
+        assert_eq!(normalize_harmony_name("fs_read"), "fs_read");
+        assert_eq!(normalize_harmony_name("spawn_agent"), "spawn_agent");
+    }
+
+    #[test]
+    fn normalize_harmony_strips_trailing_tokens() {
+        // Defensive: if the channel tag is followed by another `<|...|>` token,
+        // we still want the clean name in the middle.
+        assert_eq!(
+            normalize_harmony_name("hive_mind_write<|return|>"),
+            "hive_mind_write",
+        );
+        assert_eq!(
+            normalize_harmony_name("assistant<|channel|>hive_mind_write<|return|>"),
+            "hive_mind_write",
+        );
+    }
+
+    #[test]
+    fn normalize_harmony_falls_back_to_raw_when_strip_empty() {
+        // Pathological input — keep the original so callers see something
+        // recognisable in the "tool not registered" error.
+        let weird = "<|channel|>";
+        assert_eq!(normalize_harmony_name(weird), weird);
     }
 
     #[test]

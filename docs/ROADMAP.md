@@ -6,23 +6,44 @@ The forward plan. For *current* status of every feature see
 
 Each item below is a multi-commit effort; rough descending priority.
 
-## 1. Coordinator-led onboarding
+## Recently delivered
 
-Make "create a project" actually do something end-to-end.
+These shipped since the last ROADMAP refresh; kept here so the current open
+items don't drift into old plans. Confirm in
+[`FEATURE_STATUS.md`](FEATURE_STATUS.md) before acting on any of them.
 
-- Recent groundwork: `/launch` now indexes the created spec document into
-  sections, persists a local deterministic task plan when no LLM planner is
-  reachable, and preserves uploaded checklist/numbered TODO items instead of
-  forcing them into a generic 3-phase plan.
+- **B1 coordinator-led onboarding** (was §1): `POST /v1/coordinator/converse` +
+  `StepCoordinatorChat`. Project is created on step-3 entry (not at Launch);
+  `OnboardingDraft.{projectId, coordinatorThreadId}` thread it through.
+  Brief auto-syncs from chat with an explicit "Save as brief" button.
+- **B4 auto-MCP synthesis pipeline** (was §4): `request_capability` +
+  `monitor_spawn_request` agent tools. mpsc-decoupled `spawn_pipeline_tx`
+  on `AppState`; consumer rebuilds `BuildPipelineDeps` per spawn.
+  Coordinator-only.
+- **D1 eval leaderboard data source** (was §6 sub-bullet): `agent_eval_runs`
+  table + `record_eval` runtime tool + `GET /v1/eval-runs`. UI consumes via
+  `useEvalRunsData`.
+- **D2 HiveGraph lock overlay** (was §6 sub-bullet): `SandboxLockRegistry` +
+  RAII `LockGuard` in `hive-tools/src/locks.rs`. `GET /v1/sandbox-locks`,
+  `useSandboxLocks` polls every 2s.
+- **Pause/resume executor sync**: `PATCH /v1/agents/:id/status` and session
+  toggle now flip `ExecutorRegistry::{pause,resume,terminate}` alongside
+  the DB row. Pause actually parks the inbox via `Notify`.
+- **File Protection Zones uniform**: `ToolContext::check_path_allowed`
+  protects `fs_read` / `fs_list` / `fs_write` / `shell_exec` against `.env*`,
+  `.git/`, and user-protected paths with case/normalisation-aware checks.
+- **Cost events on cancel / timeout / LLM-error**: partial spend now hits
+  the ledger so `budget_total_cents` stays enforceable.
+
+## 1. Coordinator-led onboarding — remaining
+
+The B1 groundwork shipped (see above). Still open:
+
 - Auto-create the coordinator ("CEO") on `/launch` (or on first project open).
-- Turn the onboarding **Describe** step into a back-and-forth chat with the
-  coordinator (`POST /v1/projects/:id/coordinator/converse`) instead of a plain
-  textarea; the conversation ends in a `spec_documents` row + the initial agent
-  roster (which feeds the existing `/launch` decompose step that writes
-  `sprints` + `tasks`).
-- Honour `team_mode` in the conversation (already wired into `coordinator_tools`).
-- Replace the single textarea + spec-upload with the merged "N documents +
-  freeform messages" capture the original plan called for.
+- Replace the single textarea + spec-upload with a merged "N documents +
+  freeform messages" capture.
+- Make `teamMode` toggleable mid-conversation without losing the in-flight
+  request (currently fires-and-forgets the initial value).
 
 ## 2. Skill mounting
 
@@ -48,31 +69,42 @@ Make skills usable at runtime (today they're just rows + a Forge CRUD UI).
 - The coordinator (or a parent agent) can re-assign tasks, change priorities,
   pause/resume, and steer mid-flight (`delegate_task`, `message_agent`,
   `set-status`, `pause`/`resume` already exist as the primitives).
-- Wire pause/resume to actual executor state everywhere (currently best-effort).
+- Pause/resume DB↔executor sync is wired (see "Recently delivered"); remaining
+  edge cases tracked in [`BACKLOG.md`](BACKLOG.md): `let _` swallowing executor
+  errors, leaked cancellation token after `terminate`, `pause()` not
+  interrupting the in-flight turn.
 
-## 4. Finish the auto-MCP-synthesis pipeline
+## 4. Auto-MCP synthesis — remaining UI surface
 
-`hive-runtime/src/spawn/` has the state machine and REST endpoints; finish it
-and expose it as an **agent-triggered** tool (keep the human-approval step).
+B4 (`request_capability`, `monitor_spawn_request`, mpsc-decoupled pipeline) is
+shipped. What's left:
 
-- Complete `run_pipeline` (it has an `unimplemented!()` in a test mock; verify
-  the real `LlmPipelineDeps` path is fully implemented) and invoke it from the
-  `spawn-requests` create handler.
-- New agent tool, e.g. `request_capability(description)` → creates a
-  `spawn_request`, runs the pipeline (research API → synthesize a
-  `custom_mcp_servers` row → compose a prompt → await approval → materialize a
-  sub-agent bound to the new MCP server).
-- Frontend: a spawn-requests review surface (the `api/spawn-requests.ts` client
-  already exists but is unused) — show the pipeline state machine, the approval
-  step, the generated manifest/handler.
+- Frontend spawn-requests review surface: `api/spawn-requests.ts` client exists
+  and a polling hook `useSpawnRequests` is wired — page UI to show the pipeline
+  state machine, surface the approval gate, and render the generated manifest /
+  handler is still TODO.
+- Pipeline mpsc consumer has no in-flight dedup (same `spawn_request_id` can be
+  processed twice — see BACKLOG).
+- `approve_spawn_request` re-runs the synthesis from stage 0, double-billing
+  the LLM — should resume from `awaiting-approval` (see BACKLOG).
 
-## 5. Drift auto-detection
+## 5. Drift auto-detection — wired, has gaps
 
-- Call `drift.rs`'s scorers from the turn loop (after each turn and/or each
-  `turn_driver` cycle) for the three drift kinds.
-- **Graduated response by severity**: low → log a `drift_events` row only;
-  medium → also raise an `alert`/`notification`; high → pause the agent (or its
-  subtree) so a human must intervene; surface all of it on Planning → Drift.
+The turn loop now calls `record_after_turn` after each successful turn, scores
+via `drift.rs`, and auto-pauses at score ≥ 0.9 (see
+[`architecture.md`](architecture.md#drift-hook) and CLAUDE.md §3b.5). Bands are
+the graduated response originally specified.
+
+What's left:
+
+- **The hook is skipped on cancel / timeout / LLM-error / budget exits** —
+  precisely the moments drift is most likely. Wrap `run_turn_inner` in a
+  defer-style guard so `record_after_turn` runs regardless of exit path.
+- Auto-pause uses `let _ = registry.pause(...)` and only `tracing::warn!`s on
+  `NotFound` — if the executor wasn't pre-`ensure`d, the DB and executor
+  diverge silently (same bug class as in `set_agent_status`).
+- UI surface on Planning → Drift is partial; the alerts/notifications side
+  works but the dedicated panel still says "planned".
 
 ## 6. Smaller / cleanup
 
@@ -82,11 +114,10 @@ and expose it as an **agent-triggered** tool (keep the human-approval step).
   kind="server-only">`.
 - **Agent skill/connector attachment UI** — fold into the agent builder once
   the binding tables exist (#2 + connectors already exist).
-- **Eval leaderboard** — needs a real source for `agents.evalScores` /
-  `qualityScore` (an eval harness that scores agent outputs); UI is ready.
-- **HiveGraph lock overlay** — needs the runtime to expose which agents hold
-  sandbox file locks; UI is ready (the locked-agent set is currently a
-  hardcoded empty `Set`).
+- **Eval leaderboard data feed** — D1 shipped `agent_eval_runs` + `record_eval`
+  tool + endpoint. Still needs an eval harness that systematically scores
+  agent outputs (and decides when to call `record_eval`).
+- ~~**HiveGraph lock overlay**~~ — shipped (D2). See "Recently delivered".
 - **No-effect Settings panels** — Adaptive Router, HCM Modules, Integrations,
   Security & Compliance, the keyboard-shortcuts list are local-state theatre.
   Either wire them (e.g. the keyboard shortcuts), hide them, or wrap in

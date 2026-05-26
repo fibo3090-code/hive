@@ -124,7 +124,13 @@ fn parse_tool_invocations(content: &str) -> Option<Vec<ToolInvocation>> {
 
     let mut out = Vec::new();
     for item in items {
-        let tool = item.get("tool")?.as_str()?.to_owned();
+        let raw_tool = item.get("tool")?.as_str()?;
+        // Belt-and-braces: gpt-oss / Harmony-format models occasionally leak
+        // channel tokens like `assistant<|channel|>hive_mind_write` into the
+        // `tool` field even via the XML-fallback path. Strip them here so the
+        // registry lookup matches the canonical name. (The Ollama provider
+        // does the same strip on the native tool_calls path.)
+        let tool = strip_harmony_channel(raw_tool).to_owned();
         let arguments = item.get("arguments").cloned().unwrap_or_else(|| json!({}));
         // XML-fallback invocations have no native id. Mint a ULID so
         // parallel calls remain distinguishable in persisted records and
@@ -137,6 +143,23 @@ fn parse_tool_invocations(content: &str) -> Option<Vec<ToolInvocation>> {
         });
     }
     Some(out)
+}
+
+/// Strip OpenAI Harmony channel tokens from a tool name so the registry
+/// lookup matches. Mirrors `hive_llm::providers::ollama::normalize_harmony_name`
+/// but kept local to avoid a cross-crate dependency for a 4-line helper.
+fn strip_harmony_channel(raw: &str) -> &str {
+    let after_channel = raw.rsplit("<|channel|>").next().unwrap_or(raw);
+    let stripped = after_channel
+        .split("<|")
+        .next()
+        .unwrap_or(after_channel)
+        .trim();
+    if stripped.is_empty() {
+        raw
+    } else {
+        stripped
+    }
 }
 
 /// Outcome of `collect_response` — either the stream finished cleanly,

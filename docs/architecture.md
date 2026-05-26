@@ -65,8 +65,8 @@ that stream progress over a single shared SSE stream (`GET /v1/events`).
 | `hive-domain` | Shared domain types — thin today (plain structs/enums); not a service layer. |
 | `hive-db` | SeaORM entities, repos (one module per table), and migrations (`crates/hive-db/migration/`). SQLite by default, Postgres/MySQL via the same migration set. Also `seed::seed_demo` (idempotent demo data). |
 | `hive-llm` | `LlmProvider` trait (`list_models` / `test_connection` / `complete` / `chat_stream`) with Anthropic / OpenAI / Gemini / Ollama clients. Streaming + provider-native tool-use, family-keyed model metadata + context windows, token-budget estimator, per-provider pricing → i64 cents. |
-| `hive-runtime` | The agent runtime: `AgentExecutor` (per-agent inbox + cancel scope), `ExecutorRegistry`, `TurnDriver` trait, the streaming chat turn loop (`chat::run_turn`), the `EventBus`, the tool-call schema validator, loop/repeat guards, the drift scorer (`drift.rs`, not yet wired into the loop), the auto-MCP-synthesis pipeline (`spawn/`), and the DB-/registry-backed agent tools (`agent_tools.rs`, `db_tools.rs`, `git_tools.rs`). |
-| `hive-tools` | The sandbox-only built-in tools: `fs_read`, `fs_write`, `fs_list`, `shell_exec`, `todo`, `web_fetch`, `web_search`. Each declares a JSON-Schema manifest and runs through a per-tool 60 s timeout wrapper. `hive-tools` can't depend on `hive-db`, so DB-/executor-backed tools live in `hive-runtime` (see above). |
+| `hive-runtime` | The agent runtime: `AgentExecutor` (per-agent inbox + cancel scope), `ExecutorRegistry`, `TurnDriver` trait, the streaming chat turn loop (`chat::run_turn`), the `EventBus`, the tool-call schema validator, loop/repeat guards, the drift scorer (`drift.rs`) + the **post-turn `drift_hook::record_after_turn`** (wired into the success path; see §4.5), the auto-MCP-synthesis pipeline (`spawn/`) with the `request_capability` / `monitor_spawn_request` agent tools (B4) plumbed over an mpsc `spawn_pipeline_tx` to the API consumer, the D1 eval surface (`record_eval` tool + `agent_eval_runs`), and the DB-/registry-backed agent tools (`agent_tools.rs`, `db_tools.rs`, `git_tools.rs`). |
+| `hive-tools` | The sandbox-only built-in tools: `fs_read`, `fs_write`, `fs_list`, `shell_exec`, `todo`, `web_fetch`, `web_search`. Each declares a JSON-Schema manifest and runs through a per-tool 60 s timeout wrapper. `hive-tools` can't depend on `hive-db`, so DB-/executor-backed tools live in `hive-runtime` (see above). Hosts the `SandboxLockRegistry` (D2 — RAII guards exposed via `GET /v1/sandbox-locks`) and the centralised `ToolContext::check_path_allowed` File Protection Zones (see §5.1). |
 | `hive-sandbox` | `Sandbox` trait + `LocalFsSandbox`: two-layer path-escape protection (string-level `..`/absolute reject, then FS canonicalisation + root-prefix re-check), symlink-safe, `env_clear()`-then-allowlist exec. A Docker-backed variant is planned. |
 | `hive-search` | `SearchProvider` trait with Tavily and SearXNG implementations. |
 | `hive-git` | `GitRepo` — a thin wrapper that shells out to the `git` CLI in the project workspace (status / branches / checkout / log / tree / file / diff / commit / restore / init / pull / push) — plus `GitHubClient` (`octocrab`) for GitHub status/PRs. |
@@ -174,7 +174,9 @@ The unique chokepoint for all LLM work.
    - Repeat guard (max 3 identical calls).
    - 60s timeout per tool.
 5. **Finalization:** Persist transcript (rounds joined by `\n\n`), write
-   `cost_events`, emit `complete`.
+   `cost_events`, emit `complete`. **On cancel / timeout / LLM-error**,
+   `finalize_cancelled` writes a `cost_events` row tagged `status=cancelled`
+   or `status=error` so partial spend still counts against `budget_total_cents`.
 
 ### 4.4 Agent Execution & Visibility Model
 
@@ -183,6 +185,42 @@ The unique chokepoint for all LLM work.
 - **Visibility:** `visible(A) = {A} ∪ direct_parents(A) ∪ descendants(A)`.
 - **Relay:** `request_relay(via, target)` where `via` is a direct parent and
   `target` is visible to `via`.
+- **DB ↔ Executor sync:** every path that writes `agents.status` *must* also
+  call `ExecutorRegistry::{pause,resume,terminate}`. The executor parks its
+  inbox via a `Notify` on `Paused`. `PATCH /v1/agents/:id/status` and
+  `POST /v1/projects/:id/session/toggle` do this; the drift autopause also
+  does (best-effort, see §4.5). The `terminate_agent` endpoint first calls
+  `cancel_subtree` (which cascades via `parent_token.child_token()`), then
+  drains the executor, then flips the DB.
+
+### 4.5 Drift Hook (`drift_hook::record_after_turn`)
+
+After each successful turn, the runtime scores how much the turn's tool calls
+covered the active task's expected artifacts. Four bands:
+
+| score    | side effects                                                       |
+|----------|--------------------------------------------------------------------|
+| <0.4     | update `assignment.drift_score` only                               |
+| 0.4–0.69 | + insert a `drift_events` row (severity=medium)                    |
+| 0.7–0.89 | + raise an `alert` + `notification` (severity=high)                |
+| ≥0.9     | + `agents::set_status("paused")` AND `ExecutorRegistry::pause()`   |
+
+The hook is best-effort — any DB error is logged but never propagates to fail
+a turn the operator already saw complete. **Known gap:** cancel / timeout /
+LLM-error / budget exits skip the hook; see BACKLOG Z1.
+
+### 4.6 Auto-MCP Synthesis Pipeline (B4)
+
+When an agent calls the `request_capability` runtime tool:
+1. The tool writes an `agent_spawn_requests` row.
+2. It sends the row id through `AppState::spawn_pipeline_tx` (mpsc).
+
+The API server owns the receiver and a consumer task; the consumer rebuilds
+`BuildPipelineDeps` fresh and runs `spawn::driver::run_pipeline` per id. The
+agent observes progress by polling `monitor_spawn_request` or via the
+`/v1/spawn-requests` SSE family. The runtime / API decoupling matters:
+`hive-runtime` cannot depend on `hive-api`, so the mpsc is the only crate
+boundary the tool crosses.
 
 ---
 
@@ -194,6 +232,16 @@ The unique chokepoint for all LLM work.
   (ChaCha20-Poly1305).
 - Sandbox limits: `fs_read` (16MB), `fs_write` (32MB), `shell_exec`
   (CPU 300s, 1GB RAM, truncated output).
+- **File Protection Zones** (uniform): `ToolContext::check_path_allowed`
+  centralises a deny list of `.env*`, `.git/` and operator-provided
+  `protected_files`, and is called from `fs_read`, `fs_list`, `fs_write`, and
+  `shell_exec` (argv tokens that look path-like). Path normalisation handles
+  `./`, backslashes, trailing `/`, and Windows case-insensitive filesystems.
+  See [`hive-tools/src/context.rs`](../back-end/crates/hive-tools/src/context.rs).
+- **Sandbox locks** (`SandboxLockRegistry` in `hive-tools/src/locks.rs`) hand
+  out RAII `LockHandle`s on `fs_write`; release on `Drop`. Exposed via
+  `GET /v1/sandbox-locks` for the HiveGraph lock overlay. Currently
+  visibility-only, not mutual-exclusion.
 
 ### 5.2 No-Key Fallbacks
 - **LLM:** Ollama auto-detected at `:11434`.

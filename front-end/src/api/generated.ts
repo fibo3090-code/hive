@@ -1,5 +1,5 @@
 export type AgentStatus = 'working' | 'idle' | 'blocked' | 'paused' | 'deprecated';
-export type SovereigntyTier = 'local' | 'hybrid' | 'cloud';
+export type SovereigntyTier = 'local' | 'cloud';
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'info';
 
 export interface Agent {

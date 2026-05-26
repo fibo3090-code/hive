@@ -67,9 +67,8 @@
     --sidebar-border: 240 4% 12%;
     --sidebar-ring: 44 90% 61%;
 
-    /* Sovereignty tier colors */
+    /* Sovereignty tier colors (Hybrid tier removed — Phase 1) */
     --tier-local: 142 71% 45%;
-    --tier-hybrid: 38 92% 50%;
     --tier-cloud: 217 91% 60%;
 
     /* Chart colors */

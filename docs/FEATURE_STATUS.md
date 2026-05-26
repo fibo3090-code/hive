@@ -21,9 +21,9 @@ Legend
 | Sovereignty tier: Hybrid | removed | — | 1 | Removed entirely |
 | Estimated cost | removed | — | 1 | Fake heuristic removed from onboarding and the agent-spawn modal; `lib/cost-estimate.ts` deleted. Real cost projection still planned |
 | Connect LLMs | done | cloud-llm | 2 | All four provider clients (`anthropic`/`openai`/`gemini`/`ollama`) implement live `list_models`; the onboarding step shows them per provider, but launch can continue without a connected provider by using the deterministic planner fallback |
-| Describe step (interview) | partial | cloud-llm | 3 | Single textarea + spec upload; merged chat-style capture is planned |
+| Describe step (interview) | done | cloud-llm | 3 | B1: coordinator chat (`POST /v1/coordinator/converse`) via `StepCoordinatorChat`. Project is now created on step-3 entry (not at Launch) and threaded through via `OnboardingDraft.{projectId, coordinatorThreadId}`. Brief auto-syncs from chat; "Save as brief" button for explicit commit |
 | Describe step (import spec) | partial | local | 3 | Spec text becomes the launch brief; uploaded checklist/numbered TODOs are preserved by the deterministic planner instead of being rewritten into generic tasks |
-| Team mode toggle | partial | cloud-llm | 3 | Persisted; runtime side reads on `/coordinator/converse` |
+| Team mode toggle | partial | cloud-llm | 3 | Persisted; runtime side reads on `/coordinator/converse` (note: current teamMode is written at first request — toggling during a pending response loses the change) |
 | Plan review | partial | local | 3 | Calls `/v1/projects/genesis/preview`; LLM preview is used when available, otherwise the deterministic planner previews phases from the brief. Phases shown but not editable yet |
 | Real launch sequence (sandbox provision, git init, migrate ping, search probe) | done | local | 2 | `POST /v1/projects/:id/launch` runs the steps and returns a per-step report; onboarding shows it before navigating to the dashboard |
 
@@ -51,7 +51,7 @@ Legend
 | Node graph view (ReactFlow) | done | local | 1 | |
 | Org chart view | removed | — | 1 | Toggle and component deleted |
 | Agent detail drawer | done | local | 1 | |
-| Pause / Resume agent | partial | server | 1 | Wired to backend; executor support varies |
+| Pause / Resume agent | done | server | 1 | DB row + in-process `ExecutorRegistry::{pause,resume,terminate}` are now flipped together (`PATCH /v1/agents/:id/status`, `POST /v1/projects/:id/session/toggle`). Executor parks the inbox via `Notify` on `Paused` |
 | Delete agent | done | server | 1 | Renamed from "Terminate", added confirm dialog |
 | Spawn agent (modal) | done | local | 4 | Uses the shared `AgentFormFields` component (name, role + presets, model, system prompt, tool allowlist grouped by category) — identical to the Forge builder and the HiveGraph config dialog. POSTs `/v1/projects/:id/agents` |
 | Wires (parent→child authority + comm) | done | local | 4 | `agent_wires` table + `GET/POST /v1/projects/:pid/wires`, `DELETE /v1/wires/:id`. `spawn_agent` records a wire automatically; agent visibility (`message_agent` / `list_visible_agents` / `request_relay`) walks this graph |
@@ -79,12 +79,12 @@ Legend
 |---|---|---|---|---|
 | Agent metrics | partial | local | 1 | React Query snapshot; refetched on `agent.status` / `cost.ingested` SSE events (not a dedicated per-project stream) |
 | Project metrics | partial | local | 1 | Same — `spend-timeline` / `task-throughput` / `cost-timeline` queries are invalidated by `cost.ingested` / `task.status` events |
-| Eval leaderboard | mock | local | 1 | Static seed |
+| Eval leaderboard | partial | local | 1 | D1: `agent_eval_runs` table + `record_eval` runtime tool + `GET /v1/eval-runs`; `LeaderboardTab` consumes via `useEvalRunsData`. UI is real; entries arrive only when agents call `record_eval` |
 | Runtime feed (traces) | done | server | 1 | |
 | Session replay | partial | server | 1 | Empty until runtime emits replay events |
 | Live SSE updates on dashboards | partial | local | 5 | The global `/v1/events` stream already drives query invalidation for cost/task/agent changes (see `realtime/useSse.ts`). A dedicated `GET /v1/projects/:pid/events` multiplexed stream is still planned, as is the eval-leaderboard data source |
 | Runtime drift auto-detection | planned | local | 5 | `hive-runtime/src/drift.rs` has scoring fns but the turn loop doesn't call them yet; agents can write events via the `record_drift` tool |
-| Budget enforcement | done | local | 5 | `chat::run_turn` refuses to start a turn (chat or agent dispatch) once the project's cumulative `cost_events` spend reaches `budget_total_cents`; emits a `budget_exceeded` error. `budget_total_cents <= 0` = unlimited |
+| Budget enforcement | done | local | 5 | `chat::run_turn` refuses to start a turn (chat or agent dispatch) once the project's cumulative `cost_events` spend reaches `budget_total_cents`; emits a `budget_exceeded` error. `budget_total_cents <= 0` = unlimited. Partial spend on cancel / timeout / LLM-error turns is now persisted via `finalize_cancelled` so the tally stays honest |
 | Interleaved persistence of assistant narration | done | local | 3 | The full per-round transcript is persisted (rounds joined by blank lines), so a reload matches the live stream |
 
 ## Code & Versioning
@@ -117,6 +117,9 @@ Legend
 | `git_pull` / `git_push` | done | git-remote | 5 | `hive-runtime::git_tools` — rejected on `local`-tier projects |
 | `message_agent` (wire-derived visibility) / `list_visible_agents` / `request_relay` | done | local | 4 | `message_agent` now enforces the visibility rule (self + direct parents + descendants; falls back to "same project" if the project has no wires). `list_visible_agents` lists reachable peers; `request_relay` routes a message through a parent that can see a more distant agent |
 | `delete_agent` / `monitor_agent` / `delegate_task` | done | local | 5 | `hive-runtime::agent_tools`. `delete_agent` retires a direct sub-agent (cancel subtree + terminate + status=deprecated); `monitor_agent` reads status/runtime-state/recent inbox; `delegate_task` creates a tracked task assigned to a visible agent and dispatches it |
+| `request_capability` / `monitor_spawn_request` | done | local | 4 | B4: coordinator asks for an MCP/connector it lacks; runtime tool writes an `agent_spawn_requests` row and sends the id over `spawn_pipeline_tx` (mpsc). `hive-api` consumer rebuilds `BuildPipelineDeps` and runs the synthesis pipeline; agent observes via `monitor_spawn_request` or the `/v1/spawn-requests` SSE stream. Coordinator-only |
+| `record_eval` | done | local | 5 | D1: writes an `agent_eval_runs` row; surfaced on the Stats → Leaderboard tab |
+| File Protection Zones | done | local | 5 | `ToolContext::check_path_allowed` centralises the deny list (`.env*`, `.git/`, user-protected). Called from `fs_read`, `fs_list`, `fs_write`, and `shell_exec` (argv path-like tokens). Normalises `./`, `\`, trailing `/`, and Windows case-folding |
 
 ## Forge
 

@@ -10,11 +10,16 @@ import { cn } from "@/lib/utils";
 export function ConnectionStatusPill({ className }: { readonly className?: string }) {
   const { connectionState, reconnectCount } = useRealtime();
 
+  // "Live" (when connected) is intentionally muted so it doesn't compete
+  // with the session-active green or the primary CTA. The pill only goes
+  // loud when something is wrong (connecting / offline) — that's when the
+  // operator needs to see it. Renamed from "Live" to "Online" to avoid
+  // implying that a project session is running (which is a different state).
   const config = {
     open: {
       icon: <Wifi className="h-3 w-3" />,
-      label: "Live",
-      color: "text-success border-success/30 bg-success/5",
+      label: "Online",
+      color: "text-muted-foreground border-border/40 bg-transparent",
       title: reconnectCount > 0 ? `Reconnected (${reconnectCount}× since load)` : "Realtime stream connected",
     },
     connecting: {

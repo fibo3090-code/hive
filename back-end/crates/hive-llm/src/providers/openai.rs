@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
+use futures_util::{stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -237,15 +238,20 @@ impl LlmProvider for OpenAiProvider {
         // Track the pending finish_reason so we emit a single, merged
         // Complete on whichever event fires last.
         let state = Arc::new(Mutex::new(StreamState::default()));
-        let mapped = sse.filter_map(move |item| {
-            let state = state.clone();
-            async move {
-                match item {
-                    Err(e) => Some(Err(LlmError::Http(e))),
-                    Ok(msg) => parse_event(&msg, &state).map(Ok),
-                }
-            }
-        });
+        // A single SSE chunk may need to produce multiple events (e.g. the
+        // finish_reason="tool_calls" chunk emits `ToolCallEnd` for each open
+        // tool call AND a `Complete`). So the parser returns Vec<StreamEvent>
+        // and we flatten it into the outer stream.
+        let mapped = sse
+            .map(move |item| {
+                let state = state.clone();
+                let events: Vec<Result<StreamEvent, LlmError>> = match item {
+                    Err(e) => vec![Err(LlmError::Http(e))],
+                    Ok(msg) => parse_event(&msg, &state).into_iter().map(Ok).collect(),
+                };
+                stream::iter(events)
+            })
+            .flatten();
         Ok(Box::pin(mapped))
     }
 
@@ -307,21 +313,32 @@ impl LlmProvider for OpenAiProvider {
 }
 
 /// Per-stream parser state. Caches the `finish_reason` so we can include
-/// it in the (later) usage-chunk Complete event without losing it.
+/// it in the (later) usage-chunk Complete event without losing it, and
+/// tracks open tool-call indices so partial argument chunks can be
+/// correlated to the right `id` and emitted as `ToolCallDelta`s.
 #[derive(Default)]
 struct StreamState {
     finish_reason: Option<String>,
+    /// Open tool calls keyed by `tool_calls[].index`. The first chunk for a
+    /// given index carries `id` + `function.name`; subsequent chunks carry
+    /// `function.arguments` partials. Drained on `finish_reason=tool_calls`.
+    open_tool_calls: HashMap<u64, OpenAiToolCallState>,
 }
 
-fn parse_event(msg: &crate::sse::SseMessage, state: &Mutex<StreamState>) -> Option<StreamEvent> {
+#[derive(Debug, Clone)]
+struct OpenAiToolCallState {
+    id: String,
+}
+
+fn parse_event(msg: &crate::sse::SseMessage, state: &Mutex<StreamState>) -> Vec<StreamEvent> {
     if msg.data.is_empty() || msg.data == "[DONE]" {
-        return None;
+        return Vec::new();
     }
     let value: Value = match serde_json::from_str(&msg.data) {
         Ok(v) => v,
         Err(err) => {
             tracing::trace!(error = %err, raw = %msg.data, "openai: malformed sse frame");
-            return None;
+            return Vec::new();
         }
     };
 
@@ -342,48 +359,106 @@ fn parse_event(msg: &crate::sse::SseMessage, state: &Mutex<StreamState>) -> Opti
                 .unwrap_or_else(|e| e.into_inner())
                 .finish_reason
                 .clone();
-            return Some(StreamEvent::Complete {
+            return vec![StreamEvent::Complete {
                 tokens_in,
                 tokens_out,
                 finish_reason: finish,
-            });
+            }];
         }
     }
 
-    let choice = value.get("choices")?.get(0)?;
-    let finish = choice
-        .get("finish_reason")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
-    let delta = choice
-        .get("delta")
+    let Some(choices) = value.get("choices").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let Some(choice) = choices.first() else {
+        return Vec::new();
+    };
+
+    let mut events: Vec<StreamEvent> = Vec::new();
+    let delta = choice.get("delta");
+
+    // Text deltas. Multiple deltas can coexist with tool calls in one chunk,
+    // so emit both rather than picking one.
+    if let Some(text) = delta
         .and_then(|d| d.get("content"))
         .and_then(Value::as_str)
-        .unwrap_or("");
-
-    if !delta.is_empty() {
-        return Some(StreamEvent::Delta(StreamChunk {
-            delta: delta.to_owned(),
+        .filter(|s| !s.is_empty())
+    {
+        events.push(StreamEvent::Delta(StreamChunk {
+            delta: text.to_owned(),
         }));
     }
 
-    if let Some(reason) = finish {
-        // Cache and pre-emit a Complete with tokens=0; if usage arrives
-        // after this (the common path), it overrides with real tokens
-        // and copies the cached finish_reason. If usage never arrives
-        // (older API or `include_usage:false`), the runtime keeps this
-        // event's finish_reason and only loses the token counts.
-        state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .finish_reason = Some(reason.clone());
-        return Some(StreamEvent::Complete {
+    // Tool-call deltas. First frame for a given index carries id + name;
+    // subsequent frames carry partial `function.arguments`. The runtime
+    // accumulates the chunks under the tool-call id and parses at end.
+    if let Some(tool_calls) = delta.and_then(|d| d.get("tool_calls")).and_then(Value::as_array) {
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        for tc in tool_calls {
+            let Some(index) = tc.get("index").and_then(Value::as_u64) else {
+                continue;
+            };
+            let function = tc.get("function");
+            // Detect a new tool call: presence of `id` field on this frame.
+            if let Some(id) = tc.get("id").and_then(Value::as_str) {
+                let name = function
+                    .and_then(|f| f.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                s.open_tool_calls.insert(
+                    index,
+                    OpenAiToolCallState {
+                        id: id.to_owned(),
+                    },
+                );
+                events.push(StreamEvent::ToolCallStart {
+                    id: id.to_owned(),
+                    name,
+                });
+            }
+            // Always check for an args chunk on this frame — the first
+            // frame may include an empty `arguments: ""` (skip empty
+            // strings to avoid trailing-empty Delta events).
+            if let Some(args_chunk) = function
+                .and_then(|f| f.get("arguments"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                if let Some(open) = s.open_tool_calls.get(&index) {
+                    events.push(StreamEvent::ToolCallDelta {
+                        id: open.id.clone(),
+                        args_chunk: args_chunk.to_owned(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Finish_reason carries the terminator. For `tool_calls` we also need to
+    // emit `ToolCallEnd` for every open tool call so the runtime knows the
+    // partial args are complete and parses them.
+    if let Some(reason) = choice
+        .get("finish_reason")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+    {
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, open) in s.open_tool_calls.drain() {
+            events.push(StreamEvent::ToolCallEnd { id: open.id });
+        }
+        // Cache so the (later) usage chunk's Complete can copy the
+        // finish_reason. Pre-emit a Complete with tokens=0 in case
+        // `include_usage` is off and no usage chunk follows.
+        s.finish_reason = Some(reason.clone());
+        events.push(StreamEvent::Complete {
             tokens_in: 0,
             tokens_out: 0,
             finish_reason: Some(reason),
         });
     }
-    None
+
+    events
 }
 
 #[cfg(test)]
@@ -487,14 +562,19 @@ mod tests {
 
         // First, a finish_reason chunk arrives with no tokens.
         let finish = frame(r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#);
-        match parse_event(&finish, &state).expect("Complete pre-emit") {
+        let events = parse_event(&finish, &state);
+        let complete = events
+            .iter()
+            .find(|e| matches!(e, StreamEvent::Complete { .. }))
+            .expect("Complete pre-emit");
+        match complete {
             StreamEvent::Complete {
                 tokens_in,
                 tokens_out,
                 finish_reason,
             } => {
-                assert_eq!(tokens_in, 0);
-                assert_eq!(tokens_out, 0);
+                assert_eq!(*tokens_in, 0);
+                assert_eq!(*tokens_out, 0);
                 assert_eq!(finish_reason.as_deref(), Some("stop"));
             }
             other => panic!("expected Complete, got {other:?}"),
@@ -506,14 +586,19 @@ mod tests {
         let usage = frame(
             r#"{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":34,"total_tokens":46}}"#,
         );
-        match parse_event(&usage, &state).expect("Complete from usage") {
+        let events = parse_event(&usage, &state);
+        let complete = events
+            .iter()
+            .find(|e| matches!(e, StreamEvent::Complete { .. }))
+            .expect("Complete from usage");
+        match complete {
             StreamEvent::Complete {
                 tokens_in,
                 tokens_out,
                 finish_reason,
             } => {
-                assert_eq!(tokens_in, 12);
-                assert_eq!(tokens_out, 34);
+                assert_eq!(*tokens_in, 12);
+                assert_eq!(*tokens_out, 34);
                 assert_eq!(finish_reason.as_deref(), Some("stop"));
             }
             other => panic!("expected Complete, got {other:?}"),
@@ -523,13 +608,78 @@ mod tests {
     #[test]
     fn done_marker_is_skipped() {
         let state = Mutex::new(StreamState::default());
-        assert!(parse_event(&frame("[DONE]"), &state).is_none());
+        assert!(parse_event(&frame("[DONE]"), &state).is_empty());
     }
 
     #[test]
     fn malformed_frames_do_not_panic() {
         let state = Mutex::new(StreamState::default());
-        assert!(parse_event(&frame("{not"), &state).is_none());
+        assert!(parse_event(&frame("{not"), &state).is_empty());
+    }
+
+    #[test]
+    fn tool_calls_stream_start_delta_end_events() {
+        // Before this fix, OpenAI streaming dropped `delta.tool_calls`
+        // entirely — the runtime saw zero text and zero tool_calls and
+        // reported "model returned an empty response."
+        let state = Mutex::new(StreamState::default());
+
+        // Frame 1: tool-call open (id + name, empty args).
+        let f1 = frame(
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"fs_read","arguments":""}}]}}]}"#,
+        );
+        let events = parse_event(&f1, &state);
+        match events.first().expect("ToolCallStart expected") {
+            StreamEvent::ToolCallStart { id, name } => {
+                assert_eq!(id, "call_abc");
+                assert_eq!(name, "fs_read");
+            }
+            other => panic!("expected ToolCallStart, got {other:?}"),
+        }
+
+        // Frame 2: args partial.
+        let f2 = frame(
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]}}]}"#,
+        );
+        let events = parse_event(&f2, &state);
+        match events.first().expect("ToolCallDelta expected") {
+            StreamEvent::ToolCallDelta { id, args_chunk } => {
+                assert_eq!(id, "call_abc");
+                assert_eq!(args_chunk, "{\"path\":");
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+
+        // Frame 3: args continuation.
+        let f3 = frame(
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"foo.txt\"}"}}]}}]}"#,
+        );
+        let events = parse_event(&f3, &state);
+        match events.first().expect("ToolCallDelta expected") {
+            StreamEvent::ToolCallDelta { id, args_chunk } => {
+                assert_eq!(id, "call_abc");
+                assert_eq!(args_chunk, "\"foo.txt\"}");
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+
+        // Frame 4: finish_reason=tool_calls — should emit ToolCallEnd
+        // for every open call AND a Complete.
+        let f4 = frame(
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+        );
+        let events = parse_event(&f4, &state);
+        let has_end = events.iter().any(
+            |e| matches!(e, StreamEvent::ToolCallEnd { id } if id == "call_abc"),
+        );
+        let has_complete = events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Complete { .. }));
+        assert!(has_end, "expected ToolCallEnd for call_abc, got {events:?}");
+        assert!(
+            has_complete,
+            "expected Complete with finish_reason=tool_calls, got {events:?}"
+        );
     }
 
     #[test]

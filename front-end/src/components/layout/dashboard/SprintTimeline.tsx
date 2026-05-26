@@ -6,6 +6,29 @@ import type { TaskItem } from '@/types/domain';
 
 type GanttStatus = 'completed' | 'in-progress' | 'blocked' | 'queued';
 
+/** Backend task statuses are diverse (`done`, `in_progress`, `pending`, `failed`,
+ * …) but the Gantt only renders four states. Anything we don't recognise falls
+ * back to `queued` so the icon/color lookup never returns undefined and the
+ * Dashboard doesn't crash with "Element type is invalid". */
+function normalizeGanttStatus(raw: string | null | undefined): GanttStatus {
+  switch (raw) {
+    case 'completed':
+    case 'done':
+      return 'completed';
+    case 'in-progress':
+    case 'in_progress':
+    case 'active':
+    case 'running':
+      return 'in-progress';
+    case 'blocked':
+    case 'failed':
+    case 'error':
+      return 'blocked';
+    default:
+      return 'queued';
+  }
+}
+
 interface SprintTimelineProps {
   readonly projectId: string | null | undefined;
   readonly tasks: TaskItem[];
@@ -41,7 +64,7 @@ export function SprintTimeline({ projectId, tasks: allTasks }: SprintTimelinePro
         const slice = totalDays / Math.max(1, all.length);
         const start = Math.round(idx * slice);
         const end = Math.min(totalDays, Math.round((idx + 1) * slice));
-        const status = (task.status as GanttStatus) ?? 'queued';
+        const status = normalizeGanttStatus(task.status);
         return { name: task.title, start, end, status, assignee: task.assignee };
       })
     : [];
@@ -94,7 +117,7 @@ export function SprintTimeline({ projectId, tasks: allTasks }: SprintTimelinePro
             </div>
           ) : (
             ganttRows.map((task) => {
-              const StatusIcon = statusIcons[task.status];
+              const StatusIcon = statusIcons[task.status] ?? Circle;
               const leftPct = (task.start / totalDays) * 100;
               const widthPct = ((task.end - task.start) / totalDays) * 100;
               const ganttStatusColorMap: Record<string, string> = { completed: 'text-success', 'in-progress': 'text-primary', blocked: 'text-destructive' };
