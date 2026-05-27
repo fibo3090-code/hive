@@ -170,6 +170,7 @@ impl ExecutorRegistry {
             .ok_or_else(|| RegistryError::NotFound(agent_id.to_owned()))?;
         exec.terminate().await;
         self.inner.write().await.remove(agent_id);
+        self.tokens.write().await.remove(agent_id);
         self.bus.emit(
             format!("agent.{agent_id}.status"),
             json!({ "agentId": agent_id, "status": "terminated" }),
@@ -205,8 +206,57 @@ impl ExecutorRegistry {
             exec.terminate().await;
         }
         self.inner.write().await.clear();
+        self.tokens.write().await.clear();
         if count > 0 {
             tracing::info!(count, "ExecutorRegistry: shutdown complete");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn fresh_registry() -> ExecutorRegistry {
+        let db = Db::connect("sqlite::memory:", true)
+            .await
+            .expect("connect + migrate");
+        let bus = EventBus::new(tokio::sync::broadcast::channel(16).0);
+        ExecutorRegistry::new(db, bus)
+    }
+
+    #[tokio::test]
+    async fn terminate_drops_cancelled_token_so_ensure_restarts_clean() {
+        let registry = fresh_registry().await;
+
+        let first = registry.ensure("agent-1", "project-1").await;
+        registry.cancel_subtree("agent-1").await;
+        assert!(first.cancel_token().is_cancelled());
+
+        registry.terminate("agent-1").await.expect("terminate");
+        assert!(
+            registry.token_for("agent-1").await.is_none(),
+            "terminated agents must not retain cancelled tokens"
+        );
+
+        let restarted = registry.ensure("agent-1", "project-1").await;
+        assert!(
+            !restarted.cancel_token().is_cancelled(),
+            "restarted executor must receive a fresh cancellation token"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_drops_all_tokens() {
+        let registry = fresh_registry().await;
+
+        let _ = registry.ensure("agent-1", "project-1").await;
+        let _ = registry.ensure("agent-2", "project-1").await;
+        registry.cancel_subtree("agent-1").await;
+
+        registry.shutdown().await;
+
+        assert!(registry.token_for("agent-1").await.is_none());
+        assert!(registry.token_for("agent-2").await.is_none());
     }
 }

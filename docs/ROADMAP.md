@@ -71,8 +71,8 @@ Make skills usable at runtime (today they're just rows + a Forge CRUD UI).
   `set-status`, `pause`/`resume` already exist as the primitives).
 - Pause/resume DB↔executor sync is wired (see "Recently delivered"); remaining
   edge cases tracked in [`BACKLOG.md`](BACKLOG.md): `let _` swallowing executor
-  errors, leaked cancellation token after `terminate`, `pause()` not
-  interrupting the in-flight turn.
+  errors and `pause()` not interrupting the in-flight turn. The leaked
+  cancellation token after `terminate` was fixed on 2026-05-27.
 
 ## 4. Auto-MCP synthesis — remaining UI surface
 

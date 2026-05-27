@@ -38,6 +38,7 @@ prevention + visibility); documentation rewritten ([`architecture.md`](architect
 - **Pause/resume executor sync** — `set_agent_status` and `toggle_project_session` now flip `ExecutorRegistry::{pause,resume,terminate}` alongside `agents.status`.
 - **A8 (partial)** — File Protection Zones now uniformly enforced (`ToolContext::check_path_allowed` for `fs_read`/`fs_list`/`fs_write`/`shell_exec`). Size caps in A8 are still TODO.
 - **Cost events on cancel/timeout/error** — `finalize_cancelled` writes a `cost_events` row so budget enforcement stays accurate when turns fail or are interrupted.
+- **Z7** — `ExecutorRegistry::terminate` now removes the agent cancellation token, and registry shutdown clears all tokens. Restarted executors receive a fresh token instead of reusing a cancelled one.
 
 **Remaining Work**: This document. It is organized into **5 waves** (recommended
 sequencing) and details each item with its solution, files to touch, and
@@ -359,13 +360,12 @@ Prefix subscribers are stored but never fanned out to the underlying
 exist. **Fix:** enumerate candidate names and call `ensureNativeListener`,
 or accept an explicit `names: string[]`.
 
-### Z7. `ExecutorRegistry::terminate` leaks the cancelled token 🟠
+### Z7. `ExecutorRegistry::terminate` leaks the cancelled token ✅ Fixed 2026-05-27
 
-Removes from `inner` but leaves the token in `tokens`; the next `ensure`
-returns a token that's already in `cancelled` state, so the first turn of the
-recreated agent aborts instantly. **Fix:** also remove from `tokens` on
-terminate, or reset if cancelled in `ensure`.
-**Files:** `crates/hive-runtime/src/registry.rs:166-178, 81-93`.
+`terminate` now removes the agent from both `inner` and `tokens`; `shutdown`
+also clears all tokens. Regression coverage:
+`cargo test -p hive-runtime registry::tests`.
+**Files:** `crates/hive-runtime/src/registry.rs`.
 
 ### Z8. `pause_agent` / `resume_agent` / `terminate_agent` / `cancel_agent_subtree` bypass `audit::append` 🟠
 

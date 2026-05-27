@@ -51,7 +51,7 @@ Legend
 | Node graph view (ReactFlow) | done | local | 1 | |
 | Org chart view | removed | — | 1 | Toggle and component deleted |
 | Agent detail drawer | done | local | 1 | |
-| Pause / Resume agent | done | server | 1 | DB row + in-process `ExecutorRegistry::{pause,resume,terminate}` are now flipped together (`PATCH /v1/agents/:id/status`, `POST /v1/projects/:id/session/toggle`). Executor parks the inbox via `Notify` on `Paused` |
+| Pause / Resume agent | done | server | 1 | DB row + in-process `ExecutorRegistry::{pause,resume,terminate}` are now flipped together (`PATCH /v1/agents/:id/status`, `POST /v1/projects/:id/session/toggle`). Executor parks the inbox via `Notify` on `Paused`; terminated agents drop their cancellation token so a later `ensure` restarts clean |
 | Delete agent | done | server | 1 | Renamed from "Terminate", added confirm dialog |
 | Spawn agent (modal) | done | local | 4 | Uses the shared `AgentFormFields` component (name, role + presets, model, system prompt, tool allowlist grouped by category) — identical to the Forge builder and the HiveGraph config dialog. POSTs `/v1/projects/:id/agents` |
 | Wires (parent→child authority + comm) | done | local | 4 | `agent_wires` table + `GET/POST /v1/projects/:pid/wires`, `DELETE /v1/wires/:id`. `spawn_agent` records a wire automatically; agent visibility (`message_agent` / `list_visible_agents` / `request_relay`) walks this graph |
