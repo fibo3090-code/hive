@@ -452,10 +452,7 @@ mod tests {
             normalize_harmony_name("assistant<|channel|>hive_mind_write"),
             "hive_mind_write",
         );
-        assert_eq!(
-            normalize_harmony_name("assistant<|channel|>todo"),
-            "todo",
-        );
+        assert_eq!(normalize_harmony_name("assistant<|channel|>todo"), "todo",);
         assert_eq!(
             normalize_harmony_name("assistant<|channel|>functions"),
             "functions",

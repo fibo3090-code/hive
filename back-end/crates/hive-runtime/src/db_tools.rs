@@ -613,16 +613,17 @@ impl Tool for RecordEval {
             ("testQuality", score_arg(&args, "testQuality")),
             ("docQuality", score_arg(&args, "docQuality")),
         ];
-        let present: Vec<(&str, i32)> =
-            metrics.iter().filter_map(|(k, v)| v.map(|s| (*k, s))).collect();
+        let present: Vec<(&str, i32)> = metrics
+            .iter()
+            .filter_map(|(k, v)| v.map(|s| (*k, s)))
+            .collect();
         if present.is_empty() {
             return Err(ToolError::InvalidArgs(
                 "supply at least one metric (correctness / style / efficiency / testQuality / docQuality)".into(),
             ));
         }
-        let overall =
-            (present.iter().map(|(_, s)| *s).sum::<i32>() as f64 / present.len() as f64).round()
-                as i32;
+        let overall = (present.iter().map(|(_, s)| *s).sum::<i32>() as f64 / present.len() as f64)
+            .round() as i32;
         let scores_json: serde_json::Map<String, Value> = present
             .iter()
             .map(|(k, s)| ((*k).to_owned(), json!(s)))

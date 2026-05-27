@@ -53,10 +53,7 @@ pub async fn list_for_project(
 }
 
 /// All eval runs for one agent, newest first.
-pub async fn list_for_agent(
-    db: &DatabaseConnection,
-    agent_id: &str,
-) -> Result<Vec<Model>, DbErr> {
+pub async fn list_for_agent(db: &DatabaseConnection, agent_id: &str) -> Result<Vec<Model>, DbErr> {
     Entity::find()
         .filter(Column::AgentId.eq(agent_id))
         .order_by_desc(Column::CreatedAt)

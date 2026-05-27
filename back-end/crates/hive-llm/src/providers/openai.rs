@@ -392,7 +392,10 @@ fn parse_event(msg: &crate::sse::SseMessage, state: &Mutex<StreamState>) -> Vec<
     // Tool-call deltas. First frame for a given index carries id + name;
     // subsequent frames carry partial `function.arguments`. The runtime
     // accumulates the chunks under the tool-call id and parses at end.
-    if let Some(tool_calls) = delta.and_then(|d| d.get("tool_calls")).and_then(Value::as_array) {
+    if let Some(tool_calls) = delta
+        .and_then(|d| d.get("tool_calls"))
+        .and_then(Value::as_array)
+    {
         let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
         for tc in tool_calls {
             let Some(index) = tc.get("index").and_then(Value::as_u64) else {
@@ -406,12 +409,8 @@ fn parse_event(msg: &crate::sse::SseMessage, state: &Mutex<StreamState>) -> Vec<
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_owned();
-                s.open_tool_calls.insert(
-                    index,
-                    OpenAiToolCallState {
-                        id: id.to_owned(),
-                    },
-                );
+                s.open_tool_calls
+                    .insert(index, OpenAiToolCallState { id: id.to_owned() });
                 events.push(StreamEvent::ToolCallStart {
                     id: id.to_owned(),
                     name,
@@ -665,13 +664,11 @@ mod tests {
 
         // Frame 4: finish_reason=tool_calls — should emit ToolCallEnd
         // for every open call AND a Complete.
-        let f4 = frame(
-            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
-        );
+        let f4 = frame(r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#);
         let events = parse_event(&f4, &state);
-        let has_end = events.iter().any(
-            |e| matches!(e, StreamEvent::ToolCallEnd { id } if id == "call_abc"),
-        );
+        let has_end = events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolCallEnd { id } if id == "call_abc"));
         let has_complete = events
             .iter()
             .any(|e| matches!(e, StreamEvent::Complete { .. }));

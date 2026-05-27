@@ -39,11 +39,7 @@ impl MigrationTrait for Migration {
                     // Per-metric 0-100 scores stored as a JSON object so a
                     // future metric doesn't need a migration. Keys:
                     // correctness, style, efficiency, testQuality, docQuality.
-                    .col(
-                        ColumnDef::new(AgentEvalRuns::ScoresJson)
-                            .json()
-                            .not_null(),
-                    )
+                    .col(ColumnDef::new(AgentEvalRuns::ScoresJson).json().not_null())
                     // The aggregate 0-100 the leaderboard sorts on — the
                     // mean of the present metric scores, stored so the
                     // sort doesn't recompute it on every read.

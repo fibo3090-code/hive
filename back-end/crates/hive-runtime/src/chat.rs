@@ -106,11 +106,9 @@ Tool catalog:\n{}",
 fn parse_tool_invocations(content: &str) -> Option<Vec<ToolInvocation>> {
     fn extract_block<'a>(content: &'a str, start: &str, end: &str) -> Option<&'a str> {
         let trimmed = content.trim();
-        if trimmed.starts_with(start) && trimmed.ends_with(end) {
-            Some(trimmed[start.len()..trimmed.len() - end.len()].trim())
-        } else {
-            None
-        }
+        let start_idx = trimmed.find(start)? + start.len();
+        let end_idx = trimmed[start_idx..].find(end)? + start_idx;
+        Some(trimmed[start_idx..end_idx].trim())
     }
 
     let raw = extract_block(content, "<tool_call>", "</tool_call>")
@@ -653,11 +651,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         if r.names().is_empty() {
             None
         } else {
-            Some(format!(
-                "Use tools when they materially improve accuracy or execution. \
-                 Call tools using the provider's native tool interface.\n\n{}",
-                tool_protocol_prompt(r, provider_kind)
-            ))
+            Some(tool_protocol_prompt(r, provider_kind))
         }
     });
     // Skill index for this agent (slug + 1-line description). The full
@@ -683,9 +677,14 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         messages.push(ChatMessage::system(s));
     }
     for row in history {
+        let is_compaction_summary = row.content.starts_with("[Conversation summary");
         let role = match row.role.as_str() {
             "user" => ChatRole::User,
             "assistant" => ChatRole::Assistant,
+            // Older `/compact` runs stored summaries as `system`. Treat
+            // them as assistant continuity context so summarized user/tool
+            // content cannot become privileged instructions on later turns.
+            "system" if is_compaction_summary => ChatRole::Assistant,
             "system" => ChatRole::System,
             "tool" => ChatRole::Tool,
             _ => continue,
@@ -887,8 +886,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                 .await;
                 // Persist cost even on LLM error — tokens may have been
                 // consumed before the stream broke. Zero Financial Surprise.
-                let err_memo =
-                    format!("provider={provider_id} model={model} status=error");
+                let err_memo = format!("provider={provider_id} model={model} status=error");
                 let _ = cost_events::insert(
                     db.conn(),
                     cost_events::NewCostEvent {
@@ -1149,6 +1147,22 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                 invocation.tool.clone(),
                 result_text,
             ));
+
+            if invocation.tool == "task_complete"
+                && result
+                    .get("complete")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            {
+                final_answer_was_streamed = false;
+                final_answer = result
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Task complete.")
+                    .to_owned();
+                halted_for_repeat = true;
+                break;
+            }
         }
 
         if halted_for_repeat {
@@ -1373,6 +1387,15 @@ mod tests {
         assert_eq!(invocations[1].tool, "b");
         // Distinct IDs even for adjacent calls.
         assert_ne!(invocations[0].id, invocations[1].id);
+    }
+
+    #[test]
+    fn parse_tool_invocations_tolerates_surrounding_prose() {
+        let raw = "I'll check that now.\n<tool_call>{\"tool\":\"fs_read\",\"arguments\":{\"path\":\"README.md\"}}</tool_call>";
+        let invocations = parse_tool_invocations(raw).expect("parsed");
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].tool, "fs_read");
+        assert_eq!(invocations[0].arguments["path"], "README.md");
     }
 
     #[test]

@@ -228,12 +228,10 @@ impl Tool for WebFetchTool {
         let (cleaned, used_mode) = if content_type.contains("text/html") {
             match args.mode.as_deref().unwrap_or("readable") {
                 "raw" => (strip_html(&raw), "raw"),
-                "readable" => {
-                    match extract_readable(&raw) {
-                        Some(text) if !text.trim().is_empty() => (text, "readable"),
-                        _ => (strip_html(&raw), "raw_fallback"),
-                    }
-                }
+                "readable" => match extract_readable(&raw) {
+                    Some(text) if !text.trim().is_empty() => (text, "readable"),
+                    _ => (strip_html(&raw), "raw_fallback"),
+                },
                 invalid => {
                     return Err(ToolError::InvalidArgs(format!(
                         "invalid mode: {invalid}; expected \"raw\" or \"readable\""
@@ -305,8 +303,21 @@ const DROP_TAGS: &[&str] = &[
 /// Block-level tags that should produce a line break in the flattened
 /// output so the LLM sees paragraph structure.
 const BLOCK_TAGS: &[&str] = &[
-    "p", "div", "section", "article", "li", "tr", "pre", "blockquote", "h1", "h2", "h3", "h4",
-    "h5", "h6", "br",
+    "p",
+    "div",
+    "section",
+    "article",
+    "li",
+    "tr",
+    "pre",
+    "blockquote",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "br",
 ];
 
 fn collect_text(node: scraper::ElementRef<'_>) -> String {

@@ -220,14 +220,15 @@ async fn dispatch_for_task(
 /// catalog from the four-layer composer.
 fn build_autonomous_prompt(task: &hive_db::entities::task::Model) -> String {
     let mut prompt = format!(
-        "Make progress on your assigned task: \"{}\".",
+        "Make progress on your assigned task.\n\nTask ID: {}\nTitle: {}",
+        task.id,
         task.title.trim()
     );
     if let Some(phase) = task.phase.as_deref() {
-        prompt.push_str(&format!(" Phase: {}.", phase.trim()));
+        prompt.push_str(&format!("\nPhase: {}", phase.trim()));
     }
     prompt.push_str(
-        "\n\nIf the task is complete, summarise the outcome. If you are blocked, explain what you need. Otherwise, do the next concrete unit of work toward completion.",
+        "\n\nIf the task is complete, use the status tool with this task id to mark it completed and include a short summary. If blocked, mark it blocked with the blocker. Otherwise, do the next concrete unit of work toward completion.",
     );
     prompt
 }
@@ -262,8 +263,9 @@ mod tests {
         let task = fake_task("Implement OAuth callback", Some("Sprint 3"));
         let prompt = build_autonomous_prompt(&task);
         assert!(prompt.contains("Implement OAuth callback"));
+        assert!(prompt.contains("task-fake"));
         assert!(prompt.contains("Sprint 3"));
-        assert!(prompt.contains("summarise"));
+        assert!(prompt.contains("mark it completed"));
     }
 
     #[test]

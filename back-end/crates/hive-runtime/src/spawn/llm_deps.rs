@@ -55,8 +55,13 @@ Respond with ONLY a JSON object matching this shape: \
 {\"capabilities\": [\"capability-name\", ...]}";
 
         let user = format!(
-            "Role: {}\nCapabilities requested by parent: {:?}\nContext: {:?}",
-            ctx.requested_role, ctx.requested_capabilities, ctx.requested_role
+            "Role: {}\nCapabilities requested by parent: {:?}\nMCP strategy: {}\nProject ID: {}\nParent agent ID: {:?}\nSpawn request ID: {}",
+            ctx.requested_role,
+            ctx.requested_capabilities,
+            ctx.mcp_strategy,
+            ctx.project_id,
+            ctx.parent_agent_id,
+            ctx.spawn_request_id
         );
 
         let res: CapabilityResponse = self.chat_json(system, &user).await?;
@@ -155,17 +160,22 @@ Respond with ONLY a JSON object: \
     async fn compose_prompt(
         &self,
         ctx: &PipelineContext,
-        _bound_mcp_ids: &[String],
+        bound_mcp_ids: &[String],
     ) -> Result<String, PipelineError> {
-        // In a real impl, we might want to list the MCP names/tools here.
-        // For v1, we produce a tailored system prompt for the role.
         let system = "You are a specialist prompt architect. \
 Compose a high-quality system prompt for a new AI agent based on its role and context. \
-The prompt should define its identity, mission, and operating loop.";
+The prompt should define its identity, mission, operating loop, and the external capabilities it has actually been bound to. \
+Do not mention tools or capabilities that are not listed in the context.";
 
         let user = format!(
-            "Requested Role: {}\nContext: {:?}",
-            ctx.requested_role, ctx.requested_role
+            "Requested role: {}\nRequested capabilities: {:?}\nBound MCP server ids: {:?}\nMCP strategy: {}\nProject ID: {}\nParent agent ID: {:?}\nSpawn request ID: {}",
+            ctx.requested_role,
+            ctx.requested_capabilities,
+            bound_mcp_ids,
+            ctx.mcp_strategy,
+            ctx.project_id,
+            ctx.parent_agent_id,
+            ctx.spawn_request_id
         );
 
         let req = ChatRequest::new(
@@ -225,6 +235,23 @@ The prompt should define its identity, mission, and operating loop.";
     }
 }
 
+fn json_payload(text: &str) -> &str {
+    let trimmed = text.trim();
+    if let Some(inner) = trimmed
+        .strip_prefix("```json")
+        .and_then(|s| s.strip_suffix("```"))
+    {
+        return inner.trim();
+    }
+    if let Some(inner) = trimmed
+        .strip_prefix("```")
+        .and_then(|s| s.strip_suffix("```"))
+    {
+        return inner.trim();
+    }
+    trimmed
+}
+
 impl LlmPipelineDeps {
     async fn chat_json<T: for<'de> Deserialize<'de>>(
         &self,
@@ -245,7 +272,7 @@ impl LlmPipelineDeps {
             .await
             .map_err(|e| PipelineError::Dep(e.to_string()))?;
 
-        match serde_json::from_str::<T>(&res.text) {
+        match serde_json::from_str::<T>(json_payload(&res.text)) {
             Ok(val) => Ok(val),
             Err(err) => {
                 // Retry once
@@ -267,7 +294,7 @@ impl LlmPipelineDeps {
                     .await
                     .map_err(|e| PipelineError::Dep(e.to_string()))?;
 
-                serde_json::from_str::<T>(&retry_res.text).map_err(|e| {
+                serde_json::from_str::<T>(json_payload(&retry_res.text)).map_err(|e| {
                     PipelineError::Dep(format!("JSON parse failed after retry: {}", e))
                 })
             }

@@ -5,8 +5,8 @@
 //! two layers (immutable agent prompt + tool catalog) are byte-identical
 //! across turns when nothing about the agent changes, which makes
 //! provider prompt caching effective. The third layer is project memory
-//! walked from `~/.config/hive/HIVE.md` outward, pattern-matching what
-//! Codex does with `AGENTS.md` and Claude Code does with `CLAUDE.md`.
+//! loaded from the global `HIVE.md` plus the effective project-root
+//! `HIVE.md`, matching the current local-first workspace model.
 //! The fourth layer is the skill index for the agent — slug + short
 //! description for each bound skill, so the agent knows what playbooks
 //! it can pull on demand via `read_skill`. It sits in front of the

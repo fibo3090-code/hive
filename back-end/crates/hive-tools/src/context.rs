@@ -167,14 +167,22 @@ mod path_protection_tests {
     #[test]
     fn blocks_git_directory() {
         assert!(is_system_protected(&normalize_protected_path(".git")));
-        assert!(is_system_protected(&normalize_protected_path(".git/config")));
-        assert!(is_system_protected(&normalize_protected_path("./.git/HEAD")));
+        assert!(is_system_protected(&normalize_protected_path(
+            ".git/config"
+        )));
+        assert!(is_system_protected(&normalize_protected_path(
+            "./.git/HEAD"
+        )));
     }
 
     #[test]
     fn allows_unrelated_paths() {
-        assert!(!is_system_protected(&normalize_protected_path("src/main.rs")));
+        assert!(!is_system_protected(&normalize_protected_path(
+            "src/main.rs"
+        )));
         assert!(!is_system_protected(&normalize_protected_path("README.md")));
-        assert!(!is_system_protected(&normalize_protected_path("env-vars.json")));
+        assert!(!is_system_protected(&normalize_protected_path(
+            "env-vars.json"
+        )));
     }
 }

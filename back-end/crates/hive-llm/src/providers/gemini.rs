@@ -342,8 +342,7 @@ fn parse_event(msg: &crate::sse::SseMessage) -> Vec<StreamEvent> {
                     continue;
                 };
                 let args = fc.get("args").cloned().unwrap_or(Value::Null);
-                let args_json =
-                    serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_owned());
+                let args_json = serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_owned());
                 // Before this fix the streaming parser dropped `functionCall`
                 // parts entirely; the runtime saw zero tool_calls + zero text
                 // and rendered "model returned an empty response."
@@ -428,7 +427,9 @@ mod tests {
         };
         let events = parse_event(&frame);
         // Expected order: Delta(text), Start, Delta(args), End.
-        let has_text_delta = events.iter().any(|e| matches!(e, StreamEvent::Delta(c) if c.delta == "Searching…"));
+        let has_text_delta = events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Delta(c) if c.delta == "Searching…"));
         let has_tool_start = events
             .iter()
             .any(|e| matches!(e, StreamEvent::ToolCallStart { name, .. } if name == "web_search"));

@@ -88,11 +88,11 @@ impl Tool for TaskCompleteTool {
         ToolManifest {
             name: "task_complete".into(),
             description: "Signal that you have finished the user's request. Provide a \
-                short `summary` of what you accomplished. The chat turn ends after this \
-                call — do NOT emit further tool calls in the same round. Use this \
-                instead of generating a final assistant message when the task involved \
-                tool work, so the runtime gets an unambiguous termination signal and \
-                the UI can render a clean completion state. \
+                short `summary` of what you accomplished. Do NOT emit further tool \
+                calls after this unless the runtime explicitly asks for another step. \
+                Use this instead of generating a final assistant message when the task \
+                involved tool work, so the runtime gets an unambiguous completion \
+                signal and the UI can render a clean completion state. \
                 Do NOT use this for partial progress — call it only when the user's \
                 request is fully addressed (or you have hit a blocker you can't resolve \
                 yourself, in which case put the blocker in `issuesFound`)."
@@ -156,7 +156,11 @@ mod tests {
         reg.insert(Arc::new(ThinkTool));
         let ctx = ToolContext::new("p1", fresh_sandbox());
         let result = reg
-            .invoke("think", json!({ "thought": "plan: read file, then edit" }), &ctx)
+            .invoke(
+                "think",
+                json!({ "thought": "plan: read file, then edit" }),
+                &ctx,
+            )
             .await
             .unwrap();
         assert_eq!(result["ok"], true);
@@ -189,7 +193,10 @@ mod tests {
         let mut reg = ToolRegistry::new();
         reg.insert(Arc::new(TaskCompleteTool));
         let ctx = ToolContext::new("p1", fresh_sandbox());
-        let err = reg.invoke("task_complete", json!({}), &ctx).await.unwrap_err();
+        let err = reg
+            .invoke("task_complete", json!({}), &ctx)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 }

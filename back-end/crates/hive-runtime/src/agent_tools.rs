@@ -776,10 +776,7 @@ pub struct RequestCapability {
 }
 
 impl RequestCapability {
-    pub fn new(
-        db: Db,
-        launcher: Option<tokio::sync::mpsc::UnboundedSender<String>>,
-    ) -> Self {
+    pub fn new(db: Db, launcher: Option<tokio::sync::mpsc::UnboundedSender<String>>) -> Self {
         Self { db, launcher }
     }
 }
