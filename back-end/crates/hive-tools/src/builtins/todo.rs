@@ -64,12 +64,19 @@ impl Tool for TodoTool {
         ToolManifest {
             name: "todo".into(),
             description:
-                "Manage a project-local todo list. Use this to keep track of multi-step execution. \
+                "Manage a private project-local todo list stored in `.hive/todo.json`. Use this \
+                to externalise your own working memory across a multi-step task — list what you \
+                plan to do, complete items as you finish, and revisit `list` between tool calls \
+                so you don't lose track of remaining work. \
                 Actions: \
-                - 'add': requires 'title', adds a new todo item. \
-                - 'complete': requires 'id', marks an item as done. \
-                - 'remove': requires 'id', removes an item. \
-                - 'list': lists current items."
+                - 'add' (requires `title`) — append an item. \
+                - 'list' (no args) — show the current state. \
+                - 'complete' (requires `id`) — mark an item done. \
+                - 'remove' (requires `id`) — delete an item. \
+                Do NOT use this for tasks the user should see — use `add_task` to file an \
+                operator-visible task in the project's tasks table instead. Do NOT use this as \
+                a substitute for `task_complete` — call `task_complete` when the whole user \
+                request is finished."
                     .into(),
             input_schema: json!({
                 "type": "object",

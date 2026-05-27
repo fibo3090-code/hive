@@ -20,7 +20,7 @@ Legend
 | Sovereignty tier: Cloud | planned | server | — | Disabled card |
 | Sovereignty tier: Hybrid | removed | — | 1 | Removed entirely |
 | Estimated cost | removed | — | 1 | Fake heuristic removed from onboarding and the agent-spawn modal; `lib/cost-estimate.ts` deleted. Real cost projection still planned |
-| Connect LLMs | done | cloud-llm | 2 | All four provider clients (`anthropic`/`openai`/`gemini`/`ollama`) implement live `list_models`; the onboarding step shows them per provider, but launch can continue without a connected provider by using the deterministic planner fallback |
+| Connect LLMs | done | cloud-llm | 2 | Five provider clients (`anthropic`/`openai`/`gemini`/`ollama`/`deepseek`) — all implement live `list_models`. DeepSeek reuses the OpenAI wire format. `deepseek-reasoner` (R1) is gated `supports_tools=false`. Launch can continue without a connected provider via the deterministic planner fallback |
 | Describe step (interview) | done | cloud-llm | 3 | B1: coordinator chat (`POST /v1/coordinator/converse`) via `StepCoordinatorChat`. Project is now created on step-3 entry (not at Launch) and threaded through via `OnboardingDraft.{projectId, coordinatorThreadId}`. Brief auto-syncs from chat; "Save as brief" button for explicit commit |
 | Describe step (import spec) | partial | local | 3 | Spec text becomes the launch brief; uploaded checklist/numbered TODOs are preserved by the deterministic planner instead of being rewritten into generic tasks |
 | Team mode toggle | partial | cloud-llm | 3 | Persisted; runtime side reads on `/coordinator/converse` (note: current teamMode is written at first request — toggling during a pending response loses the change) |
@@ -103,9 +103,12 @@ Legend
 
 | Tool | Status | Dep | Phase | Notes |
 |---|---|---|---|---|
-| `fs_read` / `fs_write` | done | local | 0 | |
+| `fs_read` / `fs_write` / `fs_list` | done | local | 0 | Descriptions rewritten with "do NOT" exclusion boundaries (research-backed 30-50% mis-selection cut) |
+| `str_replace` | done | local | 5 | Surgical file edit (oldString → newString). The single biggest accuracy + token-cost win for coding agents — no more full-file rewrites for one-line changes. `replaceAll` defaults to false; ambiguous matches return a structured error asking the LLM to add context. Honours File Protection Zones |
 | `shell_exec` | done | local | 0 | |
-| `web_search` | done | server | 0 | |
+| `think` | done | local | 5 | Silent scratchpad — writes to tracing, returns `{ok, noted}`. Gives smaller models (DeepSeek V3, Ollama-hosted, etc.) a working-memory step before committing to a tool call |
+| `task_complete` | done | local | 5 | Clean turn-termination signal. Required `summary`, optional `workDone` + `issuesFound`. Stops the LLM from looping or over-elaborating once the user's request is satisfied |
+| `web_search` | done | local | 0 | Three backends now — Tavily (BYOK, scored), SearXNG (self-hosted), and **DuckDuckGo HTML scraper as a zero-config fallback** (no key, no Docker). Provider selection ladder lives in `hive-api::build_tools_for_chat` |
 | `todo` | done | local | 0 | Single tool with `action` ∈ {add, complete, remove, list} over `.hive/todo.json`. Not the richer `todo_create`/`todo_update`/… surface sketched in [`architecture.md`](architecture.md#6-future-design-richer-workspace-todo-tools) (still a design sketch) |
 | `hive_mind_write` / `_read` / `_list` / `_delete` | done | local | 5 | `hive-runtime::db_tools`, backed by `hive_mind_notes` (topic = `category`). Enabled by default for every agent |
 | `spawn_agent` / `message_agent` | done | local | 4 | `hive-runtime::agent_tools`. Coordinator-scoped (in `coordinator_tools`, not the global default) |

@@ -116,6 +116,24 @@ pub fn price_for(kind: ProviderKind, model: &str) -> Price {
             input_per_mtok: 0.0,
             output_per_mtok: 0.0,
         },
+        // DeepSeek public rates as of mid-2026. `deepseek-reasoner` (R1)
+        // bills the same as chat per the public sheet; cache-miss prices
+        // shown here, cache-hit is ~10× cheaper but our token counter has
+        // no insight into cache hits today.
+        ProviderKind::DeepSeek => {
+            if m.contains("reasoner") {
+                Price {
+                    input_per_mtok: 0.55,
+                    output_per_mtok: 2.19,
+                }
+            } else {
+                // deepseek-chat / deepseek-coder
+                Price {
+                    input_per_mtok: 0.27,
+                    output_per_mtok: 1.10,
+                }
+            }
+        }
     }
 }
 
@@ -154,6 +172,10 @@ pub const KNOWN_MODELS: &[(ProviderKind, &str)] = &[
     (ProviderKind::Gemini, "gemini-2.5-pro"),
     (ProviderKind::Gemini, "gemini-2.5-flash"),
     (ProviderKind::Gemini, "gemini-2.5-flash-lite"),
+    // DeepSeek
+    (ProviderKind::DeepSeek, "deepseek-chat"),
+    (ProviderKind::DeepSeek, "deepseek-reasoner"),
+    (ProviderKind::DeepSeek, "deepseek-coder"),
 ];
 
 /// Whether `(provider, model)` resolves to a *specific* pricing arm rather
@@ -185,6 +207,7 @@ pub fn pricing_is_known(kind: ProviderKind, model: &str) -> bool {
                 || m.contains("ultra")
         }
         ProviderKind::Ollama => true, // Ollama is always free
+        ProviderKind::DeepSeek => m.contains("deepseek"),
     }
 }
 

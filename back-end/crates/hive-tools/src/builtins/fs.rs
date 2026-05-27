@@ -30,9 +30,15 @@ impl Tool for FsReadTool {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "fs_read".into(),
-            description: "Read a text file from the project workspace. \
-                Returns the file contents as UTF-8; invalid UTF-8 is \
-                replaced with the Unicode replacement character."
+            description: "Read the full contents of a text file from the project workspace. \
+                Returns the bytes decoded as UTF-8 (invalid sequences are replaced with the \
+                Unicode replacement character) plus a `truncated` flag when the file exceeds \
+                `maxBytes`. Use this any time you need to know what a file currently contains — \
+                before editing it, when answering questions about the codebase, or to verify \
+                another tool's output. \
+                Do NOT use this for binary files (images, archives) — the contents will be \
+                mangled. Do NOT use this to discover files — use `fs_list` to enumerate first \
+                and only then `fs_read` what you actually need."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -93,8 +99,13 @@ impl Tool for FsWriteTool {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "fs_write".into(),
-            description: "Write (or overwrite) a text file in the project \
-                workspace. Creates parent directories as needed."
+            description: "Create a new file or fully overwrite an existing one in the project \
+                workspace. Parent directories are created automatically. \
+                Use this to author a brand-new file from scratch. \
+                Do NOT use this to edit an existing file — call `str_replace` instead, which is \
+                far cheaper (no full-file regen) and far less error-prone. \
+                Do NOT use this to append to a file — read first with `fs_read`, modify in your \
+                head, then overwrite with the complete new contents (or use `str_replace`)."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -171,10 +182,14 @@ impl Tool for FsListTool {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "fs_list".into(),
-            description: "List the entries of a directory in the project \
-                workspace. Returns entries as [{path, isDir, size}]. \
-                Caps at maxEntries (default 1000) and surfaces a \
-                `truncated: true` flag when more entries existed."
+            description: "List the immediate entries of a directory in the project workspace \
+                (non-recursive). Each entry is `{path, isDir, size}`. Use this to discover what \
+                files exist before reading or editing — operating on a path you haven't verified \
+                exists is a common source of failed turns. \
+                Do NOT use this when you already know the exact path you need — just `fs_read` \
+                or `str_replace` directly. The output caps at `maxEntries` (default 1000) and \
+                surfaces a `truncated: true` flag if more existed; narrow with a deeper path \
+                when truncated."
                 .into(),
             input_schema: json!({
                 "type": "object",

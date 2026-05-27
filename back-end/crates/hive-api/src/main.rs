@@ -42,7 +42,9 @@ use hive_runtime::{
     EventBus, RuntimeEvent, TurnDriver, TurnDriverError, TurnRequest,
 };
 use hive_sandbox::LocalFsSandbox;
-use hive_search::providers::{searxng::SearxNgProvider, tavily::TavilyProvider};
+use hive_search::providers::{
+    duckduckgo::DuckDuckGoProvider, searxng::SearxNgProvider, tavily::TavilyProvider,
+};
 use hive_tools::{
     default_names as default_tool_names, register_defaults, register_web_search, ToolContext,
     ToolRegistry,
@@ -1526,6 +1528,11 @@ async fn build_tooling(
         .build()
         .map_err(|e| AppError::Internal(format!("build search client: {e}")))?;
 
+    // Provider selection ladder: explicit Tavily (with key) → SearxNG when
+    // the operator configured it → DuckDuckGo HTML scraper as a last-resort
+    // fallback so `web_search` is always available. Without the DDG
+    // fallback, every install without Tavily-with-key or a running SearxNG
+    // returned errors from the tool and the LLM learned to stop using it.
     let search_provider: Arc<dyn hive_search::SearchProvider> = if provider == "tavily" {
         if let Some(ciphertext) = read_tavily_ciphertext(state).await? {
             let key = String::from_utf8(
@@ -1537,10 +1544,15 @@ async fn build_tooling(
             .map_err(|e| AppError::Internal(e.to_string()))?;
             Arc::new(TavilyProvider::new(http.clone(), key))
         } else {
-            Arc::new(SearxNgProvider::new(http.clone(), searxng_url))
+            Arc::new(DuckDuckGoProvider::new(http.clone()))
         }
-    } else {
+    } else if provider == "searxng" {
         Arc::new(SearxNgProvider::new(http.clone(), searxng_url))
+    } else if provider == "duckduckgo" {
+        Arc::new(DuckDuckGoProvider::new(http.clone()))
+    } else {
+        // Default: DuckDuckGo. No key, no docker, always available.
+        Arc::new(DuckDuckGoProvider::new(http.clone()))
     };
     register_web_search(&mut registry, search_provider);
     hive_runtime::register_agent_tools(
@@ -2812,8 +2824,9 @@ async fn list_tool_manifests(State(state): State<AppState>) -> Result<Json<Value
 fn tool_category(name: &str) -> &'static str {
     match name {
         "web_search" | "web_fetch" => "research",
-        "fs_read" | "fs_write" | "fs_list" => "filesystem",
+        "fs_read" | "fs_write" | "fs_list" | "str_replace" => "filesystem",
         "shell_exec" => "execution",
+        "think" | "task_complete" => "meta",
         "spawn_agent"
         | "message_agent"
         | "list_visible_agents"
@@ -7646,6 +7659,8 @@ async fn build_pipeline_deps(
         .build()
         .map_err(|e| AppError::Internal(format!("build search client: {e}")))?;
 
+    // Mirror the ladder in `build_tools_for_chat`: Tavily-with-key →
+    // SearxNG (if explicitly chosen) → DuckDuckGo zero-config fallback.
     let search_provider: Option<Arc<dyn hive_search::SearchProvider>> = if provider_kind == "tavily"
     {
         if let Some(ciphertext) = read_tavily_ciphertext(state).await? {
@@ -7658,10 +7673,12 @@ async fn build_pipeline_deps(
             .map_err(|e| AppError::Internal(e.to_string()))?;
             Some(Arc::new(TavilyProvider::new(http, key)))
         } else {
-            None
+            Some(Arc::new(DuckDuckGoProvider::new(http)))
         }
-    } else {
+    } else if provider_kind == "searxng" {
         Some(Arc::new(SearxNgProvider::new(http, searxng_url)))
+    } else {
+        Some(Arc::new(DuckDuckGoProvider::new(http)))
     };
 
     let blueprints: Vec<BlueprintEntry> = serde_json::from_value(

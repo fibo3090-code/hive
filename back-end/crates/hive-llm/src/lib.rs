@@ -44,6 +44,7 @@ pub enum ProviderKind {
     Openai,
     Gemini,
     Ollama,
+    DeepSeek,
 }
 
 impl ProviderKind {
@@ -53,6 +54,7 @@ impl ProviderKind {
             Self::Openai => "openai",
             Self::Gemini => "gemini",
             Self::Ollama => "ollama",
+            Self::DeepSeek => "deepseek",
         }
     }
 
@@ -62,6 +64,7 @@ impl ProviderKind {
             Self::Openai => "OpenAI",
             Self::Gemini => "Google Gemini",
             Self::Ollama => "Ollama (local)",
+            Self::DeepSeek => "DeepSeek",
         }
     }
 
@@ -75,6 +78,10 @@ impl ProviderKind {
             Self::Openai => "https://api.openai.com",
             Self::Gemini => "https://generativelanguage.googleapis.com",
             Self::Ollama => "http://localhost:11434",
+            // DeepSeek serves an OpenAI-compatible API at this base; the
+            // `DeepSeekProvider` reuses the OpenAI wire format almost
+            // verbatim, just pointed at this URL.
+            Self::DeepSeek => "https://api.deepseek.com",
         }
     }
 }
@@ -93,6 +100,7 @@ impl FromStr for ProviderKind {
             "openai" => Ok(Self::Openai),
             "gemini" | "google" => Ok(Self::Gemini),
             "ollama" | "local" => Ok(Self::Ollama),
+            "deepseek" => Ok(Self::DeepSeek),
             other => Err(LlmError::Unsupported(other.to_owned())),
         }
     }
@@ -281,6 +289,9 @@ pub fn client_for(config: ProviderConfig) -> Box<dyn LlmProvider> {
         ProviderKind::Openai => Box::new(providers::openai::OpenAiProvider::new(http, config)),
         ProviderKind::Gemini => Box::new(providers::gemini::GeminiProvider::new(http, config)),
         ProviderKind::Ollama => Box::new(providers::ollama::OllamaProvider::new(http, config)),
+        ProviderKind::DeepSeek => {
+            Box::new(providers::deepseek::DeepSeekProvider::new(http, config))
+        }
     }
 }
 
@@ -295,6 +306,7 @@ mod tests {
             ProviderKind::Openai,
             ProviderKind::Gemini,
             ProviderKind::Ollama,
+            ProviderKind::DeepSeek,
         ] {
             assert_eq!(ProviderKind::from_str(k.as_str()).unwrap(), k);
         }

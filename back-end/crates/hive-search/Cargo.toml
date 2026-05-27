@@ -7,8 +7,11 @@ edition.workspace = true
 anyhow = { workspace = true }
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# HTML parsing for the DuckDuckGo zero-config fallback provider.
+scraper = "0.20"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+urlencoding = "2.1"

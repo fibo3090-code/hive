@@ -7,6 +7,7 @@
 
 pub mod providers;
 
+pub use providers::duckduckgo::DuckDuckGoProvider;
 pub use providers::searxng::SearxNgProvider;
 pub use providers::tavily::TavilyProvider;
 
@@ -37,6 +38,10 @@ pub enum SearchError {
 pub enum SearchProviderKind {
     Tavily,
     Searxng,
+    /// Zero-config fallback — DuckDuckGo HTML scraper. No key, no Docker,
+    /// always available. Quality is lower than Tavily but the bar is "the
+    /// search tool exists" rather than "perfect results".
+    DuckDuckGo,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

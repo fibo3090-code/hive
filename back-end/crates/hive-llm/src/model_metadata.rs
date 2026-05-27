@@ -72,6 +72,8 @@ pub fn context_window_for(kind: ProviderKind, model: &str) -> u64 {
                 OLLAMA_DEFAULT_CTX
             }
         }
+        // DeepSeek V3 / R1 / Coder all ship 64k context on the public API.
+        ProviderKind::DeepSeek => 64_000,
     }
 }
 
@@ -101,6 +103,17 @@ pub fn supports_tools(kind: ProviderKind, model: &str) -> bool {
                 || m.starts_with("command-r")
                 || m.starts_with("firefunction")
         }
+        ProviderKind::DeepSeek => {
+            // `deepseek-chat` (V3) and `deepseek-coder` support tools.
+            // `deepseek-reasoner` (R1) currently does NOT — it produces a
+            // reasoning trace then a final answer; tool-call output mid-
+            // reasoning isn't part of the public contract.
+            if m.contains("reasoner") {
+                false
+            } else {
+                m.contains("deepseek")
+            }
+        }
     }
 }
 
@@ -121,6 +134,9 @@ pub fn supports_streaming_tools(kind: ProviderKind, model: &str) -> bool {
     }
     match kind {
         ProviderKind::Anthropic | ProviderKind::Openai | ProviderKind::Gemini => true,
+        // DeepSeek uses the OpenAI wire format end-to-end, so the same
+        // streaming tool-call extraction works.
+        ProviderKind::DeepSeek => true,
         // Conservatively false. The streaming `parse_line` now extracts
         // `tool_calls` from the `done` chunk, but small Ollama models still
         // misformat arguments often enough that the non-streaming round-trip

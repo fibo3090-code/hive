@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
 
-export type LlmProviderKind = 'anthropic' | 'openai' | 'gemini' | 'ollama';
+export type LlmProviderKind = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'deepseek';
 
 export interface LlmProvider {
   id: string;

@@ -43,9 +43,16 @@ impl Tool for ShellExecTool {
     fn manifest(&self) -> ToolManifest {
         ToolManifest {
             name: "shell_exec".into(),
-            description: "Run a command inside the project sandbox. \
-                Returns stdout, stderr, exit code, and a timed_out flag. \
-                Timeout defaults to 60 s; values above 300 s are clamped."
+            description: "Run a single shell command inside the project sandbox and return \
+                `{stdout, stderr, exitCode, timedOut}`. Use this for tasks the filesystem tools \
+                can't do — running tests (`cargo test`, `npm test`), building (`cargo build`), \
+                searching across many files (`rg`, `grep`), invoking the language toolchain, or \
+                anything that needs to actually execute code. \
+                Do NOT use this to read a single file (`fs_read`), list a directory (`fs_list`), \
+                or write/edit a file (`fs_write` / `str_replace`) — the dedicated tools are \
+                faster and safer. Do NOT use this for network exfiltration (`curl`, `wget`) — \
+                use `web_fetch` for HTTP and `web_search` for discovery; both honour the SSRF \
+                guard. Timeout defaults to 60 s and is clamped to 300 s."
                 .into(),
             input_schema: json!({
                 "type": "object",

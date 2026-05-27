@@ -23,6 +23,14 @@ prevention + visibility); documentation rewritten ([`architecture.md`](architect
 [`ROADMAP.md`](ROADMAP.md), component READMEs, [`FEATURE_STATUS.md`](FEATURE_STATUS.md)).
 
 **Recently delivered since this BACKLOG was last refreshed**:
+- **DeepSeek provider** — `ProviderKind::DeepSeek`, OpenAI-compatible wire format, public endpoint at `https://api.deepseek.com`. Pricing + 64K context window + tool-support gating (R1 = no tools) all wired.
+- **str_replace tool** — surgical file edit. Single biggest leverage point for coding-agent accuracy + token cost; no more full-file rewrites for one-line edits.
+- **think + task_complete tools** — silent scratchpad (helps smaller models) and clean turn-termination signal (stops elaboration loops).
+- **DuckDuckGo search fallback** — zero-config, no-key, no-Docker `web_search` backend. `web_search` is now universally available out of the box.
+- **`web_fetch` semantic extraction** — `extract_readable` picks `<main>`/`<article>` and strips `script`/`style`/`nav`/`header`/`footer`/`aside`. Adds `mode` parameter (`"readable"` default | `"raw"` legacy). Exposes `extractionMode` in the result.
+- **Tool descriptions rewritten** — every default builtin now ships 3-5 sentence descriptions with explicit "Do NOT use this for X" clauses (research-backed 30-50% mis-selection cut).
+- **Streaming tool-call parsing** for Anthropic / OpenAI / Gemini — fixed the "model returned an empty response" bug.
+- **Harmony tool-name normalisation** for gpt-oss models on Ollama.
 - **B1 (partial)** — coordinator-led onboarding shipped via `POST /v1/coordinator/converse` + `StepCoordinatorChat`. Project is created on step-3 entry and threaded through `OnboardingDraft.{projectId, coordinatorThreadId}`. Brief auto-syncs with explicit "Save as brief" button. Auto-spawning the CEO on `/launch` and the merged multi-doc capture remain.
 - **B4** — `request_capability` + `monitor_spawn_request` agent tools shipped; mpsc-decoupled launcher in `AppState`. Frontend review surface still TODO (see updated B4).
 - **D1** — `agent_eval_runs` table + `record_eval` tool + `GET /v1/eval-runs`; `LeaderboardTab` consumes via `useEvalRunsData`. The systematic eval-harness that calls `record_eval` is still open.

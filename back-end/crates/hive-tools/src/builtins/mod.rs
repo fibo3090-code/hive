@@ -10,7 +10,9 @@
 //! (`path`, `url`, `query`). **`shell_exec`** requires `command`. **`fs_list`**
 //! defaults `path` to `"."` so it is lenient.
 
+pub mod edit;
 pub mod fs;
+pub mod meta;
 pub mod shell;
 pub mod todo;
 pub mod web;
@@ -29,9 +31,12 @@ pub fn register_defaults(registry: &mut ToolRegistry) {
     registry.insert(Arc::new(fs::FsReadTool));
     registry.insert(Arc::new(fs::FsWriteTool));
     registry.insert(Arc::new(fs::FsListTool));
+    registry.insert(Arc::new(edit::StrReplaceTool));
     registry.insert(Arc::new(shell::ShellExecTool));
     registry.insert(Arc::new(todo::TodoTool));
     registry.insert(Arc::new(web::WebFetchTool::with_default_client()));
+    registry.insert(Arc::new(meta::ThinkTool));
+    registry.insert(Arc::new(meta::TaskCompleteTool));
 }
 
 /// Install `web_search` backed by the caller-supplied `SearchProvider`.
@@ -48,8 +53,11 @@ pub fn default_names() -> Vec<String> {
         "fs_read".into(),
         "fs_write".into(),
         "fs_list".into(),
+        "str_replace".into(),
         "shell_exec".into(),
         "todo".into(),
         "web_fetch".into(),
+        "think".into(),
+        "task_complete".into(),
     ]
 }
