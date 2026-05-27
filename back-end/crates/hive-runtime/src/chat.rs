@@ -1484,6 +1484,42 @@ mod tests {
     }
 
     #[test]
+    fn composed_hive_prompt_contains_actual_catalog_and_native_tool_defs() {
+        let mut registry = ToolRegistry::new();
+        hive_tools::builtins::register_defaults(&mut registry);
+
+        let catalog = tool_protocol_prompt(&registry, ProviderKind::Openai);
+        let composed = crate::prompt::PromptComposer::new()
+            .with_agent_prompt(Some(
+                "You are HIVE. Use only the tools exposed in this session.".to_owned(),
+            ))
+            .with_tool_catalog(Some(catalog))
+            .build()
+            .expect("composed prompt");
+
+        assert!(composed.contains("You are HIVE"));
+        assert!(composed.contains("Tool protocol:"));
+        assert!(composed.contains("Tool catalog:"));
+        assert!(composed.contains("\"name\": \"fs_read\""));
+        assert!(composed.contains("\"name\": \"fs_write\""));
+        assert!(composed.contains("\"required\""));
+        assert!(composed.contains("\"path\""));
+        assert!(composed.contains("\"content\""));
+        assert!(composed.contains("\"name\": \"task_complete\""));
+        assert!(!composed.contains("\"name\": \"web_search\""));
+
+        let native_defs = tool_definitions(&registry);
+        let native_names: Vec<&str> = native_defs.iter().map(|d| d.name.as_str()).collect();
+        for expected in ["fs_read", "fs_write", "fs_list", "shell_exec", "web_fetch"] {
+            assert!(
+                native_names.contains(&expected),
+                "native tool defs missing {expected}"
+            );
+        }
+        assert!(!native_names.contains(&"web_search"));
+    }
+
+    #[test]
     fn tool_validation_error_json_carries_schema_and_submitted_args() {
         // The repair-loop contract: when the schema validator rejects an
         // arg, the tool-result the LLM sees must include enough context
