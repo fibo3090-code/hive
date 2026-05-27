@@ -17,6 +17,75 @@ import { SprintPlanExplorer } from '@/components/planning/SprintPlanExplorer';
 
 type GenesisPlanPreview = PlanGraphPayload;
 
+function normalizeGenesisPlan(value: unknown, agentCount = 4): PlanGraphPayload | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  if (Array.isArray(raw.sprintNodes) && Array.isArray(raw.taskNodes)) {
+    const sprintNodes = raw.sprintNodes as PlanGraphPayload['sprintNodes'];
+    const sprintEdges = Array.isArray(raw.sprintEdges) ? raw.sprintEdges as PlanGraphPayload['sprintEdges'] : [];
+    return {
+      agents: Array.isArray(raw.agents) ? raw.agents as PlanGraphPayload['agents'] : [],
+      sprintNodes,
+      sprintEdges: sprintEdges.length ? sprintEdges : inferSequentialSprintEdges(sprintNodes),
+      taskNodes: raw.taskNodes as PlanGraphPayload['taskNodes'],
+      taskEdges: Array.isArray(raw.taskEdges) ? raw.taskEdges as PlanGraphPayload['taskEdges'] : [],
+    };
+  }
+
+  const phases = Array.isArray(raw.phases) ? raw.phases as Array<Record<string, unknown>> : [];
+  if (!phases.length) return null;
+  const roles = ['Coordinator', 'Frontend', 'Backend', 'QA', 'DevOps', 'Security', 'Docs', 'Designer'].slice(0, Math.max(1, agentCount));
+  const planAgents = roles.map((role) => ({ role, name: `${role} Agent` }));
+  const sprintNodes: PlanGraphPayload['sprintNodes'] = [];
+  const sprintEdges: PlanGraphPayload['sprintEdges'] = [];
+  const taskNodes: PlanGraphPayload['taskNodes'] = [];
+  const taskEdges: PlanGraphPayload['taskEdges'] = [];
+
+  phases.forEach((phase, sprintIndex) => {
+    const sprintId = `legacy-sprint-${sprintIndex + 1}`;
+    const title = String(phase.phase ?? phase.name ?? `Sprint ${sprintIndex + 1}`);
+    sprintNodes.push({ id: sprintId, title, status: sprintIndex === 0 ? 'active' : 'planned', level: sprintIndex, order: 0, points: 0 });
+    if (sprintIndex > 0) {
+      sprintEdges.push({ id: `legacy-sprint-edge-${sprintIndex}`, from: `legacy-sprint-${sprintIndex}`, to: sprintId, kind: 'dependency' });
+    }
+    const tasks = Array.isArray(phase.tasks) ? phase.tasks : [];
+    tasks.forEach((task, taskIndex) => {
+      const taskId = `legacy-task-${sprintIndex + 1}-${taskIndex + 1}`;
+      taskNodes.push({
+        id: taskId,
+        sprintId,
+        title: typeof task === 'string' ? task : String((task as Record<string, unknown>)?.title ?? `Task ${taskIndex + 1}`),
+        priority: 'medium',
+        agentRole: roles[(taskIndex + 1) % roles.length] ?? 'Coordinator',
+        status: 'pending',
+        estimatedTokens: 1500,
+        level: taskIndex,
+        order: 0,
+      });
+      if (taskIndex > 0) {
+        taskEdges.push({ id: `legacy-task-edge-${sprintIndex + 1}-${taskIndex}`, from: `legacy-task-${sprintIndex + 1}-${taskIndex}`, to: taskId, kind: 'dependency' });
+      }
+    });
+  });
+
+  return { agents: planAgents, sprintNodes, sprintEdges, taskNodes, taskEdges };
+}
+
+function inferSequentialSprintEdges(sprints: PlanGraphPayload['sprintNodes']): PlanGraphPayload['sprintEdges'] {
+  return sprints
+    .slice()
+    .sort((a, b) => a.level - b.level || a.order - b.order)
+    .slice(1)
+    .map((sprint, index, sortedTail) => ({
+      id: `inferred-sprint-edge-${index + 1}`,
+      from: index === 0
+        ? sprints.slice().sort((a, b) => a.level - b.level || a.order - b.order)[0].id
+        : sortedTail[index - 1].id,
+      to: sprint.id,
+      kind: 'dependency',
+    }));
+}
+
 // Phase 2 of the redesign: insert Connect-LLMs as step 2, between
 // Budget and the CEO Describe chat. The total length stays in lockstep
 // with the `nextStep`/`prevStep` clamps below — keep them in sync if
@@ -47,8 +116,8 @@ export default function Onboarding() {
    * refresh. The full launch (workspace provision + spec doc + decompose)
    * still happens at the final Launch click.
    */
-  const ensureProjectForChat = async (): Promise<string | null> => {
-    if (onboardingDraft.projectId) {
+  const ensureProjectForChat = async (forceCreate = false): Promise<string | null> => {
+    if (onboardingDraft.projectId && !forceCreate) {
       await setActiveProject(onboardingDraft.projectId).catch(() => undefined);
       return onboardingDraft.projectId;
     }
@@ -94,6 +163,16 @@ export default function Onboarding() {
           return;
         }
         projectId = created;
+      } else {
+        const exists = await api<unknown>(`/v1/projects/${projectId}`).then(() => true).catch(() => false);
+        if (!exists) {
+          const created = await ensureProjectForChat(true);
+          if (!created) {
+            setLaunch({ phase: 'idle', steps: [] });
+            return;
+          }
+          projectId = created;
+        }
       }
       // Refine the project name from the brief if we have one — replaces the
       // placeholder set at chat-step entry. Best-effort.
@@ -116,7 +195,7 @@ export default function Onboarding() {
         body: JSON.stringify({
           description: trimmedDescription || undefined,
           decompose: trimmedDescription.length > 0,
-          planGraph: onboardingDraft.planGraph ?? undefined,
+          planGraph: normalizeGenesisPlan(onboardingDraft.planGraph, onboardingDraft.agents) ?? undefined,
         }),
       });
       setLaunch({ phase: 'done', steps: result.steps.length ? result.steps : LAUNCH_STEP_NAMES.map((name) => ({ name, status: 'ok', detail: '' })) });
@@ -209,7 +288,7 @@ export default function Onboarding() {
         })}
       </div>
 
-      <div className="w-full max-w-2xl animate-fade-in">
+      <div className={cn('w-full animate-fade-in', step === PLAN_REVIEW_INDEX ? 'max-w-6xl' : 'max-w-2xl')}>
         {step === 0 && (
           <StepSource
             source={onboardingDraft.source}
@@ -423,13 +502,16 @@ function StepPlanReview({
     staleTime: 60_000,
   });
 
-  useEffect(() => {
-    if (previewQuery.data && !planGraph) {
-      onPlanGraphChange(previewQuery.data);
-    }
-  }, [onPlanGraphChange, planGraph, previewQuery.data]);
+  const normalizedDraftPlan = normalizeGenesisPlan(planGraph, agents);
+  const normalizedPreviewPlan = normalizeGenesisPlan(previewQuery.data, agents);
 
-  const activePlan = planGraph ?? previewQuery.data ?? null;
+  useEffect(() => {
+    if (normalizedPreviewPlan && !normalizedDraftPlan) {
+      onPlanGraphChange(normalizedPreviewPlan);
+    }
+  }, [normalizedDraftPlan, normalizedPreviewPlan, onPlanGraphChange]);
+
+  const activePlan = normalizedDraftPlan ?? normalizedPreviewPlan;
 
   return (
     <div className="space-y-6">
@@ -492,7 +574,7 @@ function StepPlanReview({
 
       <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 text-center">
         <span className="text-sm font-medium">
-          {agents} max parallel agents • {activePlan?.sprintNodes.length ?? 0} mini-sprints • {activePlan?.taskNodes.length ?? 0} tasks
+          {agents} max parallel agents • {activePlan?.sprintNodes?.length ?? 0} mini-sprints • {activePlan?.taskNodes?.length ?? 0} tasks
         </span>
       </div>
     </div>

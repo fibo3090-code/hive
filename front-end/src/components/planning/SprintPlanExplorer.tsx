@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react';
 import { ReactFlow, Background, Controls, MarkerType, type Edge, type Node } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { GitBranch, Rows3, Plus, Trash2, Pencil, Save, X, ChevronDown, ChevronRight } from 'lucide-react';
+import { ClipboardList, GitBranch, Rows3, Plus, Trash2, Pencil, Save, X, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { Agent } from '@/types/domain';
 import type { PlanEdge, PlanGraphPayload, PlanSprintNode, PlanTaskNode } from '@/api/planGraph';
 
-type Mode = 'graph' | 'lanes';
+type Mode = 'graph' | 'lanes' | 'list';
 
 interface SprintPlanExplorerProps {
   plan: PlanGraphPayload;
@@ -29,9 +29,9 @@ function nextId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function GraphNode({ data }: { readonly data: { label: string; detail?: string; status?: string; expanded?: boolean } }) {
+function GraphNode({ data }: { readonly data: { label: string; detail?: string; status?: string; expanded?: boolean; selected?: boolean; incoming?: number; outgoing?: number } }) {
   return (
-    <div className="min-w-[190px] rounded-md border border-border bg-card px-3 py-2 shadow-lg">
+    <div className={cn('min-w-[210px] rounded-md border bg-card px-3 py-2 shadow-lg transition-colors', data.selected ? 'border-primary ring-1 ring-primary/50' : 'border-border')}>
       <div className="flex items-center gap-2">
         <GitBranch className="h-3.5 w-3.5 text-primary" />
         <span className="truncate text-xs font-semibold">{data.label}</span>
@@ -39,7 +39,7 @@ function GraphNode({ data }: { readonly data: { label: string; detail?: string; 
       {data.detail && <div className="mt-1 truncate text-[10px] text-muted-foreground">{data.detail}</div>}
       <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
         <span>{data.status ?? 'planned'}</span>
-        <span>{data.expanded ? 'tasks open' : 'mini-sprint'}</span>
+        <span>{data.incoming ?? 0} in · {data.outgoing ?? 0} out</span>
       </div>
     </div>
   );
@@ -58,6 +58,7 @@ export function SprintPlanExplorer({
 }: SprintPlanExplorerProps) {
   const [mode, setMode] = useState<Mode>('graph');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [selectedSprintId, setSelectedSprintId] = useState<string | null>(plan.sprintNodes[0]?.id ?? null);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
 
@@ -145,8 +146,21 @@ export function SprintPlanExplorer({
     }));
   };
 
-  const graph = useMemo(() => buildFlowGraph(plan, expanded), [plan, expanded]);
+  const setSprintDependencies = (sprintId: string, fromIds: string[]) => {
+    setPlan((current) => ({
+      ...current,
+      sprintEdges: [
+        ...current.sprintEdges.filter((edge) => edge.to !== sprintId),
+        ...fromIds.map((fromId) => ({ id: nextId('edge'), from: fromId, to: sprintId, kind: 'dependency' })),
+      ],
+    }));
+  };
+
+  const graph = useMemo(() => buildFlowGraph(plan, expanded, selectedSprintId), [plan, expanded, selectedSprintId]);
   const validation = useMemo(() => validatePlan(plan), [plan]);
+  const selectedSprint = plan.sprintNodes.find((sprint) => sprint.id === selectedSprintId) ?? plan.sprintNodes[0] ?? null;
+  const selectedTasks = selectedSprint ? plan.taskNodes.filter((task) => task.sprintId === selectedSprint.id) : [];
+  const selectedDeps = selectedSprint ? plan.sprintEdges.filter((edge) => edge.to === selectedSprint.id).map((edge) => edge.from) : [];
 
   return (
     <div className="rounded-lg border border-border bg-card">
@@ -173,6 +187,13 @@ export function SprintPlanExplorer({
             >
               <Rows3 className="h-3.5 w-3.5" /> Agents
             </button>
+            <button
+              type="button"
+              onClick={() => setMode('list')}
+              className={cn('inline-flex h-7 items-center gap-1.5 rounded px-2 text-xs', mode === 'list' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground')}
+            >
+              <ClipboardList className="h-3.5 w-3.5" /> List
+            </button>
           </div>
           {editable && (
             <>
@@ -196,12 +217,46 @@ export function SprintPlanExplorer({
       )}
 
       {mode === 'graph' ? (
-        <div className={cn('w-full', compact ? 'h-[360px]' : 'h-[560px]')}>
-          <ReactFlow nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes} fitView minZoom={0.35}>
+        <div className={cn('relative w-full', compact ? 'h-[360px]' : 'h-[560px]')}>
+          <ReactFlow
+            nodes={graph.nodes}
+            edges={graph.edges}
+            nodeTypes={nodeTypes}
+            fitView
+            minZoom={0.25}
+            onNodeClick={(_, node) => {
+              const sprint = plan.sprintNodes.find((item) => item.id === node.id);
+              if (!sprint) return;
+              setSelectedSprintId(sprint.id);
+              setExpanded((current) => {
+                const next = new Set(current);
+                if (next.has(sprint.id)) next.delete(sprint.id);
+                else next.add(sprint.id);
+                return next;
+              });
+            }}
+          >
             <Background gap={18} size={1} />
             <Controls />
           </ReactFlow>
+          {selectedSprint && (
+            <div className="absolute bottom-3 left-3 max-w-[360px] rounded-md border border-border bg-card/95 p-3 shadow-xl backdrop-blur">
+              <div className="text-xs font-semibold">{selectedSprint.title}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                {selectedTasks.length} tasks · depends on {selectedDeps.length || 'nothing'} · {plan.sprintEdges.filter((edge) => edge.from === selectedSprint.id).length} outgoing
+              </div>
+              <div className="mt-2 max-h-24 overflow-auto space-y-1">
+                {selectedTasks.map((task) => (
+                  <div key={task.id} className="truncate text-[11px] text-muted-foreground">
+                    {task.title}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
+      ) : mode === 'list' ? (
+        <TaskListView plan={plan} agents={agents} compact={compact} />
       ) : (
         <AgentLaneView plan={plan} agents={agents} compact={compact} />
       )}
@@ -215,6 +270,7 @@ export function SprintPlanExplorer({
               .map((sprint) => {
                 const sprintTasks = plan.taskNodes.filter((task) => task.sprintId === sprint.id);
                 const isExpanded = expanded.has(sprint.id);
+                const sprintDeps = plan.sprintEdges.filter((edge) => edge.to === sprint.id).map((edge) => edge.from);
                 return (
                   <div key={sprint.id} className="rounded-md border border-border bg-surface-1 p-3">
                     <div className="flex items-center gap-2">
@@ -235,6 +291,29 @@ export function SprintPlanExplorer({
                         onChange={(event) => updateSprint(sprint.id, { title: event.target.value })}
                         className="h-8 flex-1 rounded-md border border-border bg-card px-2 text-xs font-medium"
                       />
+                      <div className="flex max-w-[360px] flex-wrap gap-1">
+                        {plan.sprintNodes
+                          .filter((candidate) => candidate.id !== sprint.id)
+                          .map((candidate) => {
+                            const checked = sprintDeps.includes(candidate.id);
+                            return (
+                              <button
+                                key={candidate.id}
+                                type="button"
+                                title={`Toggle dependency from ${candidate.title}`}
+                                onClick={() => {
+                                  setSprintDependencies(
+                                    sprint.id,
+                                    checked ? sprintDeps.filter((id) => id !== candidate.id) : [...sprintDeps, candidate.id],
+                                  );
+                                }}
+                                className={cn('rounded border px-1.5 py-1 text-[10px]', checked ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground')}
+                              >
+                                {candidate.level + 1}
+                              </button>
+                            );
+                          })}
+                      </div>
                       <Button size="sm" variant="outline" onClick={() => addTask(sprint.id)} className="h-8 gap-1">
                         <Plus className="h-3.5 w-3.5" /> Task
                       </Button>
@@ -307,18 +386,23 @@ export function SprintPlanExplorer({
   );
 }
 
-function buildFlowGraph(plan: PlanGraphPayload, expanded: Set<string>): { nodes: Node[]; edges: Edge[] } {
+function buildFlowGraph(plan: PlanGraphPayload, expanded: Set<string>, selectedSprintId: string | null): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   for (const sprint of plan.sprintNodes) {
+    const incoming = plan.sprintEdges.filter((edge) => edge.to === sprint.id).length;
+    const outgoing = plan.sprintEdges.filter((edge) => edge.from === sprint.id).length;
     nodes.push({
       id: sprint.id,
       type: 'sprintPlanNode',
-      position: { x: sprint.level * 260, y: sprint.order * 150 },
+      position: { x: sprint.level * 280, y: sprint.order * 165 },
       data: {
         label: sprint.title,
         detail: `${plan.taskNodes.filter((task) => task.sprintId === sprint.id).length} tasks`,
         status: sprint.status ?? 'planned',
         expanded: expanded.has(sprint.id),
+        selected: selectedSprintId === sprint.id,
+        incoming,
+        outgoing,
       },
     });
     if (expanded.has(sprint.id)) {
@@ -328,14 +412,14 @@ function buildFlowGraph(plan: PlanGraphPayload, expanded: Set<string>): { nodes:
           nodes.push({
             id: task.id,
             type: 'sprintPlanNode',
-            position: { x: sprint.level * 260 + 40, y: sprint.order * 150 + 130 + index * 115 },
+            position: { x: sprint.level * 280 + 46, y: sprint.order * 165 + 135 + index * 112 },
             data: { label: task.title, detail: task.agentRole ?? 'Unassigned', status: task.status ?? 'pending' },
           });
         });
     }
   }
 
-  const edgeStyle = { stroke: 'hsl(var(--primary))', strokeWidth: 1.8 };
+  const edgeStyle = { stroke: 'hsl(var(--primary))', strokeWidth: 2.2 };
   const edges: Edge[] = [
     ...plan.sprintEdges.map((edge) => flowEdge(edge, edgeStyle)),
     ...plan.taskEdges
@@ -343,6 +427,51 @@ function buildFlowGraph(plan: PlanGraphPayload, expanded: Set<string>): { nodes:
       .map((edge) => flowEdge(edge, { stroke: 'hsl(var(--muted-foreground))', strokeWidth: 1.2 })),
   ];
   return { nodes, edges };
+}
+
+function TaskListView({ plan, agents, compact }: { readonly plan: PlanGraphPayload; readonly agents: Agent[]; readonly compact?: boolean }) {
+  const agentLabels = new Map<string, string>();
+  for (const agent of agents) {
+    agentLabels.set(agent.id, agent.name);
+    agentLabels.set(agent.role, agent.name);
+  }
+  for (const agent of plan.agents ?? []) {
+    agentLabels.set(agent.role, agent.name ?? agent.role);
+  }
+  const sprintById = new Map(plan.sprintNodes.map((sprint) => [sprint.id, sprint]));
+  const sortedTasks = plan.taskNodes
+    .slice()
+    .sort((a, b) => {
+      const sprintA = sprintById.get(a.sprintId);
+      const sprintB = sprintById.get(b.sprintId);
+      return (sprintA?.level ?? 0) - (sprintB?.level ?? 0) || a.level - b.level || a.order - b.order;
+    });
+
+  return (
+    <div className={cn('overflow-auto p-4', compact ? 'max-h-[360px]' : 'max-h-[560px]')}>
+      <div className="space-y-2">
+        {sortedTasks.map((task, index) => {
+          const sprint = sprintById.get(task.sprintId);
+          const deps = plan.taskEdges.filter((edge) => edge.to === task.id).length;
+          return (
+            <div key={task.id} className="grid grid-cols-[42px_minmax(0,1fr)_140px_96px] items-center gap-3 rounded-md border border-border bg-surface-1 px-3 py-2 text-xs">
+              <div className="font-mono text-muted-foreground">{index + 1}</div>
+              <div className="min-w-0">
+                <div className="truncate font-medium">{task.title}</div>
+                <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                  {sprint?.title ?? 'No sprint'} · step {(sprint?.level ?? 0) + 1}.{task.level + 1} · {deps} deps
+                </div>
+              </div>
+              <div className="truncate text-muted-foreground">{agentLabels.get(task.agentId ?? task.agentRole ?? '') ?? task.agentRole ?? 'Unassigned'}</div>
+              <div className={cn('rounded border px-2 py-1 text-center text-[10px]', priorityClass[task.priority ?? 'medium'])}>
+                {task.status ?? 'pending'}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function flowEdge(edge: PlanEdge, style: Edge['style']): Edge {
@@ -374,8 +503,8 @@ function AgentLaneView({ plan, agents, compact }: { readonly plan: PlanGraphPayl
   const levels = Array.from({ length: maxLevel + 1 }, (_, i) => i);
 
   return (
-    <div className={cn('overflow-auto p-4', compact ? 'max-h-[360px]' : 'max-h-[560px]')}>
-      <div className="min-w-[760px]">
+    <div className={cn('overflow-auto p-4', compact ? 'max-h-[360px]' : 'max-h-[620px]')}>
+      <div className="min-w-[680px]">
         <div className="grid gap-2" style={{ gridTemplateColumns: `150px repeat(${levels.length}, minmax(170px, 1fr))` }}>
           <div />
           {levels.map((level) => (
