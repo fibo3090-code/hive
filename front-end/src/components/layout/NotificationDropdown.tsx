@@ -1,7 +1,7 @@
 import { Bell, Check, X, AlertTriangle, XCircle, AlertCircle, Info, Clock, Repeat } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { LoopDetectionModal, type LoopDetectionPayload } from '@/components/modals/LoopDetectionModal';
 
@@ -23,6 +23,8 @@ function isLoopPayload(value: unknown): value is LoopDetectionPayload {
 
 export function NotificationDropdown() {
   const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const [panelPosition, setPanelPosition] = useState({ top: 48, right: 16 });
   const [loopPayload, setLoopPayload] = useState<LoopDetectionPayload | undefined>(undefined);
   const { state, markNotificationRead, markAllNotificationsRead, dismissNotification } = useHiveData();
   const { notifications } = state;
@@ -37,8 +39,27 @@ export function NotificationDropdown() {
     }
   };
 
+  useLayoutEffect(() => {
+    if (!open) return;
+    const updatePosition = () => {
+      const rect = anchorRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setPanelPosition({
+        top: rect.bottom + 8,
+        right: Math.max(16, window.innerWidth - rect.right),
+      });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open]);
+
   return (
-    <div className="relative">
+    <div ref={anchorRef} className="relative">
       <button
         onClick={() => setOpen(!open)}
         className="relative text-muted-foreground hover:text-foreground transition-colors"
@@ -66,7 +87,8 @@ export function NotificationDropdown() {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -4, scale: 0.97 }}
               transition={{ duration: 0.15 }}
-              className="absolute right-0 top-full mt-2 z-50 w-[380px] rounded-lg border border-border bg-card shadow-xl overflow-hidden"
+              style={{ top: panelPosition.top, right: panelPosition.right }}
+              className="fixed z-50 w-[min(380px,calc(100vw-2rem))] rounded-lg border border-border bg-card shadow-xl overflow-hidden"
             >
               <div className="flex items-center justify-between border-b border-border px-4 py-3">
                 <div className="flex items-center gap-2">

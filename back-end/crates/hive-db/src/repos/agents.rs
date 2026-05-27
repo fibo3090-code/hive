@@ -78,7 +78,7 @@ pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbE
 }
 
 /// Create a new agent.
-pub async fn create(db: &DatabaseConnection, input: CreateAgent) -> Result<Model, DbErr> {
+pub async fn create<C: ConnectionTrait>(db: &C, input: CreateAgent) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     let enabled_tools = input
         .enabled_tools

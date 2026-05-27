@@ -20,6 +20,7 @@ mod m20260606_000002_repair_chat_attachments;
 mod m20260612_000001_chat_threads_agent_index;
 mod m20260613_000001_agent_wires;
 mod m20260620_000001_agent_eval_runs;
+mod m20260621_000001_plan_graph;
 
 pub struct Migrator;
 
@@ -47,6 +48,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260613_000001_agent_wires::Migration),
             Box::new(m20260514_000001_agent_skill_bindings::Migration),
             Box::new(m20260620_000001_agent_eval_runs::Migration),
+            Box::new(m20260621_000001_plan_graph::Migration),
         ]
     }
 }

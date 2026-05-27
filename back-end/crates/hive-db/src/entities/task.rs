@@ -33,6 +33,10 @@ pub struct Model {
     /// Used by the planning view to flag stalled work.
     #[sea_orm(default = None)]
     pub last_progress_at: Option<String>,
+    /// Dependency-graph column used by the sprint plan views. This is a
+    /// logical sequence level, not a calendar duration.
+    pub graph_level: i32,
+    pub graph_order: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

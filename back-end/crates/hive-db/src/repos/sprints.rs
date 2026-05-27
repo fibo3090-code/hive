@@ -15,6 +15,10 @@ pub struct CreateSprint {
     pub velocity: Option<i32>,
     pub points: i32,
     pub position: i32,
+    #[serde(default)]
+    pub graph_level: i32,
+    #[serde(default)]
+    pub graph_order: i32,
 }
 
 pub async fn list_by_project(
@@ -40,6 +44,8 @@ pub async fn create<C: ConnectionTrait>(db: &C, input: CreateSprint) -> Result<M
         velocity: Set(input.velocity),
         points: Set(input.points),
         position: Set(input.position),
+        graph_level: Set(input.graph_level),
+        graph_order: Set(input.graph_order),
         created_at: Set(now.clone()),
         updated_at: Set(now),
     }

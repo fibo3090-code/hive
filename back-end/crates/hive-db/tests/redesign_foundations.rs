@@ -81,6 +81,8 @@ async fn seed_scaffold(db: &Db) -> (String, String, String) {
         velocity: Set(None),
         points: Set(0),
         position: Set(0),
+        graph_level: Set(0),
+        graph_order: Set(0),
         created_at: Set(now.clone()),
         updated_at: Set(now.clone()),
     }
@@ -106,6 +108,8 @@ async fn seed_scaffold(db: &Db) -> (String, String, String) {
         spec_section_id: Set(None),
         due_at: Set(None),
         last_progress_at: Set(None),
+        graph_level: Set(0),
+        graph_order: Set(0),
     }
     .insert(db.conn())
     .await

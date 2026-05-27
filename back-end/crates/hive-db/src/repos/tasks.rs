@@ -25,6 +25,10 @@ pub struct CreateTask {
     /// Phase 0b: SLA deadline (RFC3339).
     #[serde(default)]
     pub due_at: Option<String>,
+    #[serde(default)]
+    pub graph_level: i32,
+    #[serde(default)]
+    pub graph_order: i32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -37,6 +41,8 @@ pub struct UpdateTask {
     pub estimated_tokens: Option<i32>,
     pub agent_id: Option<Option<String>>,
     pub sprint_id: Option<Option<String>>,
+    pub graph_level: Option<i32>,
+    pub graph_order: Option<i32>,
 }
 
 // ── Queries ──────────────────────────────────────────────────────────────────
@@ -81,6 +87,8 @@ pub async fn create<C: ConnectionTrait>(db: &C, input: CreateTask) -> Result<Mod
         spec_section_id: Set(input.spec_section_id),
         due_at: Set(input.due_at),
         last_progress_at: Set(None),
+        graph_level: Set(input.graph_level),
+        graph_order: Set(input.graph_order),
     };
     model.insert(db).await
 }
@@ -123,6 +131,12 @@ pub async fn update(
     }
     if let Some(v) = input.sprint_id {
         model.sprint_id = Set(v);
+    }
+    if let Some(v) = input.graph_level {
+        model.graph_level = Set(v);
+    }
+    if let Some(v) = input.graph_order {
+        model.graph_order = Set(v);
     }
 
     model.updated_at = Set(now_rfc3339());

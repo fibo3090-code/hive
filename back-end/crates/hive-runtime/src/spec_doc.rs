@@ -288,6 +288,8 @@ pub async fn materialize_decomposition(
                 velocity: None,
                 points: 0,
                 position: starting_position + i as i32,
+                graph_level: starting_position + i as i32,
+                graph_order: 0,
             },
         )
         .await?;
@@ -317,6 +319,8 @@ pub async fn materialize_decomposition(
                     sprint_id: Some(sprint_id.clone()),
                     spec_section_id: resolved_section,
                     due_at: task.due_at,
+                    graph_level: 0,
+                    graph_order: task_ids.len() as i32,
                 },
             )
             .await?;

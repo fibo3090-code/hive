@@ -43,12 +43,17 @@ pub async fn delete(db: &DatabaseConnection, id: &str) -> Result<bool, DbErr> {
 }
 
 /// Outgoing adjacency: `parent_agent_id -> [child_agent_id]` for a project.
-async fn child_adjacency(
-    db: &DatabaseConnection,
+async fn child_adjacency<C: ConnectionTrait>(
+    db: &C,
     project_id: &str,
 ) -> Result<std::collections::HashMap<String, Vec<String>>, DbErr> {
     let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-    for w in list_by_project(db, project_id).await? {
+    for w in Entity::find()
+        .filter(Column::ProjectId.eq(project_id))
+        .order_by_asc(Column::CreatedAt)
+        .all(db)
+        .await?
+    {
         map.entry(w.parent_agent_id)
             .or_default()
             .push(w.child_agent_id);
@@ -58,8 +63,8 @@ async fn child_adjacency(
 
 /// Create a wire `parent -> child`, rejecting self-loops, cross-project agents,
 /// duplicates, and any edge that would introduce a cycle.
-pub async fn create(
-    db: &DatabaseConnection,
+pub async fn create<C: ConnectionTrait>(
+    db: &C,
     project_id: &str,
     parent_agent_id: &str,
     child_agent_id: &str,

@@ -329,6 +329,8 @@ impl Tool for AddTask {
                 sprint_id: None,
                 spec_section_id: None,
                 due_at: None,
+                graph_level: 0,
+                graph_order: 0,
             },
         )
         .await

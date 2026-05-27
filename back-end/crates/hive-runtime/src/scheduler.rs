@@ -32,7 +32,10 @@
 use std::{sync::Arc, time::Duration};
 
 use hive_db::{
-    repos::{agent_messages, agent_task_assignments, agents, projects, sessions, tasks},
+    repos::{
+        agent_messages, agent_task_assignments, agents, projects, sessions, sprint_dependencies,
+        task_dependencies, tasks,
+    },
     Db,
 };
 use serde_json::json;
@@ -141,6 +144,9 @@ async fn dispatch_one_task_if_any(
         if matches!(task.status.as_str(), "completed" | "cancelled") {
             continue;
         }
+        if !task_is_unlocked(db, project_id, &task).await {
+            continue;
+        }
 
         // De-dupe against an executor that's already burning the previous
         // dispatch. The scheduler is best-effort, not a "shove every tick"
@@ -155,6 +161,54 @@ async fn dispatch_one_task_if_any(
         // give the previous turn time to actually do something.
         return;
     }
+}
+
+async fn task_is_unlocked(
+    db: &Db,
+    project_id: &str,
+    task: &hive_db::entities::task::Model,
+) -> bool {
+    let all_tasks = match tasks::list_by_project(db.conn(), project_id).await {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::warn!(project_id, error = %err, "scheduler: tasks list failed for dependency check");
+            return false;
+        }
+    };
+    let completed_task_ids = all_tasks
+        .iter()
+        .filter(|t| t.status == "completed")
+        .map(|t| t.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+
+    if let Ok(edges) = task_dependencies::list_by_project(db.conn(), project_id).await {
+        for edge in edges.iter().filter(|edge| edge.to_task_id == task.id) {
+            if !completed_task_ids.contains(edge.from_task_id.as_str()) {
+                return false;
+            }
+        }
+    }
+
+    let Some(sprint_id) = task.sprint_id.as_deref() else {
+        return true;
+    };
+    let sprint_edges = match sprint_dependencies::list_by_project(db.conn(), project_id).await {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::warn!(project_id, error = %err, "scheduler: sprint dependencies list failed");
+            return false;
+        }
+    };
+    for edge in sprint_edges.iter().filter(|edge| edge.to_sprint_id == sprint_id) {
+        let upstream_tasks = all_tasks
+            .iter()
+            .filter(|candidate| candidate.sprint_id.as_deref() == Some(edge.from_sprint_id.as_str()))
+            .collect::<Vec<_>>();
+        if upstream_tasks.iter().any(|candidate| candidate.status != "completed") {
+            return false;
+        }
+    }
+    true
 }
 
 async fn dispatch_for_task(
@@ -255,6 +309,8 @@ mod tests {
             spec_section_id: None,
             due_at: None,
             last_progress_at: None,
+            graph_level: 0,
+            graph_order: 0,
         }
     }
 

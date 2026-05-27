@@ -3,7 +3,8 @@ import { api } from '@/api/client';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useSpecDocument, useSpecDocuments, useSpecDocumentSections } from '@/api/spec-documents';
 import { useDriftEvents, useUpdateDriftStatus } from '@/api/drift';
-import { useAssignments } from '@/api/assignments';
+import { usePlanGraph, useSavePlanGraph } from '@/api/planGraph';
+import type { PlanGraphPayload } from '@/api/planGraph';
 import {
   useTechDebtData,
   useMoveTechDebt,
@@ -15,12 +16,12 @@ import {
   useDeleteTechDebt,
 } from '@/api/queries/useServerData';
 import type { TechDebtItem, NoteItem } from '@/types/domain';
-import { AgentStateChip } from '@/components/shared/AgentStateChip';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { Plus, Search, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useConfirmDelete } from '@/components/shared/useConfirmDelete';
+import { SprintPlanExplorer } from '@/components/planning/SprintPlanExplorer';
 
 type Tab = 'spec' | 'sprint' | 'techdebt' | 'hivemind' | 'drift';
 
@@ -175,23 +176,17 @@ function SpecDocumentTab() {
 // ─── Skill Sprint tab ──────────────────────────────────────────────────
 
 function SkillSprintTab() {
-  const { activeProject, createTask } = useHiveData();
+  const { activeProject, createTask, state } = useHiveData();
   const activeProjectId = activeProject?.id ?? null;
-  const assignments = useAssignments(activeProjectId);
+  const planGraph = usePlanGraph(activeProjectId);
+  const savePlanGraph = useSavePlanGraph(activeProjectId);
+  const [draftPlan, setDraftPlan] = useState<PlanGraphPayload | null>(null);
   const [creatingTask, setCreatingTask] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskAgent, setNewTaskAgent] = useState('');
   const [savingTask, setSavingTask] = useState(false);
 
-  const grouped = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof useAssignments>['data']>();
-    for (const a of assignments.data ?? []) {
-      const arr = map.get(a.agentId) ?? [];
-      arr.push(a);
-      map.set(a.agentId, arr);
-    }
-    return Array.from(map.entries());
-  }, [assignments.data]);
+  const effectivePlan = draftPlan ?? planGraph.data ?? null;
 
   const handleCreateTask = async () => {
     if (!newTaskTitle.trim()) {
@@ -221,7 +216,7 @@ function SkillSprintTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
         <Button 
           variant="outline" 
           size="sm" 
@@ -231,6 +226,15 @@ function SkillSprintTab() {
           <Plus className="h-3.5 w-3.5" />
           Add Manual Task
         </Button>
+        {effectivePlan && (
+          <Button
+            size="sm"
+            onClick={() => savePlanGraph.mutate(effectivePlan)}
+            disabled={savePlanGraph.isPending}
+          >
+            {savePlanGraph.isPending ? 'Saving…' : 'Save Graph'}
+          </Button>
+        )}
       </div>
 
       {creatingTask && (
@@ -257,34 +261,18 @@ function SkillSprintTab() {
         </div>
       )}
 
-      {!grouped.length ? (
-        <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-          No agent task assignments yet. Run the doc→sprint decomposition to
-          populate this view.
-        </div>
+      {effectivePlan && effectivePlan.sprintNodes.length > 0 ? (
+        <SprintPlanExplorer
+          plan={effectivePlan}
+          agents={state.agents}
+          editable
+          onChange={setDraftPlan}
+          onSave={() => savePlanGraph.mutate(effectivePlan)}
+          saving={savePlanGraph.isPending}
+        />
       ) : (
-        <div className="space-y-4">
-          {grouped.map(([agentId, agentAssignments]) => (
-            <section key={agentId} className="rounded-lg border border-border bg-card">
-              <header className="border-b border-border bg-surface-2 px-4 py-2">
-                <code className="text-xs font-mono text-muted-foreground">{agentId}</code>
-              </header>
-              <ul className="divide-y divide-border">
-                {agentAssignments?.map((a) => (
-                  <li key={a.id} className="flex items-center justify-between gap-3 px-4 py-2">
-                    <div className="flex-1">
-                      <div className="text-xs font-medium">Task {a.taskId}</div>
-                      <div className="text-[10px] text-muted-foreground">
-                        drift: {(a.driftScore * 100).toFixed(0)}%
-                        {a.expectedCompletionAt && ` · due ${new Date(a.expectedCompletionAt).toLocaleDateString()}`}
-                      </div>
-                    </div>
-                    <AgentStateChip state={a.state} />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
+        <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+          No sprint graph yet. Run the doc→sprint decomposition or launch a project from onboarding.
         </div>
       )}
     </div>

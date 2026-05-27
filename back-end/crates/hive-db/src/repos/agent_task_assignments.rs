@@ -19,7 +19,7 @@ fn default_state() -> String {
     "started".to_owned()
 }
 
-pub async fn create(db: &DatabaseConnection, input: CreateAssignment) -> Result<Model, DbErr> {
+pub async fn create<C: ConnectionTrait>(db: &C, input: CreateAssignment) -> Result<Model, DbErr> {
     let now = now_rfc3339();
     ActiveModel {
         id: Set(new_id()),

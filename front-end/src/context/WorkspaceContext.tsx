@@ -5,6 +5,7 @@ import { useSettingsData } from '@/api/queries/useServerData';
 
 type ThemeMode = 'dark' | 'light' | 'system';
 import type { SovereigntyTier } from '@/types/domain';
+import type { PlanGraphPayload } from '@/api/planGraph';
 
 export interface OnboardingDraft {
   step: number;
@@ -35,6 +36,7 @@ export interface OnboardingDraft {
    *  coordinator for this project. Resolved lazily by the StepDescribe
    *  component on first mount. */
   coordinatorThreadId: string | null;
+  planGraph: PlanGraphPayload | null;
 }
 
 export type AccentPresetId = 'amber' | 'blue' | 'green' | 'red' | 'violet';
@@ -154,6 +156,7 @@ const defaultOnboardingDraft: OnboardingDraft = {
   connectedProviderIds: [],
   projectId: null,
   coordinatorThreadId: null,
+  planGraph: null,
 };
 
 export const defaultSettings: SettingsState = {

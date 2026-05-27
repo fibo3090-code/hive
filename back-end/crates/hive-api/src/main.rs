@@ -26,8 +26,8 @@ use hive_db::{
         agent_spawn_requests, agent_task_assignments, agent_wires, agents, alerts, audit,
         chat_attachments, chat_messages, chat_threads, connectors, cost_events, custom_mcp_servers,
         drift_events, llm_providers, notes, notifications, project_workspaces, projects, sessions,
-        settings, skills, spec_document_sections, spec_documents, sprints, synthesis_jobs, tasks,
-        tech_debt,
+        settings, skills, spec_document_sections, spec_documents, sprint_dependencies, sprints,
+        synthesis_jobs, task_dependencies, tasks, tech_debt,
     },
     seed::seed_demo,
     Db,
@@ -45,6 +45,7 @@ use hive_sandbox::LocalFsSandbox;
 use hive_search::providers::{
     duckduckgo::DuckDuckGoProvider, searxng::SearxNgProvider, tavily::TavilyProvider,
 };
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use hive_tools::{
     default_names as default_tool_names, register_defaults, register_web_search, ToolContext,
     ToolRegistry,
@@ -759,6 +760,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .route(
             "/v1/projects/genesis/preview",
             post(post_project_genesis_preview),
+        )
+        .route(
+            "/v1/projects/:project_id/plan-graph",
+            get(get_project_plan_graph).put(put_project_plan_graph),
         )
         .route("/v1/projects/:project_id/launch", post(launch_project))
         .route("/v1/projects/:project_id/modules", get(list_modules))
@@ -3042,6 +3047,8 @@ async fn create_task(
             sprint_id: None,
             spec_section_id: None,
             due_at: None,
+            graph_level: 0,
+            graph_order: 0,
         },
     )
     .await?;
@@ -3659,6 +3666,84 @@ struct GenesisPreviewBody {
     agent_count: Option<u32>,
 }
 
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanAgentDraft {
+    role: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanSprintNode {
+    id: String,
+    title: String,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    level: i32,
+    #[serde(default)]
+    order: i32,
+    #[serde(default)]
+    points: i32,
+}
+
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanTaskNode {
+    id: String,
+    sprint_id: String,
+    title: String,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    agent_role: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    estimated_tokens: Option<i32>,
+    #[serde(default)]
+    level: i32,
+    #[serde(default)]
+    order: i32,
+    #[serde(default)]
+    spec_section_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanEdge {
+    id: String,
+    from: String,
+    to: String,
+    #[serde(default = "default_dependency_kind")]
+    kind: String,
+}
+
+fn default_dependency_kind() -> String {
+    "dependency".to_owned()
+}
+
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanGraphPayload {
+    #[serde(default)]
+    agents: Vec<PlanAgentDraft>,
+    #[serde(default)]
+    sprint_nodes: Vec<PlanSprintNode>,
+    #[serde(default)]
+    sprint_edges: Vec<PlanEdge>,
+    #[serde(default)]
+    task_nodes: Vec<PlanTaskNode>,
+    #[serde(default)]
+    task_edges: Vec<PlanEdge>,
+}
+
 /// Generate a project plan preview from a free-text description.
 /// Uses the configured LLM to generate logical phases and requirements,
 /// falling back to a deterministic projection if no LLM is configured.
@@ -3689,17 +3774,18 @@ async fn post_project_genesis_preview(
                     let prompt = format!(
                     "You are the Hive Project Genesis Planner.\n\
                      You are given a description of a project to build and an agent count ({} agents).\n\
-                     Break this down into as many logical phases as the scope deserves (usually 2-6; never a fixed template).\n\
-                     Each phase must have a name (\"Phase X · <name>\") and an array of concrete string tasks.\n\
-                     Also return high-level requirements.\n\
+                     Build a two-level PEM Plan object. Top-level sprintNodes are mini-sprints; taskNodes belong to a sprint. Use sprintEdges and taskEdges for dependencies. Use branches for work that can happen in parallel and merge edges where later work depends on multiple prior nodes. The level field is a logical column, not a calendar duration.\n\
                      Respond ONLY with a JSON object in this format, and no markdown formatting or prose:\n\
                      {{\n\
-                       \"phases\": [\n\
-                         {{ \"phase\": \"...\", \"tasks\": [\"...\", \"...\"] }}\n\
-                       ],\n\
+                       \"agents\": [{{\"role\":\"Frontend\",\"name\":\"Frontend Agent\"}}],\n\
+                       \"sprintNodes\": [{{\"id\":\"s1\",\"title\":\"Discovery\",\"summary\":\"...\",\"level\":0,\"order\":0,\"points\":3}}],\n\
+                       \"sprintEdges\": [{{\"id\":\"e1\",\"from\":\"s1\",\"to\":\"s2\",\"kind\":\"dependency\"}}],\n\
+                       \"taskNodes\": [{{\"id\":\"t1\",\"sprintId\":\"s1\",\"title\":\"...\",\"priority\":\"high\",\"agentRole\":\"Frontend\",\"estimatedTokens\":2000,\"level\":0,\"order\":0}}],\n\
+                       \"taskEdges\": [{{\"id\":\"te1\",\"from\":\"t1\",\"to\":\"t2\",\"kind\":\"dependency\"}}],\n\
                        \"requirements\": [\n\
                          {{ \"title\": \"...\", \"priority\": \"must|should|could\" }}\n\
-                       ]\n\
+                       ],\n\
+                       \"budgetEstimate\": {{\"estimatedTokens\": 10000, \"estimatedCostCents\": 100}}\n\
                      }}",
                     agent_count
                 );
@@ -3719,8 +3805,8 @@ async fn post_project_genesis_preview(
                             .trim_end_matches("```")
                             .trim();
                         if let Ok(json) = serde_json::from_str::<Value>(cleaned_text) {
-                            if json.get("phases").is_some() {
-                                return Ok(Json(json));
+                            if let Some(plan) = plan_graph_from_value(json, source_text, agent_count) {
+                                return Ok(Json(serde_json::to_value(plan).unwrap_or(Value::Null)));
                             }
                         }
                     }
@@ -3728,38 +3814,6 @@ async fn post_project_genesis_preview(
             }
         }
     }
-
-    // Fallback: Deterministic generation
-    // Lift the first few interesting words out of the input so the
-    // preview reads as grounded rather than generic.
-    let lead_words: Vec<&str> = source_text
-        .split_whitespace()
-        .filter(|w| w.len() > 3 && w.chars().next().is_some_and(|c| c.is_alphabetic()))
-        .take(3)
-        .collect();
-    let lead = if lead_words.is_empty() {
-        "the system".to_owned()
-    } else {
-        lead_words.join(" ")
-    };
-
-    let phases = Value::Array(
-        deterministic_planner_phases(source_text)
-            .into_iter()
-            .map(|phase| {
-                json!({
-                    "phase": phase.name,
-                    "tasks": phase.tasks.into_iter().map(|task| task.title).collect::<Vec<_>>(),
-                })
-            })
-            .collect(),
-    );
-
-    let requirements = json!([
-        { "title": format!("MVP user surface for {lead}"), "priority": "must" },
-        { "title": "Persisted user preferences across sessions", "priority": "should" },
-        { "title": "Observable cost and usage metrics", "priority": "should" },
-    ]);
 
     let roles: &[&str] = &[
         "Coordinator",
@@ -3775,19 +3829,168 @@ async fn post_project_genesis_preview(
         "Reviewer",
         "Release",
     ];
-    let roster: Vec<Value> = roles
+    let roster: Vec<PlanAgentDraft> = roles
         .iter()
         .take(agent_count)
-        .map(|role| json!({ "role": role }))
+        .map(|role| PlanAgentDraft {
+            role: (*role).to_owned(),
+            name: Some(format!("{role} Agent")),
+        })
         .collect();
 
-    Ok(Json(json!({
-        "phases": phases,
-        "requirements": requirements,
-        "roster": roster,
-        "estimatedDurationDays": (agent_count as u32) * 3,
-        "sourceCharacters": source_text.chars().count(),
-    })))
+    let plan = plan_graph_from_phases(deterministic_planner_phases(source_text), roster);
+    Ok(Json(serde_json::to_value(plan).unwrap_or(Value::Null)))
+}
+
+fn plan_graph_from_value(value: Value, _source_text: &str, agent_count: usize) -> Option<PlanGraphPayload> {
+    if value.get("sprintNodes").is_some() || value.get("sprint_nodes").is_some() {
+        let mut plan: PlanGraphPayload = serde_json::from_value(value).ok()?;
+        if plan.agents.is_empty() {
+            plan.agents = default_plan_agents(agent_count);
+        }
+        return Some(plan);
+    }
+
+    if value.get("phases").is_some() {
+        let phases = value
+            .get("phases")?
+            .as_array()?
+            .iter()
+            .enumerate()
+            .map(|(i, phase)| {
+                let name = phase
+                    .get("name")
+                    .or_else(|| phase.get("phase"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Sprint")
+                    .to_owned();
+                let tasks = phase
+                    .get("tasks")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(planner_task_from_value)
+                    .collect::<Vec<_>>();
+                PlannerPhase {
+                    name: if name.trim().is_empty() {
+                        format!("Sprint {}", i + 1)
+                    } else {
+                        name
+                    },
+                    tasks,
+                }
+            })
+            .filter(|phase| !phase.tasks.is_empty())
+            .collect::<Vec<_>>();
+        if !phases.is_empty() {
+            return Some(plan_graph_from_phases(
+                phases,
+                default_plan_agents(agent_count),
+            ));
+        }
+    }
+    None
+}
+
+fn default_plan_agents(agent_count: usize) -> Vec<PlanAgentDraft> {
+    [
+        "Coordinator",
+        "Frontend",
+        "Backend",
+        "QA",
+        "DevOps",
+        "Security",
+        "Docs",
+        "Designer",
+        "Data",
+        "Researcher",
+        "Reviewer",
+        "Release",
+    ]
+    .into_iter()
+    .take(agent_count.max(1))
+    .map(|role| PlanAgentDraft {
+        role: role.to_owned(),
+        name: Some(format!("{role} Agent")),
+    })
+    .collect()
+}
+
+fn plan_graph_from_phases(
+    phases: Vec<PlannerPhase>,
+    agents: Vec<PlanAgentDraft>,
+) -> PlanGraphPayload {
+    let mut sprint_nodes = Vec::new();
+    let mut sprint_edges = Vec::new();
+    let mut task_nodes = Vec::new();
+    let mut task_edges = Vec::new();
+    let agent_roles = agents
+        .iter()
+        .filter(|a| !a.role.eq_ignore_ascii_case("Coordinator"))
+        .map(|a| a.role.clone())
+        .collect::<Vec<_>>();
+    let roles = if agent_roles.is_empty() {
+        vec!["Coordinator".to_owned()]
+    } else {
+        agent_roles
+    };
+    for (sprint_index, phase) in phases.into_iter().enumerate() {
+        let sprint_id = format!("s{}", sprint_index + 1);
+        sprint_nodes.push(PlanSprintNode {
+            id: sprint_id.clone(),
+            title: phase.name.clone(),
+            summary: None,
+            status: Some(if sprint_index == 0 { "active" } else { "planned" }.to_owned()),
+            level: sprint_index as i32,
+            order: 0,
+            points: phase.tasks.len() as i32,
+        });
+        if sprint_index > 0 {
+            sprint_edges.push(PlanEdge {
+                id: format!("se{}", sprint_index),
+                from: format!("s{}", sprint_index),
+                to: sprint_id.clone(),
+                kind: "dependency".to_owned(),
+            });
+        }
+        let mut previous_task_id: Option<String> = None;
+        for (task_index, task) in phase.tasks.into_iter().enumerate() {
+            let task_id = format!("t{}_{}", sprint_index + 1, task_index + 1);
+            let estimate = 1_500 + (task.title.len() as i32 * 8);
+            task_nodes.push(PlanTaskNode {
+                id: task_id.clone(),
+                sprint_id: sprint_id.clone(),
+                title: task.title,
+                priority: Some(task.priority),
+                agent_role: task
+                    .assignee
+                    .or_else(|| Some(roles[task_index % roles.len()].clone())),
+                agent_id: None,
+                status: Some("pending".to_owned()),
+                estimated_tokens: Some(estimate),
+                level: task_index as i32,
+                order: 0,
+                spec_section_id: None,
+            });
+            if let Some(prev) = previous_task_id {
+                task_edges.push(PlanEdge {
+                    id: format!("te{}_{}", sprint_index + 1, task_index),
+                    from: prev,
+                    to: task_id.clone(),
+                    kind: "dependency".to_owned(),
+                });
+            }
+            previous_task_id = Some(task_id);
+        }
+    }
+
+    PlanGraphPayload {
+        agents,
+        sprint_nodes,
+        sprint_edges,
+        task_nodes,
+        task_edges,
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -3802,10 +4005,84 @@ struct LaunchProjectBody {
     /// supplied.
     #[serde(default)]
     decompose: Option<bool>,
+    #[serde(default)]
+    plan_graph: Option<PlanGraphPayload>,
 }
 
 fn launch_step(name: &str, status: &str, detail: impl Into<String>) -> Value {
     json!({ "name": name, "status": status, "detail": detail.into() })
+}
+
+async fn get_project_plan_graph(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id}")))?;
+    let sprints_rows = sprints::list_by_project(database.conn(), &project_id).await?;
+    let tasks_rows = tasks::list_by_project(database.conn(), &project_id).await?;
+    let sprint_edges = sprint_dependencies::list_by_project(database.conn(), &project_id).await?;
+    let task_edges = task_dependencies::list_by_project(database.conn(), &project_id).await?;
+    let agents_rows = agents::list_by_project(database.conn(), &project_id).await?;
+    let assignments = agent_task_assignments::list_for_project_via_tasks(database.conn(), &project_id).await?;
+
+    Ok(Json(json!({
+        "agents": agents_rows,
+        "sprintNodes": sprints_rows.into_iter().map(|s| json!({
+            "id": s.id,
+            "title": s.name,
+            "status": s.status,
+            "level": s.graph_level,
+            "order": s.graph_order,
+            "points": s.points,
+        })).collect::<Vec<_>>(),
+        "sprintEdges": sprint_edges.into_iter().map(|e| json!({
+            "id": e.id,
+            "from": e.from_sprint_id,
+            "to": e.to_sprint_id,
+            "kind": e.kind,
+        })).collect::<Vec<_>>(),
+        "taskNodes": tasks_rows.into_iter().map(|t| json!({
+            "id": t.id,
+            "sprintId": t.sprint_id,
+            "title": t.title,
+            "priority": t.priority,
+            "agentId": t.agent_id,
+            "status": t.status,
+            "estimatedTokens": t.estimated_tokens,
+            "level": t.graph_level,
+            "order": t.graph_order,
+            "specSectionId": t.spec_section_id,
+        })).collect::<Vec<_>>(),
+        "taskEdges": task_edges.into_iter().map(|e| json!({
+            "id": e.id,
+            "from": e.from_task_id,
+            "to": e.to_task_id,
+            "kind": e.kind,
+        })).collect::<Vec<_>>(),
+        "assignments": assignments,
+    })))
+}
+
+async fn put_project_plan_graph(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    Json(plan): Json<PlanGraphPayload>,
+) -> Result<Json<Value>, AppError> {
+    let database = db(&state).await;
+    projects::get(database.conn(), &project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("project {project_id}")))?;
+    let (sprint_ids, task_ids) = persist_plan_graph(&state, &project_id, plan, true).await?;
+    emit(
+        &state,
+        "task.status",
+        json!({ "projectId": project_id, "planGraph": true }),
+    )
+    .await;
+    Ok(Json(json!({ "sprintIds": sprint_ids, "taskIds": task_ids })))
 }
 
 /// `POST /v1/projects/:project_id/launch` — run the real launch sequence for a
@@ -3936,7 +4213,24 @@ async fn launch_project(
     let mut sprint_ids: Vec<String> = Vec::new();
     let mut task_ids: Vec<String> = Vec::new();
     if want_decompose {
-        if let Some(desc) = description {
+        if let Some(plan_graph) = body.plan_graph {
+            match persist_plan_graph(&state, &project_id, plan_graph, true).await {
+                Ok((sprints, tasks)) => {
+                    sprint_ids = sprints;
+                    task_ids = tasks;
+                    steps.push(launch_step(
+                        "decompose-plan",
+                        "ok",
+                        format!(
+                            "created {} graph sprint(s), {} task(s), and agent assignments",
+                            sprint_ids.len(),
+                            task_ids.len()
+                        ),
+                    ));
+                }
+                Err(err) => steps.push(launch_step("decompose-plan", "warn", err.to_string())),
+            }
+        } else if let Some(desc) = description {
             match decompose_brief(&state, &project_id, desc).await {
                 Ok((sprints, tasks)) => {
                     sprint_ids = sprints;
@@ -4325,6 +4619,8 @@ async fn decompose_brief(
                 velocity: None,
                 points: 0,
                 position: i as i32,
+                graph_level: i as i32,
+                graph_order: 0,
             },
         )
         .await
@@ -4357,10 +4653,24 @@ async fn decompose_brief(
                     sprint_id: Some(sprint.id.clone()),
                     spec_section_id: None,
                     due_at: None,
+                    graph_level: 0,
+                    graph_order: task_ids.len() as i32,
                 },
             )
             .await
             .map_err(|e| format!("create task: {e}"))?;
+            if let Some(agent_id) = task.agent_id.clone() {
+                let _ = agent_task_assignments::create(
+                    database.conn(),
+                    agent_task_assignments::CreateAssignment {
+                        agent_id,
+                        task_id: task.id.clone(),
+                        expected_completion_at: None,
+                        state: "assigned".into(),
+                    },
+                )
+                .await;
+            }
             task_ids.push(task.id);
         }
     }
@@ -4370,6 +4680,294 @@ async fn decompose_brief(
         json!({ "projectId": project_id, "decomposed": true }),
     )
     .await;
+    Ok((sprint_ids, task_ids))
+}
+
+fn validate_plan_graph(plan: &PlanGraphPayload) -> Result<(), String> {
+    let sprint_ids: std::collections::HashSet<&str> =
+        plan.sprint_nodes.iter().map(|s| s.id.as_str()).collect();
+    if sprint_ids.len() != plan.sprint_nodes.len() {
+        return Err("duplicate mini-sprint ids".into());
+    }
+    let task_ids: std::collections::HashSet<&str> =
+        plan.task_nodes.iter().map(|t| t.id.as_str()).collect();
+    if task_ids.len() != plan.task_nodes.len() {
+        return Err("duplicate task ids".into());
+    }
+    for task in &plan.task_nodes {
+        if !sprint_ids.contains(task.sprint_id.as_str()) {
+            return Err(format!("task {} references missing mini-sprint {}", task.id, task.sprint_id));
+        }
+    }
+    validate_edges_acyclic("mini-sprint", &sprint_ids, &plan.sprint_edges)?;
+    validate_edges_acyclic("task", &task_ids, &plan.task_edges)?;
+    Ok(())
+}
+
+fn validate_edges_acyclic(
+    label: &str,
+    ids: &std::collections::HashSet<&str>,
+    edges: &[PlanEdge],
+) -> Result<(), String> {
+    let mut incoming: std::collections::HashMap<&str, usize> =
+        ids.iter().map(|id| (*id, 0)).collect();
+    let mut outgoing: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for edge in edges {
+        if !ids.contains(edge.from.as_str()) || !ids.contains(edge.to.as_str()) {
+            return Err(format!("{label} edge {} references a missing node", edge.id));
+        }
+        outgoing.entry(edge.from.as_str()).or_default().push(edge.to.as_str());
+        *incoming.entry(edge.to.as_str()).or_default() += 1;
+    }
+    let mut queue = incoming
+        .iter()
+        .filter_map(|(id, count)| (*count == 0).then_some(*id))
+        .collect::<Vec<_>>();
+    let mut visited = 0usize;
+    while let Some(id) = queue.pop() {
+        visited += 1;
+        if let Some(children) = outgoing.get(id) {
+            for child in children {
+                if let Some(count) = incoming.get_mut(child) {
+                    *count -= 1;
+                    if *count == 0 {
+                        queue.push(child);
+                    }
+                }
+            }
+        }
+    }
+    if visited != ids.len() {
+        return Err(format!("{label} graph contains a dependency cycle"));
+    }
+    Ok(())
+}
+
+async fn persist_plan_graph(
+    state: &AppState,
+    project_id: &str,
+    plan: PlanGraphPayload,
+    replace_existing: bool,
+) -> Result<(Vec<String>, Vec<String>), AppError> {
+    validate_plan_graph(&plan).map_err(AppError::BadRequest)?;
+    let database = db(state).await;
+    let txn = database.conn().begin().await?;
+
+    if replace_existing {
+        let existing_tasks = hive_db::entities::task::Entity::find()
+            .filter(hive_db::entities::task::Column::ProjectId.eq(project_id))
+            .filter(hive_db::entities::task::Column::DeletedAt.is_null())
+            .all(&txn)
+            .await?;
+        let task_ids = existing_tasks.into_iter().map(|t| t.id).collect::<Vec<_>>();
+        if !task_ids.is_empty() {
+            hive_db::entities::agent_task_assignment::Entity::delete_many()
+                .filter(hive_db::entities::agent_task_assignment::Column::TaskId.is_in(task_ids))
+                .exec(&txn)
+                .await?;
+        }
+        task_dependencies::delete_by_project(&txn, project_id).await?;
+        sprint_dependencies::delete_by_project(&txn, project_id).await?;
+        hive_db::entities::task::Entity::delete_many()
+            .filter(hive_db::entities::task::Column::ProjectId.eq(project_id))
+            .exec(&txn)
+            .await?;
+        hive_db::entities::sprint::Entity::delete_many()
+            .filter(hive_db::entities::sprint::Column::ProjectId.eq(project_id))
+            .exec(&txn)
+            .await?;
+    }
+
+    let coordinator = match hive_db::entities::agent::Entity::find()
+        .filter(hive_db::entities::agent::Column::ProjectId.eq(project_id))
+        .filter(hive_db::entities::agent::Column::Role.eq("Coordinator"))
+        .filter(hive_db::entities::agent::Column::DeletedAt.is_null())
+        .one(&txn)
+        .await?
+    {
+        Some(coord) => coord,
+        None => {
+            agents::create(
+                &txn,
+                agents::CreateAgent {
+                    project_id: project_id.to_owned(),
+                    slug: "coordinator".into(),
+                    name: "Coordinator".into(),
+                    role: "Coordinator".into(),
+                    model: "auto".into(),
+                    status: "idle".into(),
+                    parent_agent_id: None,
+                    spawned_by_message_id: None,
+                    enabled_tools: Some(coordinator_tools(Some(true))),
+                    system_prompt: Some(coordinator_system_prompt(Some(true))),
+                    model_provider_id: None,
+                    model_id: None,
+                },
+            )
+            .await?
+        }
+    };
+    let mut role_to_agent: std::collections::HashMap<String, hive_db::entities::agent::Model> =
+        hive_db::entities::agent::Entity::find()
+            .filter(hive_db::entities::agent::Column::ProjectId.eq(project_id))
+            .filter(hive_db::entities::agent::Column::DeletedAt.is_null())
+            .all(&txn)
+            .await?
+            .into_iter()
+            .map(|agent| (agent.role.to_lowercase(), agent))
+            .collect();
+
+    for planned in &plan.agents {
+        let role = planned.role.trim();
+        if role.is_empty() || role_to_agent.contains_key(&role.to_lowercase()) {
+            continue;
+        }
+        let name = planned
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or(role);
+        let created = agents::create(
+            &txn,
+            agents::CreateAgent {
+                project_id: project_id.to_owned(),
+                slug: slugify(role),
+                name: name.to_owned(),
+                role: role.to_owned(),
+                model: "auto".into(),
+                status: "idle".into(),
+                parent_agent_id: Some(coordinator.id.clone()),
+                spawned_by_message_id: None,
+                enabled_tools: None,
+                system_prompt: Some(format!("You are the {role} specialist for this HIVE project. Work only on assigned tasks and report blockers clearly.")),
+                model_provider_id: None,
+                model_id: None,
+            },
+        )
+        .await?;
+        let _ = agent_wires::create(&txn, project_id, &coordinator.id, &created.id).await;
+        role_to_agent.insert(role.to_lowercase(), created);
+    }
+
+    let mut sprint_id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let mut sprint_ids = Vec::new();
+    for (index, node) in plan.sprint_nodes.iter().enumerate() {
+        let sprint = sprints::create(
+            &txn,
+            sprints::CreateSprint {
+                project_id: project_id.to_owned(),
+                name: node.title.trim().to_owned(),
+                status: node.status.clone().unwrap_or_else(|| if node.level == 0 { "active".into() } else { "planned".into() }),
+                start_date: today.clone(),
+                end_date: today.clone(),
+                velocity: None,
+                points: node.points,
+                position: index as i32,
+                graph_level: node.level,
+                graph_order: node.order,
+            },
+        )
+        .await?;
+        sprint_id_map.insert(node.id.clone(), sprint.id.clone());
+        sprint_ids.push(sprint.id);
+    }
+
+    let mut task_id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut task_ids = Vec::new();
+    for node in &plan.task_nodes {
+        let agent_id = node
+            .agent_id
+            .clone()
+            .and_then(|candidate| {
+                role_to_agent
+                    .values()
+                    .find(|agent| agent.id == candidate && agent.project_id == project_id)
+                    .map(|agent| agent.id.clone())
+            })
+            .or_else(|| {
+                node.agent_role
+                    .as_deref()
+                    .map(str::to_lowercase)
+                    .and_then(|role| role_to_agent.get(&role).map(|a| a.id.clone()))
+            });
+        let sprint_id = sprint_id_map.get(&node.sprint_id).cloned();
+        let task = tasks::create(
+            &txn,
+            tasks::CreateTask {
+                project_id: project_id.to_owned(),
+                title: node.title.trim().to_owned(),
+                status: node.status.clone().unwrap_or_else(|| "pending".into()),
+                phase: sprint_id
+                    .as_deref()
+                    .and_then(|sid| sprint_id_map.iter().find(|(_, v)| v.as_str() == sid))
+                    .and_then(|(draft_id, _)| plan.sprint_nodes.iter().find(|s| &s.id == draft_id))
+                    .map(|s| s.title.clone()),
+                priority: node.priority.clone().unwrap_or_else(|| "medium".into()),
+                estimated_tokens: node.estimated_tokens.unwrap_or(0),
+                agent_id: agent_id.clone(),
+                sprint_id,
+                spec_section_id: node.spec_section_id.clone(),
+                due_at: None,
+                graph_level: node.level,
+                graph_order: node.order,
+            },
+        )
+        .await?;
+        if let Some(agent_id) = agent_id {
+            let _ = agent_task_assignments::create(
+                &txn,
+                agent_task_assignments::CreateAssignment {
+                    agent_id,
+                    task_id: task.id.clone(),
+                    expected_completion_at: None,
+                    state: "assigned".into(),
+                },
+            )
+            .await;
+        }
+        task_id_map.insert(node.id.clone(), task.id.clone());
+        task_ids.push(task.id);
+    }
+
+    for edge in &plan.sprint_edges {
+        let Some(from) = sprint_id_map.get(&edge.from).cloned() else { continue };
+        let Some(to) = sprint_id_map.get(&edge.to).cloned() else { continue };
+        sprint_dependencies::create(
+            &txn,
+            sprint_dependencies::CreateSprintDependency {
+                project_id: project_id.to_owned(),
+                from_sprint_id: from,
+                to_sprint_id: to,
+                kind: edge.kind.clone(),
+            },
+        )
+        .await?;
+    }
+
+    for edge in &plan.task_edges {
+        let Some(from) = task_id_map.get(&edge.from).cloned() else { continue };
+        let Some(to) = task_id_map.get(&edge.to).cloned() else { continue };
+        task_dependencies::create(
+            &txn,
+            task_dependencies::CreateTaskDependency {
+                project_id: project_id.to_owned(),
+                from_task_id: from,
+                to_task_id: to,
+                kind: edge.kind.clone(),
+            },
+        )
+        .await?;
+    }
+
+    txn.commit().await?;
+
+    let _ = state.executors.ensure(&coordinator.id, project_id).await;
+    for agent in role_to_agent.values() {
+        let _ = state.executors.ensure(&agent.id, project_id).await;
+    }
+
     Ok((sprint_ids, task_ids))
 }
 

@@ -12,18 +12,10 @@ import { toast } from 'sonner';
 import { StepConnectLlms } from './onboarding/StepConnectLlms';
 import { StepCoordinatorChat } from './onboarding/StepCoordinatorChat';
 import type { SovereigntyTier } from '@/types/domain';
+import type { PlanGraphPayload } from '@/api/planGraph';
+import { SprintPlanExplorer } from '@/components/planning/SprintPlanExplorer';
 
-interface GenesisPlanPhase {
-  phase: string;
-  tasks: string[];
-}
-interface GenesisPlanPreview {
-  phases: GenesisPlanPhase[];
-  requirements: { title: string; priority: string }[];
-  roster: { role: string }[];
-  estimatedDurationDays: number;
-  sourceCharacters: number;
-}
+type GenesisPlanPreview = PlanGraphPayload;
 
 // Phase 2 of the redesign: insert Connect-LLMs as step 2, between
 // Budget and the CEO Describe chat. The total length stays in lockstep
@@ -124,6 +116,7 @@ export default function Onboarding() {
         body: JSON.stringify({
           description: trimmedDescription || undefined,
           decompose: trimmedDescription.length > 0,
+          planGraph: onboardingDraft.planGraph ?? undefined,
         }),
       });
       setLaunch({ phase: 'done', steps: result.steps.length ? result.steps : LAUNCH_STEP_NAMES.map((name) => ({ name, status: 'ok', detail: '' })) });
@@ -274,6 +267,8 @@ export default function Onboarding() {
             agents={onboardingDraft.agents}
             tier={onboardingDraft.tier}
             description={onboardingDraft.description}
+            planGraph={onboardingDraft.planGraph}
+            onPlanGraphChange={(planGraph) => updateOnboardingDraft({ planGraph })}
           />
         )}
 
@@ -405,12 +400,16 @@ function StepPlanReview({
   agents,
   tier,
   description,
+  planGraph,
+  onPlanGraphChange,
 }: {
   readonly source: 'scratch' | 'template' | 'import' | null;
   readonly budget: number;
   readonly agents: number;
   readonly tier: SovereigntyTier;
   readonly description: string;
+  readonly planGraph: PlanGraphPayload | null;
+  readonly onPlanGraphChange: (plan: PlanGraphPayload) => void;
 }) {
   // Real preview from the backend, grounded in the user's description.
   const previewQuery = useQuery({
@@ -424,7 +423,13 @@ function StepPlanReview({
     staleTime: 60_000,
   });
 
-  const generatedPlan = previewQuery.data?.phases ?? [];
+  useEffect(() => {
+    if (previewQuery.data && !planGraph) {
+      onPlanGraphChange(previewQuery.data);
+    }
+  }, [onPlanGraphChange, planGraph, previewQuery.data]);
+
+  const activePlan = planGraph ?? previewQuery.data ?? null;
 
   return (
     <div className="space-y-6">
@@ -471,29 +476,23 @@ function StepPlanReview({
             </button>
           </div>
         )}
-        {!previewQuery.isLoading && !previewQuery.isError && generatedPlan.length === 0 && (
+        {!previewQuery.isLoading && !previewQuery.isError && !activePlan && (
           <div className="rounded-lg border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
             Add a description to see a generated plan.
           </div>
         )}
-        {generatedPlan.map((phase) => (
-          <div key={phase.phase} className="rounded-lg border border-border bg-card p-4">
-            <h3 className="text-sm font-semibold mb-2">{phase.phase}</h3>
-            <div className="space-y-1">
-              {phase.tasks.map((task) => (
-                <div key={task} className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <div className="h-1.5 w-1.5 rounded-full bg-primary/40" />
-                  {task}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
+        {activePlan && (
+          <SprintPlanExplorer
+            plan={activePlan}
+            editable
+            onChange={onPlanGraphChange}
+          />
+        )}
       </div>
 
       <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 text-center">
         <span className="text-sm font-medium">
-          {agents} agents • {generatedPlan.length || 3} phases
+          {agents} max parallel agents • {activePlan?.sprintNodes.length ?? 0} mini-sprints • {activePlan?.taskNodes.length ?? 0} tasks
         </span>
       </div>
     </div>

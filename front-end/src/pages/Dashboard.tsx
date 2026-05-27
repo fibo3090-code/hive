@@ -14,8 +14,9 @@ import { DashboardMetrics } from '@/components/layout/dashboard/DashboardMetrics
 import { ActiveTasks } from '@/components/layout/dashboard/ActiveTasks';
 import { AgentCards } from '@/components/layout/dashboard/AgentCards';
 import { ActivityFeed } from '@/components/layout/dashboard/ActivityFeed';
-import { SprintTimeline } from '@/components/layout/dashboard/SprintTimeline';
 import { BackgroundSessionCard } from '@/components/layout/dashboard/BackgroundSessionCard';
+import { usePlanGraph } from '@/api/planGraph';
+import { SprintPlanExplorer } from '@/components/planning/SprintPlanExplorer';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -43,6 +44,7 @@ export default function Dashboard() {
   const { data: costTimeline = [] } = useCostTimelineData(activeProject?.id);
   const { data: taskDistribution = [] } = useTaskDistributionData(activeProject?.id);
   const { data: agentTokenUsage = [] } = useAgentTokenUsageData(activeProject?.id);
+  const planGraph = usePlanGraph(activeProject?.id);
 
   const budgetTotal = state.session.budgetTotal || 250;
   const budgetUsed = state.session.budgetUsed;
@@ -158,7 +160,13 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <SprintTimeline projectId={activeProject?.id} tasks={tasks} />
+          {planGraph.data && planGraph.data.sprintNodes.length > 0 ? (
+            <SprintPlanExplorer plan={planGraph.data} agents={agents} compact />
+          ) : (
+            <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+              No sprint graph yet. Generate or decompose a spec from Planning.
+            </div>
+          )}
         </div>
 
         <div className="space-y-6">

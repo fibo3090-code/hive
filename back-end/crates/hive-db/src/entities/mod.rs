@@ -27,6 +27,8 @@ pub mod skill;
 pub mod spec_document;
 pub mod spec_document_section;
 pub mod sprint;
+pub mod sprint_dependency;
 pub mod synthesis_job;
 pub mod task;
+pub mod task_dependency;
 pub mod tech_debt_item;
