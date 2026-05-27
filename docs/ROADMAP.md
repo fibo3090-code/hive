@@ -4,6 +4,22 @@ The forward plan. For *current* status of every feature see
 [`FEATURE_STATUS.md`](FEATURE_STATUS.md); for how the built parts work see
 [`architecture.md`](architecture.md). Actionable technical debt and remaining bugs are tracked in [`BACKLOG.md`](BACKLOG.md).
 
+> **2026-05-27 audit pass:** a six-track deep audit (security, runtime
+> concurrency, API layer, DB layer, LLM clients, frontend) surfaced 81
+> additional findings (ZZ1–ZZ81 in [`BACKLOG.md`](BACKLOG.md)), including
+> several 🔴 items — `fs_write` directory-escape via planted symlink
+> (ZZ1), cancel/pause decoupled from the in-flight LLM stream (ZZ2),
+> the loop detector reading the wrong JSON key and never matching (ZZ3),
+> the `PermissionMatrix` being dead code (ZZ4), UTF-8 corruption on
+> stream chunk boundaries (ZZ25), the SeaORM migration vector being out
+> of filename order (ZZ37), non-transactional `seed_demo` (ZZ38),
+> `approve_spawn_request` double-spawning the synthesis pipeline (ZZ52),
+> and `delete_project` not stopping executors or cleaning the workspace
+> (ZZ53). The revised sprint ordering is at the bottom of
+> [`BACKLOG.md`](BACKLOG.md). The items below predate that audit; treat
+> the audit findings as the higher-priority queue until they're worked
+> through.
+
 Each item below is a multi-commit effort; rough descending priority.
 
 ## Recently delivered
