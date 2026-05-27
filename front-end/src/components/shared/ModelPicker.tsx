@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Cpu, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useLlmProviders, useProviderModels, type LlmProvider } from '@/api/llm';
@@ -18,18 +18,40 @@ interface ModelPickerProps {
 export function ModelPicker({ value, onChange, className, disabled }: ModelPickerProps) {
   const providersQuery = useLlmProviders();
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(value?.providerId ?? null);
+  const lastValueProviderRef = useRef<string | null>(value?.providerId ?? null);
+  const userProviderChoiceRef = useRef(false);
   const connectedProviders = useMemo(
     () => (providersQuery.data ?? []).filter((p: LlmProvider) => p.connected),
     [providersQuery.data],
   );
 
   useEffect(() => {
-    if (value?.providerId) {
-      setSelectedProviderId(value.providerId);
-    } else if (!selectedProviderId && connectedProviders.length > 0) {
+    const valueProviderId = value?.providerId ?? null;
+    if (valueProviderId === selectedProviderId) {
+      userProviderChoiceRef.current = false;
+    }
+    if (valueProviderId && valueProviderId !== lastValueProviderRef.current && !userProviderChoiceRef.current) {
+      setSelectedProviderId(valueProviderId);
+    } else if (!valueProviderId && !selectedProviderId && connectedProviders.length > 0) {
       setSelectedProviderId(connectedProviders[0].id);
     }
+    lastValueProviderRef.current = valueProviderId;
   }, [value?.providerId, selectedProviderId, connectedProviders]);
+
+  const handleProviderSelect = (providerId: string) => {
+    userProviderChoiceRef.current = true;
+    setSelectedProviderId(providerId);
+  };
+
+  useEffect(() => {
+    if (
+      selectedProviderId &&
+      connectedProviders.length > 0 &&
+      !connectedProviders.some((provider) => provider.id === selectedProviderId)
+    ) {
+      setSelectedProviderId(value?.providerId ?? connectedProviders[0]?.id ?? null);
+    }
+  }, [connectedProviders, selectedProviderId, value?.providerId]);
 
   const activeProviderId = selectedProviderId ?? value?.providerId ?? connectedProviders[0]?.id ?? null;
   const modelsQuery = useProviderModels(activeProviderId);
@@ -44,6 +66,8 @@ export function ModelPicker({ value, onChange, className, disabled }: ModelPicke
     }
     if (models.length > 0 && !hasValidSelection) {
       onChange({ providerId: activeProviderId, modelId: models[0].id });
+      lastValueProviderRef.current = activeProviderId;
+      userProviderChoiceRef.current = false;
     }
   }, [activeProviderId, hasValidSelection, models, onChange, value]);
 
@@ -67,7 +91,7 @@ export function ModelPicker({ value, onChange, className, disabled }: ModelPicke
             key={p.id}
             type="button"
             disabled={disabled}
-            onClick={() => setSelectedProviderId(p.id)}
+            onClick={() => handleProviderSelect(p.id)}
             className={cn(
               'rounded-md px-3 py-1.5 text-xs border transition-colors',
               activeProviderId === p.id

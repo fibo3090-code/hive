@@ -19,7 +19,7 @@
  * so `/launch` still sees a brief.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Hexagon, Send, Upload, MessagesSquare, FileText, ClipboardCheck } from 'lucide-react';
+import { Hexagon, Send, Upload, MessagesSquare, FileText, ClipboardCheck, Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/api/client';
 import {
@@ -29,6 +29,8 @@ import {
   type ChatMessage,
 } from '@/api/chat';
 import { Button } from '@/components/ui/button';
+import { ModelPicker, type ModelSelection } from '@/components/shared/ModelPicker';
+import { useWorkspace } from '@/context/WorkspaceContext';
 import { cn } from '@/lib/utils';
 
 interface ConverseResponse {
@@ -167,6 +169,9 @@ function CoordinatorChatPanel({
   const streaming = useChatStream(threadId);
   const sendMessage = useSendChatMessage(threadId);
   const [input, setInput] = useState('');
+  const { defaultModel } = useWorkspace();
+  const [modelOverride, setModelOverride] = useState<ModelSelection | null>(null);
+  const [showModelPicker, setShowModelPicker] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // Memo the source data so React's exhaustive-deps check on `renderMessages`
@@ -241,7 +246,10 @@ function CoordinatorChatPanel({
     if (!trimmed || !threadId || sendMessage.isPending) return;
     setInput('');
     try {
-      await sendMessage.mutateAsync({ content: trimmed });
+      await sendMessage.mutateAsync({
+        content: trimmed,
+        model: modelOverride ?? defaultModel ?? null,
+      });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Send failed');
       setInput(trimmed); // restore so the user doesn't lose what they typed
@@ -267,7 +275,7 @@ function CoordinatorChatPanel({
   }
 
   return (
-    <div className="rounded-lg border border-border bg-card flex flex-col h-[440px]">
+    <div className="rounded-lg border border-border bg-card flex h-[min(620px,70vh)] min-h-[460px] flex-col overflow-hidden">
       <div className="border-b border-border px-4 py-2 flex items-center justify-between bg-surface-2/40">
         <div className="flex items-center gap-2">
           <Hexagon className="h-4 w-4 text-primary" />
@@ -339,8 +347,40 @@ function CoordinatorChatPanel({
         )}
       </div>
 
+      {showModelPicker && (
+        <div className="border-t border-border bg-card/80 px-4 py-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="text-micro uppercase tracking-wide text-muted-foreground">
+              Model for coordinator chat
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowModelPicker(false)}
+              className="rounded-md px-2 py-1 text-micro text-muted-foreground hover:bg-surface-2 hover:text-foreground"
+            >
+              Hide
+            </button>
+          </div>
+          <div className="max-h-44 overflow-y-auto pr-1 scrollbar-thin">
+            <ModelPicker value={modelOverride ?? defaultModel ?? null} onChange={setModelOverride} />
+          </div>
+        </div>
+      )}
+
       <div className="border-t border-border p-3">
-        <div className="flex gap-2">
+        <div className="flex items-end gap-2 rounded-lg border border-border bg-surface-2 p-2">
+          <button
+            type="button"
+            onClick={() => setShowModelPicker((open) => !open)}
+            className={cn(
+              'rounded-md p-1.5 transition-colors',
+              showModelPicker ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
+            )}
+            aria-label="Toggle coordinator model picker"
+            title="Choose the model for the next Coordinator message"
+          >
+            <Settings2 className="h-4 w-4" />
+          </button>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -351,7 +391,7 @@ function CoordinatorChatPanel({
               }
             }}
             placeholder="Tell the Coordinator what you want to build… (⌘Enter to send)"
-            className="flex-1 rounded-md border border-border bg-surface-2 px-3 py-2 text-sm resize-none h-16"
+            className="min-h-[44px] max-h-[120px] flex-1 resize-none bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted-foreground"
           />
           <Button
             onClick={() => void submit()}
