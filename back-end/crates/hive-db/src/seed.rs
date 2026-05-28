@@ -910,14 +910,24 @@ pub async fn seed_demo(db: &DatabaseConnection) -> Result<(), DbErr> {
     // six-tool list would never recover.
     heal_enabled_tools(db).await?;
 
-    // Idempotency guard: if a previous boot completed seeding, skip.
-    // Avoids races on simultaneous startup (two processes both finding
-    // an empty `projects` table) and avoids re-creating notifications
-    // when the user has only deleted some demo rows.
-    if settings::get_value(db, SEED_SENTINEL_SCOPE, SEED_SENTINEL_KEY)
-        .await?
-        .is_some()
-    {
+    // ZZ38: atomic claim. Two concurrent first-boots (systemd
+    // restart-loop, tmux double-spawn, integration test parallelism)
+    // would both see no sentinel and both run the body, creating
+    // duplicate notifications + audit rows since not every step is
+    // idempotent. `put_value_if_absent` uses `ON CONFLICT DO NOTHING`
+    // so exactly one caller wins the claim and runs the body.
+    let claimed = settings::put_value_if_absent(
+        db,
+        SEED_SENTINEL_SCOPE,
+        SEED_SENTINEL_KEY,
+        json!({ "status": "in-progress", "at": crate::repos::now_rfc3339() }),
+    )
+    .await?;
+    if !claimed {
+        // Another caller has already seeded or is mid-seed. The
+        // sentinel is overwritten to `status: "done"` at the bottom
+        // of this function; if it's stuck on `in-progress` after a
+        // crash, the operator can clear the row to retry.
         return Ok(());
     }
 
@@ -1079,12 +1089,14 @@ pub async fn seed_demo(db: &DatabaseConnection) -> Result<(), DbErr> {
         .await?;
     }
 
-    // Sentinel: subsequent calls short-circuit at the top.
+    // Sentinel: overwrite the `in-progress` claim with `done` so the
+    // status reflects completion. `put_value` is upsert so this lands
+    // regardless of prior content.
     settings::put_value(
         db,
         SEED_SENTINEL_SCOPE,
         SEED_SENTINEL_KEY,
-        json!({ "at": crate::repos::now_rfc3339() }),
+        json!({ "status": "done", "at": crate::repos::now_rfc3339() }),
     )
     .await?;
 

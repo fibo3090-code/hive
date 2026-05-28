@@ -118,3 +118,30 @@ pub async fn update(
     model.updated_at = Set(now_rfc3339());
     model.update(db).await
 }
+
+/// Atomically transition `id` from `from` to `to`. Returns the post-update
+/// row if exactly one row was changed (the caller won the race); returns
+/// `Ok(None)` if no row matched the precondition — either the row
+/// vanished or another caller already moved it past `from`.
+///
+/// Used by `approve_spawn_request` to close ZZ52: two parallel approval
+/// clicks would otherwise both read `status == "awaiting-approval"` and
+/// both spawn the synthesis pipeline, double-billing the LLM.
+pub async fn transition_status(
+    db: &DatabaseConnection,
+    id: &str,
+    from: &str,
+    to: &str,
+) -> Result<Option<Model>, DbErr> {
+    let res = Entity::update_many()
+        .col_expr(Column::Status, sea_query::Expr::value(to.to_owned()))
+        .col_expr(Column::UpdatedAt, sea_query::Expr::value(now_rfc3339()))
+        .filter(Column::Id.eq(id.to_owned()))
+        .filter(Column::Status.eq(from.to_owned()))
+        .exec(db)
+        .await?;
+    if res.rows_affected == 0 {
+        return Ok(None);
+    }
+    Entity::find_by_id(id.to_owned()).one(db).await
+}

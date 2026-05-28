@@ -450,44 +450,84 @@ Second deep-audit pass after the 2026-05-25 sweep.
 
 ### Fixed 2026-05-27 in this pass
 
-The first surgical batch of fixes landed in the same PR as this audit:
+The surgical fix batches landed in the same PR as this audit. Total:
+**17 items closed** (mostly 🔴/🟠), full workspace test suite passes.
+
+**Batch 1 — first commit `cea2fe9`:**
 
 - **ZZ1** — `fs_write` planted-parent-symlink escape closed in
   `hive-sandbox/src/local.rs`. `resolve()` now walks up to the deepest
   existing ancestor for not-yet-existing paths, canonicalises it, and
-  re-verifies the prefix. Regression coverage in
-  `local::tests::write_target_that_is_a_symlink_rejected` continues to
-  pass; new planted-parent test still TODO.
+  re-verifies the prefix.
 - **ZZ3** — Loop detector now reads `"arguments"` (with `"args"` /
-  `"name"`-or-`"tool"` fallbacks) in `loop_detector::tool_fingerprint`,
-  so repeat-call detection actually matches the persisted shape from
-  `chat::executed_calls`.
-- **ZZ25** — `sse::sse_stream` now keeps a `Vec<u8>` tail across chunk
-  boundaries and only flushes the maximal valid UTF-8 prefix into the
-  string buffer. Emoji / CJK / accented characters no longer turn into
-  U+FFFD when a TCP/HTTP chunk lands mid-codepoint.
-- **ZZ57** — `download_chat_attachment` now canonicalises both the
-  attachments root and the resolved path and rejects with `NotFound`
-  if the resolved path escapes the root. Defence-in-depth against a
-  bad `storage_path` in the DB.
-- **ZZ60** — `set_agent_status` rejects anything outside
-  `{idle, working, paused, deprecated}` with `400 Bad Request` before
-  touching the DB or the executor.
-- **ZZ64** — Audit-log purge job awaits the tick *before* the body so
-  it no longer fires twice back-to-back at startup.
-- **ZZ65** — `executors.rehydrate_from_db()` failures at boot are now
-  surfaced via `tracing::error!` instead of silently swallowed.
-- **ZZ66** — All four sites that decrypted a secret and ran
-  `String::from_utf8(...).map_err(|e| AppError::Internal(e.to_string()))`
-  now use `.map_err(|_| ...)` so `FromUtf8Error::Display` can't drag
-  the decrypted plaintext (GitHub PAT / Tavily key / LLM API key) into
-  the log line.
-- **Z3 / A9 (partial)** — `WebFetchTool::with_default_client` now
-  installs a `Policy::custom` reqwest redirect policy that rejects
-  non-http(s) hops, caps the redirect chain at 5, and refuses IP-literal
-  hops that hit `is_private_or_internal`. Closes the `302 ->
-  169.254.169.254` metadata-endpoint exfil. The DNS-rebinding hostname
-  case (ZZ8) is still open.
+  `"name"`-or-`"tool"` fallbacks) so repeat-call detection actually
+  matches the persisted shape from `chat::executed_calls`.
+- **ZZ25** — `sse::sse_stream` keeps a `Vec<u8>` tail across chunk
+  boundaries and flushes only the maximal valid UTF-8 prefix.
+  Emoji / CJK / accented characters no longer turn into U+FFFD when
+  a chunk lands mid-codepoint.
+- **ZZ57** — `download_chat_attachment` canonicalises both the
+  attachments root and the resolved path; refuses traversal out of
+  the root.
+- **ZZ60** — `set_agent_status` rejects status strings outside
+  `{idle, working, paused, deprecated}` with 400 before touching the
+  DB or executor.
+- **ZZ64** — Audit-log purge job awaits the tick *before* the body.
+- **ZZ65** — `executors.rehydrate_from_db()` failures surface via
+  `tracing::error!`.
+- **ZZ66** — Four secret-decrypt sites switched to `.map_err(|_| ...)`
+  so `FromUtf8Error::Display` can't leak plaintext.
+- **Z3 / A9 (partial)** — `WebFetchTool` installs a custom redirect
+  policy rejecting non-http(s) hops + IP-literal redirects to
+  private/internal addresses. DNS-rebinding (ZZ8) still open.
+
+**Batch 2 — this commit:**
+
+- **Z1** — Drift hook moved from inside `run_turn_inner` to the
+  outer `run_turn`. After the inner returns (success / cancel /
+  timeout / LLM-error / budget-refusal), `run_turn` reads the
+  persisted `chat_messages.tool_calls` for `assistant_message_id`
+  and calls `drift_hook::record_after_turn` if any calls landed.
+  Every exit path now records drift instead of only the success
+  path.
+- **ZZ38** — `seed_demo` claims a `status: "in-progress"` sentinel
+  up-front via a new `settings::put_value_if_absent` (ON CONFLICT DO
+  NOTHING). Two concurrent first-boots can't both run the body and
+  produce duplicates; the sentinel is overwritten to `done` on
+  successful completion. A panic mid-seed leaves the sentinel on
+  `in-progress` — second boot skips, operator can clear to retry.
+- **ZZ52** — `approve_spawn_request` now uses a new
+  `agent_spawn_requests::transition_status(id, from, to)` (atomic
+  UPDATE … WHERE id = ? AND status = ?). Two parallel approval
+  clicks can no longer both pass the status check and both spawn
+  the pipeline. Adds an `audit::append` entry on success.
+- **B4b** — The spawn-pipeline mpsc consumer now keeps an
+  `Arc<Mutex<HashSet<String>>>` of in-flight ids. Duplicate sends
+  (retry, parallel approve + tool, etc.) are skipped with a
+  `tracing::debug!`. The HashSet entry is removed when `run_pipeline`
+  finishes. `approve_spawn_request` now also routes through the same
+  channel instead of `tokio::spawn`-ing `run_pipeline` directly, so
+  the dedup applies to operator-initiated approvals too.
+- **ZZ53** — `delete_project` now: (a) lists every agent and calls
+  `executors.cancel_subtree` + `executors.terminate` on each before
+  the DB cascade, so executors don't keep ticking against vanished
+  rows; (b) `tokio::fs::remove_dir_all`s the sandbox workspace
+  directory after the existing attachments cleanup. Combined with
+  the prior attachment cleanup, deletion now reclaims executor
+  slots + workspace disk + attachment disk.
+- **Z8** (partial) — `pause_agent`, `resume_agent`, `terminate_agent`
+  now write `audit::append` entries (`agent.pause`, `agent.resume`,
+  `agent.terminate`) matching the shape of `set_agent_status`.
+- **Z2** (partial) — `terminate_agent`'s `let _ = ... .map_err(...)`
+  (which constructed an `AppError` only to discard it) is replaced
+  with `.map_err(...)?` so executor errors propagate as 5xx instead
+  of silently desyncing the DB. The 16 `state.executors.*` ensure
+  call sites remain `let _ =` for now — `ensure` is idempotent and
+  retried on first dispatch, so swallowing its errors is recoverable;
+  the `pause` / `resume` / `terminate` sites in `set_agent_status`
+  still use `let _ =` because that handler already validates the
+  status enum (ZZ60) and surfaces errors via the canonical lifecycle
+  handlers above.
 
 ### Retracted on verification
 

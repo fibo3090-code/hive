@@ -518,12 +518,34 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     };
 
     // B4: drain the spawn-pipeline channel — every `request_capability`
-    // call from an agent lands here. Build deps fresh per request so
-    // settings changes (provider keys, search URL) are picked up live.
+    // call from an agent (and every `approve_spawn_request` from the
+    // operator) lands here. Build deps fresh per request so settings
+    // changes (provider keys, search URL) are picked up live.
+    //
+    // B4b: dedup in-flight ids. Two sends with the same
+    // `spawn_request_id` (duplicate native tool_call, retry after a
+    // timeout, race between agent-tool and approve handler) used to
+    // spawn two concurrent `run_pipeline` tasks on the same row,
+    // double-billing the LLM and risking duplicate `custom_mcp_servers`
+    // rows. The Mutex<HashSet> below holds every id whose pipeline is
+    // currently running; second arrivals skip silently.
     {
+        use std::collections::HashSet;
         let pipeline_state = state.clone();
+        let in_flight: Arc<tokio::sync::Mutex<HashSet<String>>> =
+            Arc::new(tokio::sync::Mutex::new(HashSet::new()));
         tokio::spawn(async move {
             while let Some(spawn_request_id) = spawn_pipeline_rx.recv().await {
+                {
+                    let mut guard = in_flight.lock().await;
+                    if !guard.insert(spawn_request_id.clone()) {
+                        tracing::debug!(
+                            spawn_request_id,
+                            "agent-initiated pipeline: skipping duplicate in-flight id (B4b)"
+                        );
+                        continue;
+                    }
+                }
                 let row = match agent_spawn_requests::get(
                     db(&pipeline_state).await.conn(),
                     &spawn_request_id,
@@ -532,10 +554,12 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
                 {
                     Ok(Some(r)) => r,
                     Ok(None) => {
+                        in_flight.lock().await.remove(&spawn_request_id);
                         tracing::warn!(spawn_request_id, "agent-initiated pipeline: row vanished");
                         continue;
                     }
                     Err(err) => {
+                        in_flight.lock().await.remove(&spawn_request_id);
                         tracing::warn!(
                             spawn_request_id, error = %err,
                             "agent-initiated pipeline: lookup failed"
@@ -546,6 +570,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
                 let deps = match build_pipeline_deps(&pipeline_state, &row.project_id).await {
                     Ok(d) => d,
                     Err(err) => {
+                        in_flight.lock().await.remove(&spawn_request_id);
                         tracing::warn!(
                             spawn_request_id, error = %err,
                             "agent-initiated pipeline: build_pipeline_deps failed"
@@ -556,8 +581,11 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
                 let bus = EventBus::new(pipeline_state.events.clone());
                 let conn = db(&pipeline_state).await;
                 let id = spawn_request_id.clone();
+                let in_flight_for_task = in_flight.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = run_pipeline(conn.conn(), &bus, deps, &id).await {
+                    let res = run_pipeline(conn.conn(), &bus, deps, &id).await;
+                    in_flight_for_task.lock().await.remove(&id);
+                    if let Err(e) = res {
                         tracing::error!(
                             spawn_request_id = id, error = %e,
                             "agent-initiated pipeline: run failed"
@@ -2077,6 +2105,29 @@ async fn delete_project(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
 
+    // ZZ53: cancel + terminate every executor for this project before
+    // the cascade deletes the agent rows. Otherwise the in-process
+    // executors keep ticking against vanished rows, billing turns that
+    // can never persist, and the cancel-token tree leaks.
+    let agent_ids: Vec<String> = agents::list_by_project(database.conn(), &project_id)
+        .await?
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+    for agent_id in &agent_ids {
+        state.executors.cancel_subtree(agent_id).await;
+        if let Err(err) = state.executors.terminate(agent_id).await {
+            // NotFound is benign — the agent had no live executor.
+            // Any other error means something is wedged; log it but
+            // continue: stopping the cascade leaves the project in
+            // worse shape than completing it.
+            tracing::warn!(
+                project_id, agent_id, error = %err,
+                "delete_project: executor.terminate failed (continuing)"
+            );
+        }
+    }
+
     // Purge attachment rows + on-disk files for every thread before the cascade
     // deletes the threads/messages and orphans them.
     let thread_ids: Vec<String> = chat_threads::list_by_project(database.conn(), &project_id)
@@ -2089,6 +2140,20 @@ async fn delete_project(
     // Best-effort: also nuke the project's attachments directory in case any
     // files were never registered or had drifted relative paths.
     let _ = tokio::fs::remove_dir_all(attachments_root(&data_dir, &project_id)).await;
+
+    // ZZ53: nuke the sandbox workspace dir too. `delete_project` used
+    // to leave `<data_dir>/workspaces/<project_id>/` on disk — every
+    // demo create-delete-recreate cycle leaked GB of compiled
+    // artifacts, node_modules, etc.
+    let workspace_path = workspace_dir(&data_dir, &project_id);
+    if let Err(err) = tokio::fs::remove_dir_all(&workspace_path).await {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                project_id, path = %workspace_path.display(), error = %err,
+                "delete_project: workspace remove_dir_all failed"
+            );
+        }
+    }
 
     projects::delete(database.conn(), &project_id).await?;
 
@@ -2392,7 +2457,19 @@ async fn pause_agent(
         .pause(&agent_id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let _ = agents::set_status(database.conn(), &agent.project_id, &agent_id, "paused").await?;
+    let updated = agents::set_status(database.conn(), &agent.project_id, &agent_id, "paused").await?;
+    // Z8: lifecycle endpoints used to skip audit; only `set_agent_status`
+    // wrote a row. Now every pause/resume/terminate is auditable.
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.pause",
+        "agent",
+        &agent_id,
+        Some(serde_json::to_value(&agent).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
     emit(
         &state,
         "agent.status",
@@ -2416,7 +2493,17 @@ async fn resume_agent(
         .resume(&agent_id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let _ = agents::set_status(database.conn(), &agent.project_id, &agent_id, "working").await?;
+    let updated = agents::set_status(database.conn(), &agent.project_id, &agent_id, "working").await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.resume",
+        "agent",
+        &agent_id,
+        Some(serde_json::to_value(&agent).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
     emit(
         &state,
         "agent.status",
@@ -2438,12 +2525,26 @@ async fn terminate_agent(
     // Cascade cancel to every descendant first so child agents stop
     // mid-turn rather than completing work that's about to be discarded.
     state.executors.cancel_subtree(&agent_id).await;
-    let _ = state
+    // Z2 (partial): the previous shape was `let _ = ... .map_err(...)`
+    // which constructed an AppError just to throw it away. Now any
+    // executor error becomes a real 5xx so the DB row and executor
+    // don't silently desync.
+    state
         .executors
         .terminate(&agent_id)
         .await
-        .map_err(|e| AppError::Internal(e.to_string()));
-    let _ = agents::set_status(database.conn(), &agent.project_id, &agent_id, "deprecated").await;
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let updated = agents::set_status(database.conn(), &agent.project_id, &agent_id, "deprecated").await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.terminate",
+        "agent",
+        &agent_id,
+        Some(serde_json::to_value(&agent).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
     emit(
         &state,
         "agent.status",
@@ -8258,28 +8359,50 @@ async fn approve_spawn_request(
     Path(spawn_request_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    let row = agent_spawn_requests::get(database.conn(), &spawn_request_id)
+    // ZZ52: atomic transition. The previous shape was
+    // `get → check status → spawn`, which lets two parallel approval
+    // clicks both see `awaiting-approval` and both spawn the pipeline.
+    // `transition_status` updates only if the row is still in
+    // `awaiting-approval`, so exactly one approval call wins.
+    let before = agent_spawn_requests::get(database.conn(), &spawn_request_id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("spawn request {spawn_request_id} not found")))?;
-
-    if row.status != "awaiting-approval" {
-        return Err(AppError::BadRequest(format!(
-            "spawn request {} is in status {}, cannot approve",
-            spawn_request_id, row.status
-        )));
-    }
-
-    // Re-spawn the pipeline (it will resume from the current state)
-    let deps = build_pipeline_deps(&state, &row.project_id).await?;
-    let bus = EventBus::new(state.events.clone());
-    let db_clone = database.clone();
-    let id = spawn_request_id.clone();
-
-    tokio::spawn(async move {
-        if let Err(e) = run_pipeline(db_clone.conn(), &bus, deps, &id).await {
-            tracing::error!("spawn pipeline failed: {}", e);
+        .ok_or_else(|| {
+            AppError::NotFound(format!("spawn request {spawn_request_id} not found"))
+        })?;
+    let row = match agent_spawn_requests::transition_status(
+        database.conn(),
+        &spawn_request_id,
+        "awaiting-approval",
+        "approved",
+    )
+    .await?
+    {
+        Some(row) => row,
+        None => {
+            return Err(AppError::BadRequest(format!(
+                "spawn request {} is in status {}, cannot approve",
+                spawn_request_id, before.status
+            )));
         }
-    });
+    };
+
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent_spawn_request.approve",
+        "agent_spawn_request",
+        &spawn_request_id,
+        Some(serde_json::to_value(&before).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&row).unwrap_or(Value::Null)),
+    )
+    .await?;
+
+    // Route through the same mpsc the `request_capability` tool uses,
+    // so the consumer's B4b dedup applies uniformly. Previously this
+    // handler bypassed the channel and `tokio::spawn`-ed `run_pipeline`
+    // directly, so a duplicate from the channel could race with this
+    // one.
+    let _ = state.spawn_pipeline_tx.send(spawn_request_id);
 
     Ok(Json(json!({ "ok": true })))
 }
