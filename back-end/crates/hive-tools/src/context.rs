@@ -142,11 +142,8 @@ fn normalize_protected_path(path: &str) -> String {
 }
 
 fn is_system_protected(norm: &str) -> bool {
-    norm == ".env"
-        || norm.starts_with(".env.")
-        || norm == ".env/"
-        || norm == ".git"
-        || norm.starts_with(".git/")
+    norm.split('/')
+        .any(|part| part == ".env" || part.starts_with(".env.") || part == ".git")
 }
 
 #[cfg(test)]
@@ -176,6 +173,19 @@ mod path_protection_tests {
     }
 
     #[test]
+    fn blocks_nested_env_and_git_entries() {
+        assert!(is_system_protected(&normalize_protected_path(
+            "apps/web/.env"
+        )));
+        assert!(is_system_protected(&normalize_protected_path(
+            "packages/api/.env.production"
+        )));
+        assert!(is_system_protected(&normalize_protected_path(
+            "vendor/submodule/.git/config"
+        )));
+    }
+
+    #[test]
     fn allows_unrelated_paths() {
         assert!(!is_system_protected(&normalize_protected_path(
             "src/main.rs"
@@ -183,6 +193,9 @@ mod path_protection_tests {
         assert!(!is_system_protected(&normalize_protected_path("README.md")));
         assert!(!is_system_protected(&normalize_protected_path(
             "env-vars.json"
+        )));
+        assert!(!is_system_protected(&normalize_protected_path(
+            "src/dot.env.example"
         )));
     }
 }

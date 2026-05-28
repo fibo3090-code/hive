@@ -4,7 +4,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use serde_json::Value;
 
-use crate::{Tool, ToolContext, ToolError, ToolManifest, ToolResult};
+use crate::{
+    ActionClass, PermissionDecision, Tool, ToolContext, ToolError, ToolManifest, ToolResult,
+};
 
 /// Ordered collection of tools keyed by name. Order matters so that the
 /// manifest list sent to the LLM is deterministic (stable prompts = stable
@@ -54,7 +56,34 @@ impl ToolRegistry {
         let Some(tool) = self.get(name) else {
             return Err(ToolError::NotFound(format!("tool {name} not registered")));
         };
+        if let Some(class) = action_class_for_tool(name) {
+            match ctx.permissions().decide(name, class) {
+                PermissionDecision::Allow => {}
+                PermissionDecision::Ask => {
+                    return Err(ToolError::Permission(format!(
+                        "tool {name} requires approval under the {} permission profile",
+                        ctx.permissions().profile()
+                    )));
+                }
+                PermissionDecision::Deny => {
+                    return Err(ToolError::Permission(format!(
+                        "tool {name} is denied under the {} permission profile",
+                        ctx.permissions().profile()
+                    )));
+                }
+            }
+        }
         tool.invoke(args, ctx).await
+    }
+}
+
+fn action_class_for_tool(name: &str) -> Option<ActionClass> {
+    match name {
+        "fs_read" | "fs_list" => Some(ActionClass::FsRead),
+        "fs_write" | "str_replace" | "todo" => Some(ActionClass::FsWrite),
+        "shell_exec" => Some(ActionClass::ShellExec),
+        "web_fetch" | "web_search" => Some(ActionClass::NetFetch),
+        _ => None,
     }
 }
 
@@ -62,6 +91,9 @@ impl ToolRegistry {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use hive_sandbox::LocalFsSandbox;
+    use serde_json::json;
+    use std::sync::Arc;
 
     struct Echo;
 
@@ -101,5 +133,55 @@ mod tests {
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].name, "echo");
         assert!(!m[0].side_effects);
+    }
+
+    #[tokio::test]
+    async fn explore_profile_denies_write_tools_before_invocation() {
+        let mut reg = ToolRegistry::new();
+        reg.insert(Arc::new(crate::builtins::fs::FsWriteTool));
+        let dir = std::env::temp_dir().join(format!(
+            "hive-tools-permission-test-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let ctx = ToolContext::new("p1", Arc::new(LocalFsSandbox::new(dir).unwrap()))
+            .with_permissions(crate::PermissionMatrix::explore());
+
+        let err = reg
+            .invoke(
+                "fs_write",
+                json!({ "path": "blocked.txt", "content": "nope" }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Permission(_)));
+    }
+
+    #[tokio::test]
+    async fn build_profile_surfaces_ask_as_permission_block() {
+        let mut reg = ToolRegistry::new();
+        reg.insert(Arc::new(crate::builtins::fs::FsWriteTool));
+        let dir = std::env::temp_dir().join(format!(
+            "hive-tools-permission-ask-test-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let ctx = ToolContext::new("p1", Arc::new(LocalFsSandbox::new(dir).unwrap()))
+            .with_permissions(crate::PermissionMatrix::build());
+
+        let err = reg
+            .invoke(
+                "fs_write",
+                json!({ "path": "needs-approval.txt", "content": "wait" }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Permission(_)));
     }
 }

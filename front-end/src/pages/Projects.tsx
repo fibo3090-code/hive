@@ -37,7 +37,9 @@ export default function Projects() {
       {/* Project cards grid */}
       <div className="grid w-full max-w-4xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-8 animate-fade-in" style={{ animationDelay: '100ms' }}>
         {state.projects.map((project) => {
-          const budgetPct = Math.round((project.budget.used / project.budget.total) * 100);
+          const budgetPct = project.budget.total > 0
+            ? Math.round((project.budget.used / project.budget.total) * 100)
+            : 0;
           return (
             <div
               key={project.id}

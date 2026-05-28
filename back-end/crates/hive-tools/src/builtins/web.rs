@@ -141,9 +141,8 @@ impl WebFetchTool {
                 if let Some(host) = url.host_str() {
                     if let Ok(ip) = host.parse::<IpAddr>() {
                         if is_private_or_internal(&ip) {
-                            let reason = format!(
-                                "redirect to private/internal address {ip} refused"
-                            );
+                            let reason =
+                                format!("redirect to private/internal address {ip} refused");
                             return attempt.error(reason);
                         }
                     }
