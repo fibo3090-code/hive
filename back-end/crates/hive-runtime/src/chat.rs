@@ -537,11 +537,49 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     let db = params.db.clone();
     let thread_id = params.thread_id.clone();
     let assistant_message_id = params.assistant_message_id.clone();
-    // Captured for the post-turn drift hook below — read before
-    // `run_turn_inner` consumes `params`.
+    // Captured for the post-turn drift hook + cancel-token bridge
+    // below — read before `run_turn_inner` consumes `params`.
     let project_id = params.project_id.clone();
     let agent_id = params.agent_id.clone();
     let executors = params.executors.clone();
+
+    // ZZ2: bridge the executor's `CancellationToken` to the chat
+    // turn's `cancel` flag for the lifetime of this turn. The token
+    // is the canonical "stop this agent and its descendants" signal
+    // (set by `cancel_subtree` / `terminate`), but `run_turn` polls
+    // the boolean flag (50 ms tick in `collect_response`) — without
+    // this bridge, cancelling the token leaves the turn streaming
+    // and billing until completion. The bridge is aborted in the
+    // cleanup below regardless of how the inner exits, so a
+    // completed turn doesn't leave a stray task pinned waiting on
+    // a never-cancelled token.
+    let cancel_bridge: Option<tokio::task::JoinHandle<()>> = match (
+        agent_id.as_deref(),
+        executors.as_ref(),
+    ) {
+        (Some(agent_id_str), Some(reg)) => match reg.token_for(agent_id_str).await {
+            Some(token) => {
+                let flag = cancel.clone();
+                let bus_clone = bus.clone();
+                let thread_id_clone = thread_id.clone();
+                let message_id_clone = assistant_message_id.clone();
+                Some(tokio::spawn(async move {
+                    token.cancelled().await;
+                    *flag.lock().await = true;
+                    bus_clone.emit(
+                        format!("chat.{thread_id_clone}.cancelled"),
+                        serde_json::json!({
+                            "threadId": thread_id_clone,
+                            "messageId": message_id_clone,
+                            "reason": "executor_cancelled",
+                        }),
+                    );
+                }))
+            }
+            None => None,
+        },
+        _ => None,
+    };
 
     let result = match tokio::time::timeout(DEFAULT_TURN_TIMEOUT, run_turn_inner(params)).await {
         Ok(result) => result,
@@ -569,6 +607,13 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
             Ok(())
         }
     };
+
+    // ZZ2 cleanup: abort the cancel-token bridge so a completed turn
+    // doesn't leave a stray task pinned waiting on a never-cancelled
+    // token (the task holds an `Arc` to `cancel`).
+    if let Some(handle) = cancel_bridge {
+        handle.abort();
+    }
 
     // Z1: the drift hook used to live at the end of `run_turn_inner`,
     // which meant cancel / timeout / LLM-error / budget-refusal exits

@@ -481,7 +481,38 @@ The surgical fix batches landed in the same PR as this audit. Total:
   policy rejecting non-http(s) hops + IP-literal redirects to
   private/internal addresses. DNS-rebinding (ZZ8) still open.
 
-**Batch 2 — this commit:**
+**Batch 3 — third commit:**
+
+- **ZZ2** (partial) — `run_turn` spawns a bridge task that awaits
+  the executor's `CancellationToken` (`executors.token_for(agent_id)`)
+  and flips the chat-turn cancel flag on cancellation. Means
+  `cancel_subtree(agent)` / `terminate(agent)` actually interrupt
+  the in-flight LLM stream within 50 ms instead of letting it run
+  to completion and bill. Emits `chat.<thread>.cancelled` with
+  `reason: "executor_cancelled"` so the frontend can distinguish.
+  The bridge handle is aborted on every exit path so a completed
+  turn doesn't pin a stray task. *Still open*: pause() doesn't yet
+  interrupt the current turn — that needs a per-turn pause signal
+  separate from the cancel-the-subtree token.
+- **B4c** — `run_pipeline` branches on the loaded row's status. If
+  it's `"approved"` (set atomically by ZZ52 in batch 2), the
+  driver skips stages 0–2 (planning + matching + research) and
+  resumes at stage 3 (synthesis) using the persisted
+  `matched_existing_mcp_ids_json` and the discovered APIs
+  (including `spec`) from `discovered_api_json`. The
+  awaiting-approval transition was rewritten to persist both
+  blobs in one update; older rows that lack a persisted `spec`
+  fall back to re-running the pipeline with a `warn!`. Closes
+  the LLM-double-billing on operator approval.
+- **Z2** (extended) — `set_agent_status` and
+  `toggle_project_session` now propagate executor pause / resume /
+  terminate errors (via `?` and via a `warn!` for the session-toggle
+  loop, respectively) instead of `let _ =` swallowing them. The
+  remaining 14 sites are `executors.ensure(...)` calls, which are
+  idempotent + infallible (`ensure` returns `Arc<AgentExecutor>`,
+  not `Result`), so the `let _ =` is the right pattern there.
+
+**Batch 2 — second commit:**
 
 - **Z1** — Drift hook moved from inside `run_turn_inner` to the
   outer `run_turn`. After the inner returns (success / cancel /

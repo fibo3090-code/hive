@@ -145,6 +145,15 @@ pub struct PipelineOutcome {
 /// the UI sees real-time progress over SSE. On any error the row lands
 /// in `failed` with the detail in `error`. The driver itself never
 /// panics — every fallible boundary maps to `PipelineError`.
+///
+/// **B4c — Resumable from `approved`.** If the loaded row's status is
+/// already `"approved"` (set atomically by `approve_spawn_request` after
+/// the prior run paused in `awaiting-approval`), the driver skips
+/// stages 0–2 and resumes at stage 3 using the previously persisted
+/// `matched_existing_mcp_ids_json` and the discovered APIs (including
+/// `spec`) from `discovered_api_json`. Without this branch the operator's
+/// approval click re-runs planning + matching + research, double-billing
+/// the LLM and the user-paid stages.
 pub async fn run_pipeline(
     db: &DatabaseConnection,
     bus: &EventBus,
@@ -166,6 +175,24 @@ pub async fn run_pipeline(
             .unwrap_or_default(),
         mcp_strategy: request.mcp_strategy.clone(),
     };
+
+    // B4c: branch on the loaded row's status.
+    if request.status == "approved" {
+        if let Some(apis) = resumable_discovered_apis(&request) {
+            let matched_mcp_ids: Vec<String> =
+                serde_json::from_value(request.matched_existing_mcp_ids_json.clone())
+                    .unwrap_or_default();
+            return run_from_synthesis(db, bus, deps.as_ref(), &ctx, apis, matched_mcp_ids).await;
+        }
+        // Row is `approved` but the resume info isn't on the row — e.g.
+        // an upgrade from a build that didn't persist `spec`. Fall
+        // through to the full pipeline; the duplicate LLM cost is the
+        // less-bad outcome of a one-time migration window.
+        tracing::warn!(
+            spawn_request_id,
+            "B4c: approved row has no resumable discovered_api_json — re-running pipeline from stage 0"
+        );
+    }
 
     // ── Stage 0: planning-needs ────────────────────────────────────
     transition(db, bus, &ctx, "planning-needs", None).await?;
@@ -214,23 +241,41 @@ pub async fn run_pipeline(
         // row in `awaiting-approval` and returns; a follow-up call to
         // `run_pipeline` resumes once the operator approves.
         if apis.iter().any(|a| a.requires_approval) {
-            transition(
+            // B4c: persist the full `apis` (including `spec`) AND the
+            // matched MCPs so the resume path can skip stages 0–2 and
+            // jump straight to synthesis. Previously the persisted
+            // shape dropped `spec` and `matched_existing_mcp_ids_json`
+            // was only written at the final `completed` transition,
+            // so the operator's approval click had no choice but to
+            // re-run + re-bill the LLM stages.
+            let _ = agent_spawn_requests::update(
                 db,
-                bus,
-                &ctx,
-                "awaiting-approval",
-                Some(json!({
-                    "discoveredApis": apis
-                        .iter()
-                        .map(|a| json!({
-                            "capability": a.capability,
-                            "url": a.url,
-                            "requiresApproval": a.requires_approval,
-                        }))
-                        .collect::<Vec<_>>(),
-                })),
+                &ctx.spawn_request_id,
+                UpdateSpawnRequest {
+                    status: Some("awaiting-approval".to_owned()),
+                    matched_existing_mcp_ids_json: Some(json!(matched_mcp_ids)),
+                    discovered_api_json: Some(json!({
+                        "discoveredApis": apis
+                            .iter()
+                            .map(|a| json!({
+                                "capability": a.capability,
+                                "url": a.url,
+                                "spec": a.spec,
+                                "requiresApproval": a.requires_approval,
+                            }))
+                            .collect::<Vec<_>>(),
+                    })),
+                    ..Default::default()
+                },
             )
             .await?;
+            bus.emit(
+                format!("agent_spawn_request.{}", ctx.spawn_request_id),
+                json!({
+                    "id": ctx.spawn_request_id,
+                    "status": "awaiting-approval",
+                }),
+            );
             return Ok(PipelineOutcome {
                 spawn_request_id: ctx.spawn_request_id.clone(),
                 child_agent_id: None,
@@ -242,32 +287,7 @@ pub async fn run_pipeline(
         }
 
         if !apis.is_empty() {
-            transition(db, bus, &ctx, "synthesizing-mcp", None).await?;
-            let synthesized = deps.synthesize_mcp(&ctx, &apis).await?;
-            for mcp in synthesized {
-                let row = custom_mcp_servers::create(
-                    db,
-                    custom_mcp_servers::CreateCustomMcpServer {
-                        project_id: ctx.project_id.clone(),
-                        owner_agent_id: ctx.parent_agent_id.clone(),
-                        name: mcp.name,
-                        slug: mcp.slug,
-                        source_api_url: mcp.source_api_url,
-                        source_api_spec_json: mcp.source_api_spec,
-                        generated_manifest_json: mcp.generated_manifest,
-                        generated_handler_code: mcp.generated_handler_code,
-                        transport: "http".to_owned(),
-                        encrypted_credentials: None,
-                        reusable: true,
-                        capabilities_json: json!(mcp.capabilities),
-                        embedding_json: None,
-                    },
-                )
-                .await?;
-                custom_mcp_servers::set_status(db, &row.id, "active").await?;
-                synthesized_mcp_ids.push(row.id.clone());
-                bound_mcp_ids.push(row.id);
-            }
+            run_synthesis_stage(db, deps.as_ref(), &ctx, bus, &apis, &mut synthesized_mcp_ids, &mut bound_mcp_ids).await?;
         }
     }
 
@@ -334,6 +354,165 @@ pub async fn run_pipeline(
         system_prompt: Some(system_prompt),
         status: "completed".to_owned(),
     })
+}
+
+// ─── Resume path (B4c) ─────────────────────────────────────────────────
+
+/// Deserialize the persisted `discoveredApis` blob back into
+/// `Vec<DiscoveredApi>`. Returns `None` if the row predates the
+/// spec-persisting awaiting-approval write (older rows dropped `spec`),
+/// so the caller can fall back to the full pipeline.
+fn resumable_discovered_apis(
+    request: &hive_db::entities::agent_spawn_request::Model,
+) -> Option<Vec<DiscoveredApi>> {
+    let arr = request
+        .discovered_api_json
+        .as_ref()?
+        .get("discoveredApis")?
+        .as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for a in arr {
+        let capability = a.get("capability")?.as_str()?.to_owned();
+        let url = a.get("url")?.as_str()?.to_owned();
+        let spec = a.get("spec").cloned()?;
+        out.push(DiscoveredApi {
+            capability,
+            url,
+            spec,
+            // We're being called after the operator already approved;
+            // requires_approval is meaningless here.
+            requires_approval: false,
+        });
+    }
+    Some(out)
+}
+
+/// Resume an `approved` pipeline at stage 3 (synthesis), reusing the
+/// `matched_mcp_ids` that stage 1 already produced. Walks stages 3
+/// (synthesize), 4 (compose-prompt), 6 (materialize-agent) the same
+/// way `run_pipeline` does on a fresh run.
+async fn run_from_synthesis(
+    db: &DatabaseConnection,
+    bus: &EventBus,
+    deps: &dyn PipelineDeps,
+    ctx: &PipelineContext,
+    apis: Vec<DiscoveredApi>,
+    matched_mcp_ids: Vec<String>,
+) -> Result<PipelineOutcome, PipelineError> {
+    let mut bound_mcp_ids = matched_mcp_ids.clone();
+    let mut synthesized_mcp_ids: Vec<String> = Vec::new();
+
+    if !apis.is_empty() {
+        run_synthesis_stage(
+            db,
+            deps,
+            ctx,
+            bus,
+            &apis,
+            &mut synthesized_mcp_ids,
+            &mut bound_mcp_ids,
+        )
+        .await?;
+    }
+
+    // ── Stage 4: composing-prompt ──────────────────────────────────
+    transition(db, bus, ctx, "composing-prompt", None).await?;
+    let system_prompt = deps.compose_prompt(ctx, &bound_mcp_ids).await?;
+
+    // ── Stage 6: materializing-agent ───────────────────────────────
+    transition(db, bus, ctx, "materializing-agent", None).await?;
+    let child_agent_id = deps
+        .materialize_agent(ctx, &system_prompt, &bound_mcp_ids)
+        .await?;
+
+    for id in &bound_mcp_ids {
+        let kind = if matched_mcp_ids.contains(id) {
+            classify_kind(db, id).await?
+        } else {
+            "custom".to_owned()
+        };
+        agent_mcp_bindings::create(
+            db,
+            CreateBinding {
+                agent_id: child_agent_id.clone(),
+                mcp_server_id: id.clone(),
+                kind,
+            },
+        )
+        .await?;
+    }
+
+    let _ = agent_spawn_requests::update(
+        db,
+        &ctx.spawn_request_id,
+        UpdateSpawnRequest {
+            status: Some("completed".to_owned()),
+            child_agent_id: Some(child_agent_id.clone()),
+            matched_existing_mcp_ids_json: Some(json!(matched_mcp_ids)),
+            synthesized_mcp_ids_json: Some(json!(synthesized_mcp_ids)),
+            generated_system_prompt: Some(system_prompt.clone()),
+            completed: Some(true),
+            ..Default::default()
+        },
+    )
+    .await?;
+    bus.emit(
+        format!("agent_spawn_request.{}", ctx.spawn_request_id),
+        json!({
+            "id": ctx.spawn_request_id,
+            "status": "completed",
+            "childAgentId": child_agent_id,
+        }),
+    );
+
+    Ok(PipelineOutcome {
+        spawn_request_id: ctx.spawn_request_id.clone(),
+        child_agent_id: Some(child_agent_id),
+        matched_mcp_ids,
+        synthesized_mcp_ids,
+        system_prompt: Some(system_prompt),
+        status: "completed".to_owned(),
+    })
+}
+
+/// Stage 3 body, factored out so the fresh-run and approved-resume
+/// paths both use the exact same persistence + binding logic.
+async fn run_synthesis_stage(
+    db: &DatabaseConnection,
+    deps: &dyn PipelineDeps,
+    ctx: &PipelineContext,
+    bus: &EventBus,
+    apis: &[DiscoveredApi],
+    synthesized_mcp_ids: &mut Vec<String>,
+    bound_mcp_ids: &mut Vec<String>,
+) -> Result<(), PipelineError> {
+    transition(db, bus, ctx, "synthesizing-mcp", None).await?;
+    let synthesized = deps.synthesize_mcp(ctx, apis).await?;
+    for mcp in synthesized {
+        let row = custom_mcp_servers::create(
+            db,
+            custom_mcp_servers::CreateCustomMcpServer {
+                project_id: ctx.project_id.clone(),
+                owner_agent_id: ctx.parent_agent_id.clone(),
+                name: mcp.name,
+                slug: mcp.slug,
+                source_api_url: mcp.source_api_url,
+                source_api_spec_json: mcp.source_api_spec,
+                generated_manifest_json: mcp.generated_manifest,
+                generated_handler_code: mcp.generated_handler_code,
+                transport: "http".to_owned(),
+                encrypted_credentials: None,
+                reusable: true,
+                capabilities_json: json!(mcp.capabilities),
+                embedding_json: None,
+            },
+        )
+        .await?;
+        custom_mcp_servers::set_status(db, &row.id, "active").await?;
+        synthesized_mcp_ids.push(row.id.clone());
+        bound_mcp_ids.push(row.id);
+    }
+    Ok(())
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────

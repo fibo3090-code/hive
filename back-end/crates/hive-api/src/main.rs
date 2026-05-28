@@ -2953,17 +2953,34 @@ async fn set_agent_status(
     // after the operator marked the agent paused (and resume when they
     // un-pause it). Without this the DB row and the executor diverge:
     // the UI shows "paused" but A2A dispatches still get processed.
+    // `ensure` is idempotent and infallible — it just spawns the
+    // executor if it isn't already in the registry map.
     let _ = state.executors.ensure(&agent_id, &before.project_id).await;
+    // Z2: pause/resume/terminate were `let _ =` — silent on failure,
+    // which let the DB row flip while the executor refused, recreating
+    // the very drift the executor-sync was meant to prevent. Bubble.
     match body.status.as_str() {
         "paused" => {
-            let _ = state.executors.pause(&agent_id).await;
+            state
+                .executors
+                .pause(&agent_id)
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
         }
         "working" | "idle" => {
-            let _ = state.executors.resume(&agent_id).await;
+            state
+                .executors
+                .resume(&agent_id)
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
         }
         "deprecated" => {
             state.executors.cancel_subtree(&agent_id).await;
-            let _ = state.executors.terminate(&agent_id).await;
+            state
+                .executors
+                .terminate(&agent_id)
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
         }
         _ => unreachable!("status validated above"),
     }
@@ -3502,16 +3519,23 @@ async fn toggle_project_session(
         if let Some(status) = next_status {
             // Sync executor alongside the DB row so closing/opening a
             // session actually parks/wakes in-flight agent work rather
-            // than just flipping the badge in the UI.
+            // than just flipping the badge in the UI. `ensure` is
+            // infallible.
             let _ = state.executors.ensure(&agent.id, &project_id).await;
-            match status {
-                "paused" => {
-                    let _ = state.executors.pause(&agent.id).await;
-                }
-                "working" => {
-                    let _ = state.executors.resume(&agent.id).await;
-                }
-                _ => {}
+            // Z2: bubble pause/resume failures. Session-toggle touches
+            // many agents in a loop; if one fails we still continue
+            // the rest (the DB row is the authoritative state anyway)
+            // but log loudly so the desync is visible.
+            let exec_result = match status {
+                "paused" => state.executors.pause(&agent.id).await,
+                "working" => state.executors.resume(&agent.id).await,
+                _ => Ok(()),
+            };
+            if let Err(err) = exec_result {
+                tracing::warn!(
+                    project_id, agent_id = %agent.id, status, error = ?err,
+                    "toggle_project_session: executor state change failed (continuing)"
+                );
             }
             let _ = agents::set_status(database.conn(), &project_id, &agent.id, status).await?;
         }
