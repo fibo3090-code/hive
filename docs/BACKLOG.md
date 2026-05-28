@@ -446,8 +446,129 @@ high-leverage 🟠s. Then sweep the 🟡/🟢 list as cleanup.
 
 ## ZZ. 2026-05-27 deep audit — additional findings
 
-Second deep-audit pass after the 2026-05-25 sweep. Spot-verifications confirm
-the following prior items are **still open** (no fix landed since):
+Second deep-audit pass after the 2026-05-25 sweep.
+
+### Fixed 2026-05-27 in this pass
+
+The surgical fix batches landed in the same PR as this audit. Total:
+**17 items closed** (mostly 🔴/🟠), full workspace test suite passes.
+
+**Batch 1 — first commit `cea2fe9`:**
+
+- **ZZ1** — `fs_write` planted-parent-symlink escape closed in
+  `hive-sandbox/src/local.rs`. `resolve()` now walks up to the deepest
+  existing ancestor for not-yet-existing paths, canonicalises it, and
+  re-verifies the prefix.
+- **ZZ3** — Loop detector now reads `"arguments"` (with `"args"` /
+  `"name"`-or-`"tool"` fallbacks) so repeat-call detection actually
+  matches the persisted shape from `chat::executed_calls`.
+- **ZZ25** — `sse::sse_stream` keeps a `Vec<u8>` tail across chunk
+  boundaries and flushes only the maximal valid UTF-8 prefix.
+  Emoji / CJK / accented characters no longer turn into U+FFFD when
+  a chunk lands mid-codepoint.
+- **ZZ57** — `download_chat_attachment` canonicalises both the
+  attachments root and the resolved path; refuses traversal out of
+  the root.
+- **ZZ60** — `set_agent_status` rejects status strings outside
+  `{idle, working, paused, deprecated}` with 400 before touching the
+  DB or executor.
+- **ZZ64** — Audit-log purge job awaits the tick *before* the body.
+- **ZZ65** — `executors.rehydrate_from_db()` failures surface via
+  `tracing::error!`.
+- **ZZ66** — Four secret-decrypt sites switched to `.map_err(|_| ...)`
+  so `FromUtf8Error::Display` can't leak plaintext.
+- **Z3 / A9 (partial)** — `WebFetchTool` installs a custom redirect
+  policy rejecting non-http(s) hops + IP-literal redirects to
+  private/internal addresses. DNS-rebinding (ZZ8) still open.
+
+**Batch 3 — third commit:**
+
+- **ZZ2** (partial) — `run_turn` spawns a bridge task that awaits
+  the executor's `CancellationToken` (`executors.token_for(agent_id)`)
+  and flips the chat-turn cancel flag on cancellation. Means
+  `cancel_subtree(agent)` / `terminate(agent)` actually interrupt
+  the in-flight LLM stream within 50 ms instead of letting it run
+  to completion and bill. Emits `chat.<thread>.cancelled` with
+  `reason: "executor_cancelled"` so the frontend can distinguish.
+  The bridge handle is aborted on every exit path so a completed
+  turn doesn't pin a stray task. *Still open*: pause() doesn't yet
+  interrupt the current turn — that needs a per-turn pause signal
+  separate from the cancel-the-subtree token.
+- **B4c** — `run_pipeline` branches on the loaded row's status. If
+  it's `"approved"` (set atomically by ZZ52 in batch 2), the
+  driver skips stages 0–2 (planning + matching + research) and
+  resumes at stage 3 (synthesis) using the persisted
+  `matched_existing_mcp_ids_json` and the discovered APIs
+  (including `spec`) from `discovered_api_json`. The
+  awaiting-approval transition was rewritten to persist both
+  blobs in one update; older rows that lack a persisted `spec`
+  fall back to re-running the pipeline with a `warn!`. Closes
+  the LLM-double-billing on operator approval.
+- **Z2** (extended) — `set_agent_status` and
+  `toggle_project_session` now propagate executor pause / resume /
+  terminate errors (via `?` and via a `warn!` for the session-toggle
+  loop, respectively) instead of `let _ =` swallowing them. The
+  remaining 14 sites are `executors.ensure(...)` calls, which are
+  idempotent + infallible (`ensure` returns `Arc<AgentExecutor>`,
+  not `Result`), so the `let _ =` is the right pattern there.
+
+**Batch 2 — second commit:**
+
+- **Z1** — Drift hook moved from inside `run_turn_inner` to the
+  outer `run_turn`. After the inner returns (success / cancel /
+  timeout / LLM-error / budget-refusal), `run_turn` reads the
+  persisted `chat_messages.tool_calls` for `assistant_message_id`
+  and calls `drift_hook::record_after_turn` if any calls landed.
+  Every exit path now records drift instead of only the success
+  path.
+- **ZZ38** — `seed_demo` claims a `status: "in-progress"` sentinel
+  up-front via a new `settings::put_value_if_absent` (ON CONFLICT DO
+  NOTHING). Two concurrent first-boots can't both run the body and
+  produce duplicates; the sentinel is overwritten to `done` on
+  successful completion. A panic mid-seed leaves the sentinel on
+  `in-progress` — second boot skips, operator can clear to retry.
+- **ZZ52** — `approve_spawn_request` now uses a new
+  `agent_spawn_requests::transition_status(id, from, to)` (atomic
+  UPDATE … WHERE id = ? AND status = ?). Two parallel approval
+  clicks can no longer both pass the status check and both spawn
+  the pipeline. Adds an `audit::append` entry on success.
+- **B4b** — The spawn-pipeline mpsc consumer now keeps an
+  `Arc<Mutex<HashSet<String>>>` of in-flight ids. Duplicate sends
+  (retry, parallel approve + tool, etc.) are skipped with a
+  `tracing::debug!`. The HashSet entry is removed when `run_pipeline`
+  finishes. `approve_spawn_request` now also routes through the same
+  channel instead of `tokio::spawn`-ing `run_pipeline` directly, so
+  the dedup applies to operator-initiated approvals too.
+- **ZZ53** — `delete_project` now: (a) lists every agent and calls
+  `executors.cancel_subtree` + `executors.terminate` on each before
+  the DB cascade, so executors don't keep ticking against vanished
+  rows; (b) `tokio::fs::remove_dir_all`s the sandbox workspace
+  directory after the existing attachments cleanup. Combined with
+  the prior attachment cleanup, deletion now reclaims executor
+  slots + workspace disk + attachment disk.
+- **Z8** (partial) — `pause_agent`, `resume_agent`, `terminate_agent`
+  now write `audit::append` entries (`agent.pause`, `agent.resume`,
+  `agent.terminate`) matching the shape of `set_agent_status`.
+- **Z2** (partial) — `terminate_agent`'s `let _ = ... .map_err(...)`
+  (which constructed an `AppError` only to discard it) is replaced
+  with `.map_err(...)?` so executor errors propagate as 5xx instead
+  of silently desyncing the DB. The 16 `state.executors.*` ensure
+  call sites remain `let _ =` for now — `ensure` is idempotent and
+  retried on first dispatch, so swallowing its errors is recoverable;
+  the `pause` / `resume` / `terminate` sites in `set_agent_status`
+  still use `let _ =` because that handler already validates the
+  status enum (ZZ60) and surfaces errors via the canonical lifecycle
+  handlers above.
+
+### Retracted on verification
+
+- **ZZ37** — see entry below; the audited "wrong ordering" was actually
+  a dependency-aware placement.
+
+### Still open (verified 2026-05-27)
+
+Spot-verifications confirm the following prior items are still open
+(no fix landed since):
 **Z1** (drift hook on error paths), **Z2** (`let _ = state.executors.*` — 16
 call sites in `main.rs` at lines 1988, 2009, 2345, 2370, 2394, 2658, 2708,
 2824, 2827, 2830, 2834, 3374, 3377, 3380, 4966, 4968), **Z3 / A9** (SSRF on
@@ -893,19 +1014,21 @@ anchor on that index, drop the rest before it.
 
 ## DB layer findings (ZZ37–ZZ51)
 
-### ZZ37. Migration vector order ≠ filename order 🔴
+### ZZ37. ~~Migration vector order ≠ filename order~~ — Retracted 2026-05-27
 
 **File:** `crates/hive-db/migration/src/lib.rs:49`.
 
-`m20260514_000001_agent_skill_bindings` is listed *after*
-`m20260613_000001_agent_wires` in the `Migrator::migrations()` vector.
-SeaORM applies in vector order, but rolling forwards on a DB that was
-created on an older revision (no skill bindings yet, agent_wires
-applied) replays the skill-bindings migration with a `version` newer
-than its name suggests. Worse: any new migration filename inserted
-alphabetically between 0514 and 0613 may be considered "applied" in
-some envs and not others. **Fix:** restore chronological filename order
-and add a unit test asserting the vector is sorted by name.
+**Retracted on verification.** The original ordering placed
+`m20260514_000001_agent_skill_bindings` *after* `m20260613_*_agent_wires`
+deliberately: the migration's FK references `Skills::Table`
+(`m20260514_*_agent_skill_bindings.rs:65`), and the `skills` table is
+created in `m20260606_000001_redesign_foundations` (`:41`). Filename
+date is misleading (file authored later, dated retroactively), but the
+vector position is dependency-correct. An attempt to "fix" this by
+moving the migration to its chronological position broke every test
+that calls `Migrator::up()` against a fresh DB with
+`no such table: skills`. Reverted with a comment in `lib.rs` noting the
+intentional position.
 
 ### ZZ38. `seed_demo` is not idempotent under concurrent first-boot and not transactional 🔴
 

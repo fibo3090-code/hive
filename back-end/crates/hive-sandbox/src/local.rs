@@ -141,13 +141,9 @@ impl LocalFsSandbox {
             return Err(SandboxError::PathEscape(resolved));
         }
 
-        // Layer 2: FS canonicalisation. Only meaningful when the leaf
-        // exists — `canonicalize` follows every symlink in the path and
-        // resolves to the real underlying location, so we can check that
-        // the real path still starts with the canonical root. For
-        // not-yet-existing paths (the `write` case) the string-level
-        // check above is the safety net; the additional `refuse_symlink`
-        // call from `write()` blocks the planted-symlink attack.
+        // Layer 2: FS canonicalisation. `canonicalize` follows every symlink
+        // in the path and resolves to the real underlying location, so we can
+        // check that the real path still starts with the canonical root.
         if resolved.exists() {
             let real = std::fs::canonicalize(&resolved)?;
             if !real.starts_with(&self.root) {
@@ -158,7 +154,35 @@ impl LocalFsSandbox {
         if target_must_exist {
             return Err(SandboxError::NotFound(resolved));
         }
-        Ok(resolved)
+        // For not-yet-existing paths (the `write` case): walk up to the
+        // deepest existing ancestor and canonicalise *that*. Without this,
+        // a planted symlink at any intermediate component (e.g.
+        // `workspace/foo -> /etc`, then `write("foo/bar")`) silently
+        // traverses outside the sandbox — `tokio::fs::create_dir_all`
+        // would happily follow the symlink and write under /etc.
+        // `refuse_symlink` in `write()` only inspects the leaf, so this
+        // closes the parent-symlink escape (ZZ1).
+        let mut ancestor = resolved.clone();
+        while !ancestor.exists() {
+            match ancestor.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => {
+                    ancestor = parent.to_path_buf();
+                }
+                _ => return Err(SandboxError::PathEscape(resolved)),
+            }
+        }
+        let real_ancestor = std::fs::canonicalize(&ancestor)?;
+        if !real_ancestor.starts_with(&self.root) {
+            return Err(SandboxError::PathEscape(real_ancestor));
+        }
+        let tail = resolved
+            .strip_prefix(&ancestor)
+            .map_err(|_| SandboxError::PathEscape(resolved.clone()))?;
+        let real = real_ancestor.join(tail);
+        if !real.starts_with(&self.root) {
+            return Err(SandboxError::PathEscape(real));
+        }
+        Ok(real)
     }
 
     /// Refuse if `path` is itself a symlink. Used by `write` so an

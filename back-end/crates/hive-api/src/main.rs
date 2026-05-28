@@ -486,7 +486,12 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         runtime.db.clone(),
         EventBus::new(events.clone()),
     ));
-    let _ = executors.rehydrate_from_db().await;
+    // ZZ65: surface rehydration failures. A silent failure here means
+    // agents that should have resumed from a prior boot quietly never
+    // dispatch; without a log line the operator has no signal.
+    if let Err(err) = executors.rehydrate_from_db().await {
+        tracing::error!(error = %err, "executor rehydrate_from_db failed at startup");
+    }
 
     // Background loop-detection daemon. Producer for the
     // `loop_detected` notifications the LoopDetectionModal renders.
@@ -513,12 +518,34 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     };
 
     // B4: drain the spawn-pipeline channel — every `request_capability`
-    // call from an agent lands here. Build deps fresh per request so
-    // settings changes (provider keys, search URL) are picked up live.
+    // call from an agent (and every `approve_spawn_request` from the
+    // operator) lands here. Build deps fresh per request so settings
+    // changes (provider keys, search URL) are picked up live.
+    //
+    // B4b: dedup in-flight ids. Two sends with the same
+    // `spawn_request_id` (duplicate native tool_call, retry after a
+    // timeout, race between agent-tool and approve handler) used to
+    // spawn two concurrent `run_pipeline` tasks on the same row,
+    // double-billing the LLM and risking duplicate `custom_mcp_servers`
+    // rows. The Mutex<HashSet> below holds every id whose pipeline is
+    // currently running; second arrivals skip silently.
     {
+        use std::collections::HashSet;
         let pipeline_state = state.clone();
+        let in_flight: Arc<tokio::sync::Mutex<HashSet<String>>> =
+            Arc::new(tokio::sync::Mutex::new(HashSet::new()));
         tokio::spawn(async move {
             while let Some(spawn_request_id) = spawn_pipeline_rx.recv().await {
+                {
+                    let mut guard = in_flight.lock().await;
+                    if !guard.insert(spawn_request_id.clone()) {
+                        tracing::debug!(
+                            spawn_request_id,
+                            "agent-initiated pipeline: skipping duplicate in-flight id (B4b)"
+                        );
+                        continue;
+                    }
+                }
                 let row = match agent_spawn_requests::get(
                     db(&pipeline_state).await.conn(),
                     &spawn_request_id,
@@ -527,10 +554,12 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
                 {
                     Ok(Some(r)) => r,
                     Ok(None) => {
+                        in_flight.lock().await.remove(&spawn_request_id);
                         tracing::warn!(spawn_request_id, "agent-initiated pipeline: row vanished");
                         continue;
                     }
                     Err(err) => {
+                        in_flight.lock().await.remove(&spawn_request_id);
                         tracing::warn!(
                             spawn_request_id, error = %err,
                             "agent-initiated pipeline: lookup failed"
@@ -541,6 +570,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
                 let deps = match build_pipeline_deps(&pipeline_state, &row.project_id).await {
                     Ok(d) => d,
                     Err(err) => {
+                        in_flight.lock().await.remove(&spawn_request_id);
                         tracing::warn!(
                             spawn_request_id, error = %err,
                             "agent-initiated pipeline: build_pipeline_deps failed"
@@ -551,8 +581,11 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
                 let bus = EventBus::new(pipeline_state.events.clone());
                 let conn = db(&pipeline_state).await;
                 let id = spawn_request_id.clone();
+                let in_flight_for_task = in_flight.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = run_pipeline(conn.conn(), &bus, deps, &id).await {
+                    let res = run_pipeline(conn.conn(), &bus, deps, &id).await;
+                    in_flight_for_task.lock().await.remove(&id);
+                    if let Err(e) = res {
                         tracing::error!(
                             spawn_request_id = id, error = %e,
                             "agent-initiated pipeline: run failed"
@@ -571,6 +604,11 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
             loop {
+                // ZZ64: `tokio::time::interval` fires immediately on first
+                // tick. Awaiting *before* the body keeps the first purge on
+                // the same 24 h cadence as every subsequent one and avoids
+                // a redundant pair of purges at startup.
+                tick.tick().await;
                 let days = settings::get_value(purge_db.conn(), "global", "audit.retention_days")
                     .await
                     .ok()
@@ -588,7 +626,6 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
                         Err(err) => tracing::warn!(error = %err, "audit_log purge failed"),
                     }
                 }
-                tick.tick().await;
             }
         });
     }
@@ -1390,7 +1427,11 @@ async fn current_tools_sandbox_settings(
             .crypto
             .open(&ciphertext)
             .map_err(|e| AppError::Internal(format!("decrypt tavily key: {e}")))?;
-        let key = String::from_utf8(opened).map_err(|e| AppError::Internal(e.to_string()))?;
+        // Don't surface `FromUtf8Error::Display` — it includes the bad
+        // byte sequence which here would be the decrypted plaintext key
+        // (ZZ66).
+        let key = String::from_utf8(opened)
+            .map_err(|_| AppError::Internal("tavily key is not valid utf-8".into()))?;
         Some(mask_key(&key))
     } else {
         None
@@ -1438,7 +1479,11 @@ async fn github_status_for_project(
             .open(&sealed)
             .map_err(|e| AppError::Internal(format!("decrypt github token: {e}")))?,
     )
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Drop the inner `FromUtf8Error` — its `Display` includes the invalid
+    // byte sequence, which here would be the decrypted plaintext token
+    // bytes. We only ever want to log that *something* failed to decode,
+    // never the bytes themselves (ZZ66).
+    .map_err(|_| AppError::Internal("github token is not valid utf-8".into()))?;
     Ok(Some((GitHubClient::new(owner, repo, token), masked)))
 }
 
@@ -1538,7 +1583,9 @@ async fn build_tooling(
                     .open(&ciphertext)
                     .map_err(|e| AppError::Internal(format!("decrypt tavily key: {e}")))?,
             )
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+            // ZZ66: never put `FromUtf8Error::Display` into a log — it
+            // would surface the decrypted plaintext bytes.
+            .map_err(|_| AppError::Internal("tavily key is not valid utf-8".into()))?;
             Arc::new(TavilyProvider::new(http.clone(), key))
         } else {
             Arc::new(DuckDuckGoProvider::new(http.clone()))
@@ -2058,6 +2105,29 @@ async fn delete_project(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
 
+    // ZZ53: cancel + terminate every executor for this project before
+    // the cascade deletes the agent rows. Otherwise the in-process
+    // executors keep ticking against vanished rows, billing turns that
+    // can never persist, and the cancel-token tree leaks.
+    let agent_ids: Vec<String> = agents::list_by_project(database.conn(), &project_id)
+        .await?
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+    for agent_id in &agent_ids {
+        state.executors.cancel_subtree(agent_id).await;
+        if let Err(err) = state.executors.terminate(agent_id).await {
+            // NotFound is benign — the agent had no live executor.
+            // Any other error means something is wedged; log it but
+            // continue: stopping the cascade leaves the project in
+            // worse shape than completing it.
+            tracing::warn!(
+                project_id, agent_id, error = %err,
+                "delete_project: executor.terminate failed (continuing)"
+            );
+        }
+    }
+
     // Purge attachment rows + on-disk files for every thread before the cascade
     // deletes the threads/messages and orphans them.
     let thread_ids: Vec<String> = chat_threads::list_by_project(database.conn(), &project_id)
@@ -2070,6 +2140,20 @@ async fn delete_project(
     // Best-effort: also nuke the project's attachments directory in case any
     // files were never registered or had drifted relative paths.
     let _ = tokio::fs::remove_dir_all(attachments_root(&data_dir, &project_id)).await;
+
+    // ZZ53: nuke the sandbox workspace dir too. `delete_project` used
+    // to leave `<data_dir>/workspaces/<project_id>/` on disk — every
+    // demo create-delete-recreate cycle leaked GB of compiled
+    // artifacts, node_modules, etc.
+    let workspace_path = workspace_dir(&data_dir, &project_id);
+    if let Err(err) = tokio::fs::remove_dir_all(&workspace_path).await {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                project_id, path = %workspace_path.display(), error = %err,
+                "delete_project: workspace remove_dir_all failed"
+            );
+        }
+    }
 
     projects::delete(database.conn(), &project_id).await?;
 
@@ -2373,7 +2457,19 @@ async fn pause_agent(
         .pause(&agent_id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let _ = agents::set_status(database.conn(), &agent.project_id, &agent_id, "paused").await?;
+    let updated = agents::set_status(database.conn(), &agent.project_id, &agent_id, "paused").await?;
+    // Z8: lifecycle endpoints used to skip audit; only `set_agent_status`
+    // wrote a row. Now every pause/resume/terminate is auditable.
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.pause",
+        "agent",
+        &agent_id,
+        Some(serde_json::to_value(&agent).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
     emit(
         &state,
         "agent.status",
@@ -2397,7 +2493,17 @@ async fn resume_agent(
         .resume(&agent_id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let _ = agents::set_status(database.conn(), &agent.project_id, &agent_id, "working").await?;
+    let updated = agents::set_status(database.conn(), &agent.project_id, &agent_id, "working").await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.resume",
+        "agent",
+        &agent_id,
+        Some(serde_json::to_value(&agent).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
     emit(
         &state,
         "agent.status",
@@ -2419,12 +2525,26 @@ async fn terminate_agent(
     // Cascade cancel to every descendant first so child agents stop
     // mid-turn rather than completing work that's about to be discarded.
     state.executors.cancel_subtree(&agent_id).await;
-    let _ = state
+    // Z2 (partial): the previous shape was `let _ = ... .map_err(...)`
+    // which constructed an AppError just to throw it away. Now any
+    // executor error becomes a real 5xx so the DB row and executor
+    // don't silently desync.
+    state
         .executors
         .terminate(&agent_id)
         .await
-        .map_err(|e| AppError::Internal(e.to_string()));
-    let _ = agents::set_status(database.conn(), &agent.project_id, &agent_id, "deprecated").await;
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let updated = agents::set_status(database.conn(), &agent.project_id, &agent_id, "deprecated").await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.terminate",
+        "agent",
+        &agent_id,
+        Some(serde_json::to_value(&agent).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
     emit(
         &state,
         "agent.status",
@@ -2812,6 +2932,18 @@ async fn set_agent_status(
     Path(agent_id): Path<String>,
     Json(body): Json<StatusBody>,
 ) -> Result<Json<Value>, AppError> {
+    // ZZ60: reject anything outside the canonical status enum up front.
+    // Previously the `_ => {}` fallthrough below silently persisted bad
+    // values into the DB column and broadcast them on the SSE bus, where
+    // frontend code branches on these strings.
+    match body.status.as_str() {
+        "idle" | "working" | "paused" | "deprecated" => {}
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "invalid agent status {other:?} — expected one of idle, working, paused, deprecated"
+            )));
+        }
+    }
     let database = db(&state).await;
     let before = agents::get(database.conn(), &agent_id)
         .await?
@@ -2821,19 +2953,36 @@ async fn set_agent_status(
     // after the operator marked the agent paused (and resume when they
     // un-pause it). Without this the DB row and the executor diverge:
     // the UI shows "paused" but A2A dispatches still get processed.
+    // `ensure` is idempotent and infallible — it just spawns the
+    // executor if it isn't already in the registry map.
     let _ = state.executors.ensure(&agent_id, &before.project_id).await;
+    // Z2: pause/resume/terminate were `let _ =` — silent on failure,
+    // which let the DB row flip while the executor refused, recreating
+    // the very drift the executor-sync was meant to prevent. Bubble.
     match body.status.as_str() {
         "paused" => {
-            let _ = state.executors.pause(&agent_id).await;
+            state
+                .executors
+                .pause(&agent_id)
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
         }
         "working" | "idle" => {
-            let _ = state.executors.resume(&agent_id).await;
+            state
+                .executors
+                .resume(&agent_id)
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
         }
         "deprecated" => {
             state.executors.cancel_subtree(&agent_id).await;
-            let _ = state.executors.terminate(&agent_id).await;
+            state
+                .executors
+                .terminate(&agent_id)
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
         }
-        _ => {}
+        _ => unreachable!("status validated above"),
     }
 
     let updated =
@@ -3370,16 +3519,23 @@ async fn toggle_project_session(
         if let Some(status) = next_status {
             // Sync executor alongside the DB row so closing/opening a
             // session actually parks/wakes in-flight agent work rather
-            // than just flipping the badge in the UI.
+            // than just flipping the badge in the UI. `ensure` is
+            // infallible.
             let _ = state.executors.ensure(&agent.id, &project_id).await;
-            match status {
-                "paused" => {
-                    let _ = state.executors.pause(&agent.id).await;
-                }
-                "working" => {
-                    let _ = state.executors.resume(&agent.id).await;
-                }
-                _ => {}
+            // Z2: bubble pause/resume failures. Session-toggle touches
+            // many agents in a loop; if one fails we still continue
+            // the rest (the DB row is the authoritative state anyway)
+            // but log loudly so the desync is visible.
+            let exec_result = match status {
+                "paused" => state.executors.pause(&agent.id).await,
+                "working" => state.executors.resume(&agent.id).await,
+                _ => Ok(()),
+            };
+            if let Err(err) = exec_result {
+                tracing::warn!(
+                    project_id, agent_id = %agent.id, status, error = ?err,
+                    "toggle_project_session: executor state change failed (continuing)"
+                );
             }
             let _ = agents::set_status(database.conn(), &project_id, &agent.id, status).await?;
         }
@@ -5959,7 +6115,12 @@ async fn build_provider_config(
                 .crypto
                 .open(ct)
                 .map_err(|e| AppError::Internal(format!("decrypt key: {e}")))?;
-            Some(String::from_utf8(bytes).map_err(|e| AppError::Internal(e.to_string()))?)
+            // ZZ66: avoid leaking the decrypted plaintext through
+            // `FromUtf8Error::Display`.
+            Some(
+                String::from_utf8(bytes)
+                    .map_err(|_| AppError::Internal("llm provider api key is not valid utf-8".into()))?,
+            )
         }
         None => None,
     };
@@ -7012,8 +7173,25 @@ async fn download_chat_attachment(
         )));
     }
     let data_dir = state.inner.read().await.data_dir.clone();
-    let absolute_path = data_dir.join("attachments").join(&row.storage_path);
-    let bytes = tokio::fs::read(&absolute_path)
+    let attachments_root = data_dir.join("attachments");
+    let absolute_path = attachments_root.join(&row.storage_path);
+    // Defence-in-depth: today writes go through a ULID-prefixed sanitized
+    // name, but a DB corruption / future migration / SQL flaw that put a
+    // `..`-laden value into `storage_path` would otherwise turn this into
+    // an arbitrary-file-read endpoint. Canonicalise both sides and require
+    // the resolved path to remain under the attachments root (ZZ57).
+    let canonical_root = tokio::fs::canonicalize(&attachments_root)
+        .await
+        .map_err(|e| AppError::Internal(format!("resolve attachments root: {e}")))?;
+    let canonical_path = tokio::fs::canonicalize(&absolute_path)
+        .await
+        .map_err(|e| AppError::Internal(format!("resolve attachment path: {e}")))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(AppError::NotFound(format!(
+            "attachment {attachment_id} not found"
+        )));
+    }
+    let bytes = tokio::fs::read(&canonical_path)
         .await
         .map_err(|e| AppError::Internal(format!("read attachment: {e}")))?;
     let response = (
@@ -8119,7 +8297,9 @@ async fn build_pipeline_deps(
                     .open(&ciphertext)
                     .map_err(|e| AppError::Internal(format!("decrypt tavily key: {e}")))?,
             )
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+            // Same plaintext-leak concern as the GitHub-token path (ZZ66):
+            // `FromUtf8Error::Display` includes the bad byte sequence.
+            .map_err(|_| AppError::Internal("tavily key is not valid utf-8".into()))?;
             Some(Arc::new(TavilyProvider::new(http, key)))
         } else {
             Some(Arc::new(DuckDuckGoProvider::new(http)))
@@ -8203,28 +8383,50 @@ async fn approve_spawn_request(
     Path(spawn_request_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    let row = agent_spawn_requests::get(database.conn(), &spawn_request_id)
+    // ZZ52: atomic transition. The previous shape was
+    // `get → check status → spawn`, which lets two parallel approval
+    // clicks both see `awaiting-approval` and both spawn the pipeline.
+    // `transition_status` updates only if the row is still in
+    // `awaiting-approval`, so exactly one approval call wins.
+    let before = agent_spawn_requests::get(database.conn(), &spawn_request_id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("spawn request {spawn_request_id} not found")))?;
-
-    if row.status != "awaiting-approval" {
-        return Err(AppError::BadRequest(format!(
-            "spawn request {} is in status {}, cannot approve",
-            spawn_request_id, row.status
-        )));
-    }
-
-    // Re-spawn the pipeline (it will resume from the current state)
-    let deps = build_pipeline_deps(&state, &row.project_id).await?;
-    let bus = EventBus::new(state.events.clone());
-    let db_clone = database.clone();
-    let id = spawn_request_id.clone();
-
-    tokio::spawn(async move {
-        if let Err(e) = run_pipeline(db_clone.conn(), &bus, deps, &id).await {
-            tracing::error!("spawn pipeline failed: {}", e);
+        .ok_or_else(|| {
+            AppError::NotFound(format!("spawn request {spawn_request_id} not found"))
+        })?;
+    let row = match agent_spawn_requests::transition_status(
+        database.conn(),
+        &spawn_request_id,
+        "awaiting-approval",
+        "approved",
+    )
+    .await?
+    {
+        Some(row) => row,
+        None => {
+            return Err(AppError::BadRequest(format!(
+                "spawn request {} is in status {}, cannot approve",
+                spawn_request_id, before.status
+            )));
         }
-    });
+    };
+
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent_spawn_request.approve",
+        "agent_spawn_request",
+        &spawn_request_id,
+        Some(serde_json::to_value(&before).unwrap_or(Value::Null)),
+        Some(serde_json::to_value(&row).unwrap_or(Value::Null)),
+    )
+    .await?;
+
+    // Route through the same mpsc the `request_capability` tool uses,
+    // so the consumer's B4b dedup applies uniformly. Previously this
+    // handler bypassed the channel and `tokio::spawn`-ed `run_pipeline`
+    // directly, so a duplicate from the channel could race with this
+    // one.
+    let _ = state.spawn_pipeline_tx.send(spawn_request_id);
 
     Ok(Json(json!({ "ok": true })))
 }

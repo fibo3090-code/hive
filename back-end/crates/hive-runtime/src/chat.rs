@@ -537,8 +537,51 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     let db = params.db.clone();
     let thread_id = params.thread_id.clone();
     let assistant_message_id = params.assistant_message_id.clone();
+    // Captured for the post-turn drift hook + cancel-token bridge
+    // below — read before `run_turn_inner` consumes `params`.
+    let project_id = params.project_id.clone();
+    let agent_id = params.agent_id.clone();
+    let executors = params.executors.clone();
 
-    match tokio::time::timeout(DEFAULT_TURN_TIMEOUT, run_turn_inner(params)).await {
+    // ZZ2: bridge the executor's `CancellationToken` to the chat
+    // turn's `cancel` flag for the lifetime of this turn. The token
+    // is the canonical "stop this agent and its descendants" signal
+    // (set by `cancel_subtree` / `terminate`), but `run_turn` polls
+    // the boolean flag (50 ms tick in `collect_response`) — without
+    // this bridge, cancelling the token leaves the turn streaming
+    // and billing until completion. The bridge is aborted in the
+    // cleanup below regardless of how the inner exits, so a
+    // completed turn doesn't leave a stray task pinned waiting on
+    // a never-cancelled token.
+    let cancel_bridge: Option<tokio::task::JoinHandle<()>> = match (
+        agent_id.as_deref(),
+        executors.as_ref(),
+    ) {
+        (Some(agent_id_str), Some(reg)) => match reg.token_for(agent_id_str).await {
+            Some(token) => {
+                let flag = cancel.clone();
+                let bus_clone = bus.clone();
+                let thread_id_clone = thread_id.clone();
+                let message_id_clone = assistant_message_id.clone();
+                Some(tokio::spawn(async move {
+                    token.cancelled().await;
+                    *flag.lock().await = true;
+                    bus_clone.emit(
+                        format!("chat.{thread_id_clone}.cancelled"),
+                        serde_json::json!({
+                            "threadId": thread_id_clone,
+                            "messageId": message_id_clone,
+                            "reason": "executor_cancelled",
+                        }),
+                    );
+                }))
+            }
+            None => None,
+        },
+        _ => None,
+    };
+
+    let result = match tokio::time::timeout(DEFAULT_TURN_TIMEOUT, run_turn_inner(params)).await {
         Ok(result) => result,
         Err(_elapsed) => {
             tracing::warn!(
@@ -563,7 +606,43 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
             );
             Ok(())
         }
+    };
+
+    // ZZ2 cleanup: abort the cancel-token bridge so a completed turn
+    // doesn't leave a stray task pinned waiting on a never-cancelled
+    // token (the task holds an `Arc` to `cancel`).
+    if let Some(handle) = cancel_bridge {
+        handle.abort();
     }
+
+    // Z1: the drift hook used to live at the end of `run_turn_inner`,
+    // which meant cancel / timeout / LLM-error / budget-refusal exits
+    // all skipped it — exactly the moments operators most want to see
+    // drift recorded. Read the persisted `tool_calls` from the message
+    // (`finalize` / `finalize_cancelled` both write them) and score
+    // off that, so every exit path gets the same treatment.
+    if let Some(agent_id) = agent_id.as_deref() {
+        let executed_calls: Vec<serde_json::Value> = chat_messages::get(db.conn(), &assistant_message_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|m| m.tool_calls)
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+        if !executed_calls.is_empty() {
+            crate::drift_hook::record_after_turn(
+                &db,
+                &bus,
+                executors.as_ref(),
+                &project_id,
+                agent_id,
+                &executed_calls,
+            )
+            .await;
+        }
+    }
+
+    result
 }
 
 async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
@@ -584,7 +663,10 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         tool_context,
         cancel,
         data_dir,
-        executors,
+        // The drift hook (the only inner consumer of `executors`) was
+        // hoisted to the outer `run_turn`; keep the field on `RunTurn`
+        // so the outer can pass it but discard it here.
+        executors: _,
     } = params;
 
     let _thread = chat_threads::get(db.conn(), &thread_id)
@@ -1268,22 +1350,9 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         json!({ "projectId": project_id, "costCents": total_cost }),
     );
 
-    // W3-B5: drift auto-detection. Only meaningful for agent-driven
-    // turns — a plain user→assistant chat has no task to drift from.
-    // Passing `executors` lets the hook *actually* pause the in-process
-    // executor when score >= 0.9 (not just flip the DB row) — otherwise
-    // the next inbox item would run before the operator can intervene.
-    if let Some(ref agent_id) = agent_id {
-        crate::drift_hook::record_after_turn(
-            &db,
-            &bus,
-            executors.as_ref(),
-            &project_id,
-            agent_id,
-            &executed_calls,
-        )
-        .await;
-    }
+    // Drift hook used to live here; moved to `run_turn` (the outer
+    // wrapper) so cancel / timeout / LLM-error / budget exits also
+    // record drift instead of skipping it. See Z1 in BACKLOG.md.
 
     Ok(())
 }
