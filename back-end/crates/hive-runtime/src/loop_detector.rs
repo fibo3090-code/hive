@@ -87,12 +87,24 @@ struct LoopSample {
 }
 
 /// Extract the first `tool_use` call from a row's `tool_calls` JSON
-/// blob and produce a stable fingerprint over `(tool_name, args)`.
+/// blob and produce a stable fingerprint over `(tool_name, arguments)`.
+///
+/// The chat runner persists each call as `{tool, arguments, result, …}`
+/// (see `hive-runtime::chat::executed_calls`); older rows may use the
+/// legacy `args` key, so we fall back to it for backward compatibility.
 fn tool_fingerprint(tool_calls: &Value) -> Option<(String, String, String)> {
     let calls = tool_calls.as_array()?;
     let first = calls.iter().find(|c| c.is_object())?;
-    let name = first.get("name").and_then(Value::as_str)?.to_owned();
-    let args = first.get("args").cloned().unwrap_or(Value::Null);
+    let name = first
+        .get("name")
+        .or_else(|| first.get("tool"))
+        .and_then(Value::as_str)?
+        .to_owned();
+    let args = first
+        .get("arguments")
+        .or_else(|| first.get("args"))
+        .cloned()
+        .unwrap_or(Value::Null);
     let canon = canonical_json(&args);
     let mut hasher = DefaultHasher::new();
     name.hash(&mut hasher);

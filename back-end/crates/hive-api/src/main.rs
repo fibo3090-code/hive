@@ -486,7 +486,12 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         runtime.db.clone(),
         EventBus::new(events.clone()),
     ));
-    let _ = executors.rehydrate_from_db().await;
+    // ZZ65: surface rehydration failures. A silent failure here means
+    // agents that should have resumed from a prior boot quietly never
+    // dispatch; without a log line the operator has no signal.
+    if let Err(err) = executors.rehydrate_from_db().await {
+        tracing::error!(error = %err, "executor rehydrate_from_db failed at startup");
+    }
 
     // Background loop-detection daemon. Producer for the
     // `loop_detected` notifications the LoopDetectionModal renders.
@@ -571,6 +576,11 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
             loop {
+                // ZZ64: `tokio::time::interval` fires immediately on first
+                // tick. Awaiting *before* the body keeps the first purge on
+                // the same 24 h cadence as every subsequent one and avoids
+                // a redundant pair of purges at startup.
+                tick.tick().await;
                 let days = settings::get_value(purge_db.conn(), "global", "audit.retention_days")
                     .await
                     .ok()
@@ -588,7 +598,6 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
                         Err(err) => tracing::warn!(error = %err, "audit_log purge failed"),
                     }
                 }
-                tick.tick().await;
             }
         });
     }
@@ -1390,7 +1399,11 @@ async fn current_tools_sandbox_settings(
             .crypto
             .open(&ciphertext)
             .map_err(|e| AppError::Internal(format!("decrypt tavily key: {e}")))?;
-        let key = String::from_utf8(opened).map_err(|e| AppError::Internal(e.to_string()))?;
+        // Don't surface `FromUtf8Error::Display` — it includes the bad
+        // byte sequence which here would be the decrypted plaintext key
+        // (ZZ66).
+        let key = String::from_utf8(opened)
+            .map_err(|_| AppError::Internal("tavily key is not valid utf-8".into()))?;
         Some(mask_key(&key))
     } else {
         None
@@ -1438,7 +1451,11 @@ async fn github_status_for_project(
             .open(&sealed)
             .map_err(|e| AppError::Internal(format!("decrypt github token: {e}")))?,
     )
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Drop the inner `FromUtf8Error` — its `Display` includes the invalid
+    // byte sequence, which here would be the decrypted plaintext token
+    // bytes. We only ever want to log that *something* failed to decode,
+    // never the bytes themselves (ZZ66).
+    .map_err(|_| AppError::Internal("github token is not valid utf-8".into()))?;
     Ok(Some((GitHubClient::new(owner, repo, token), masked)))
 }
 
@@ -1538,7 +1555,9 @@ async fn build_tooling(
                     .open(&ciphertext)
                     .map_err(|e| AppError::Internal(format!("decrypt tavily key: {e}")))?,
             )
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+            // ZZ66: never put `FromUtf8Error::Display` into a log — it
+            // would surface the decrypted plaintext bytes.
+            .map_err(|_| AppError::Internal("tavily key is not valid utf-8".into()))?;
             Arc::new(TavilyProvider::new(http.clone(), key))
         } else {
             Arc::new(DuckDuckGoProvider::new(http.clone()))
@@ -2812,6 +2831,18 @@ async fn set_agent_status(
     Path(agent_id): Path<String>,
     Json(body): Json<StatusBody>,
 ) -> Result<Json<Value>, AppError> {
+    // ZZ60: reject anything outside the canonical status enum up front.
+    // Previously the `_ => {}` fallthrough below silently persisted bad
+    // values into the DB column and broadcast them on the SSE bus, where
+    // frontend code branches on these strings.
+    match body.status.as_str() {
+        "idle" | "working" | "paused" | "deprecated" => {}
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "invalid agent status {other:?} — expected one of idle, working, paused, deprecated"
+            )));
+        }
+    }
     let database = db(&state).await;
     let before = agents::get(database.conn(), &agent_id)
         .await?
@@ -2833,7 +2864,7 @@ async fn set_agent_status(
             state.executors.cancel_subtree(&agent_id).await;
             let _ = state.executors.terminate(&agent_id).await;
         }
-        _ => {}
+        _ => unreachable!("status validated above"),
     }
 
     let updated =
@@ -5959,7 +5990,12 @@ async fn build_provider_config(
                 .crypto
                 .open(ct)
                 .map_err(|e| AppError::Internal(format!("decrypt key: {e}")))?;
-            Some(String::from_utf8(bytes).map_err(|e| AppError::Internal(e.to_string()))?)
+            // ZZ66: avoid leaking the decrypted plaintext through
+            // `FromUtf8Error::Display`.
+            Some(
+                String::from_utf8(bytes)
+                    .map_err(|_| AppError::Internal("llm provider api key is not valid utf-8".into()))?,
+            )
         }
         None => None,
     };
@@ -7012,8 +7048,25 @@ async fn download_chat_attachment(
         )));
     }
     let data_dir = state.inner.read().await.data_dir.clone();
-    let absolute_path = data_dir.join("attachments").join(&row.storage_path);
-    let bytes = tokio::fs::read(&absolute_path)
+    let attachments_root = data_dir.join("attachments");
+    let absolute_path = attachments_root.join(&row.storage_path);
+    // Defence-in-depth: today writes go through a ULID-prefixed sanitized
+    // name, but a DB corruption / future migration / SQL flaw that put a
+    // `..`-laden value into `storage_path` would otherwise turn this into
+    // an arbitrary-file-read endpoint. Canonicalise both sides and require
+    // the resolved path to remain under the attachments root (ZZ57).
+    let canonical_root = tokio::fs::canonicalize(&attachments_root)
+        .await
+        .map_err(|e| AppError::Internal(format!("resolve attachments root: {e}")))?;
+    let canonical_path = tokio::fs::canonicalize(&absolute_path)
+        .await
+        .map_err(|e| AppError::Internal(format!("resolve attachment path: {e}")))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(AppError::NotFound(format!(
+            "attachment {attachment_id} not found"
+        )));
+    }
+    let bytes = tokio::fs::read(&canonical_path)
         .await
         .map_err(|e| AppError::Internal(format!("read attachment: {e}")))?;
     let response = (
@@ -8119,7 +8172,9 @@ async fn build_pipeline_deps(
                     .open(&ciphertext)
                     .map_err(|e| AppError::Internal(format!("decrypt tavily key: {e}")))?,
             )
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+            // Same plaintext-leak concern as the GitHub-token path (ZZ66):
+            // `FromUtf8Error::Display` includes the bad byte sequence.
+            .map_err(|_| AppError::Internal("tavily key is not valid utf-8".into()))?;
             Some(Arc::new(TavilyProvider::new(http, key)))
         } else {
             Some(Arc::new(DuckDuckGoProvider::new(http)))

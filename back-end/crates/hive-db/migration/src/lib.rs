@@ -46,6 +46,11 @@ impl MigratorTrait for Migrator {
             Box::new(m20260606_000002_repair_chat_attachments::Migration),
             Box::new(m20260612_000001_chat_threads_agent_index::Migration),
             Box::new(m20260613_000001_agent_wires::Migration),
+            // `m20260514_*` is filename-dated earlier than the migrations
+            // above, but it depends on the `skills` table that
+            // `m20260606_redesign_foundations` creates. Keep it at the
+            // dependency-aware position, not the filename-sort position.
+            // (See BACKLOG: ZZ37 was retracted on this basis.)
             Box::new(m20260514_000001_agent_skill_bindings::Migration),
             Box::new(m20260620_000001_agent_eval_runs::Migration),
             Box::new(m20260621_000001_plan_graph::Migration),

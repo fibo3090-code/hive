@@ -77,6 +77,12 @@ where
 {
     async_stream::stream! {
         let mut buffer = String::new();
+        // Tail of bytes from the previous chunk that didn't form a complete
+        // UTF-8 codepoint — held over so we can stitch them onto the next
+        // chunk. Without this, `from_utf8_lossy` substitutes U+FFFD whenever
+        // a TCP/HTTP chunk boundary lands mid-codepoint, corrupting emoji /
+        // CJK / accented text in the streamed assistant message (ZZ25).
+        let mut tail: Vec<u8> = Vec::new();
         let mut pending: std::collections::VecDeque<SseMessage> = std::collections::VecDeque::new();
         let mut body = Box::pin(body);
         loop {
@@ -86,10 +92,35 @@ where
             }
             match body.next().await {
                 Some(Ok(chunk)) => {
-                    if let Ok(text) = std::str::from_utf8(&chunk) {
-                        buffer.push_str(text);
+                    // Stitch any leftover bytes from a previous
+                    // mid-codepoint split onto this chunk, then decode the
+                    // maximal valid UTF-8 prefix.
+                    let combined: Vec<u8> = if tail.is_empty() {
+                        chunk.to_vec()
                     } else {
-                        buffer.push_str(&String::from_utf8_lossy(&chunk));
+                        let mut v = std::mem::take(&mut tail);
+                        v.extend_from_slice(&chunk);
+                        v
+                    };
+                    match std::str::from_utf8(&combined) {
+                        Ok(text) => buffer.push_str(text),
+                        Err(e) => {
+                            let valid_up_to = e.valid_up_to();
+                            // `valid_up_to()` is guaranteed to fall on a
+                            // UTF-8 boundary; the inner `from_utf8` here
+                            // cannot fail.
+                            if let Ok(good) = std::str::from_utf8(&combined[..valid_up_to]) {
+                                buffer.push_str(good);
+                            }
+                            // If the trailing bad bytes can never form a
+                            // valid codepoint (`error_len` is `Some`), they
+                            // are genuinely invalid — drop them rather than
+                            // hoarding the buffer forever.
+                            tail = match e.error_len() {
+                                Some(_) => Vec::new(),
+                                None => combined[valid_up_to..].to_vec(),
+                            };
+                        }
                     }
                     for msg in take_messages(&mut buffer) {
                         pending.push_back(msg);

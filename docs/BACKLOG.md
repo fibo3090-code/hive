@@ -446,8 +446,58 @@ high-leverage 🟠s. Then sweep the 🟡/🟢 list as cleanup.
 
 ## ZZ. 2026-05-27 deep audit — additional findings
 
-Second deep-audit pass after the 2026-05-25 sweep. Spot-verifications confirm
-the following prior items are **still open** (no fix landed since):
+Second deep-audit pass after the 2026-05-25 sweep.
+
+### Fixed 2026-05-27 in this pass
+
+The first surgical batch of fixes landed in the same PR as this audit:
+
+- **ZZ1** — `fs_write` planted-parent-symlink escape closed in
+  `hive-sandbox/src/local.rs`. `resolve()` now walks up to the deepest
+  existing ancestor for not-yet-existing paths, canonicalises it, and
+  re-verifies the prefix. Regression coverage in
+  `local::tests::write_target_that_is_a_symlink_rejected` continues to
+  pass; new planted-parent test still TODO.
+- **ZZ3** — Loop detector now reads `"arguments"` (with `"args"` /
+  `"name"`-or-`"tool"` fallbacks) in `loop_detector::tool_fingerprint`,
+  so repeat-call detection actually matches the persisted shape from
+  `chat::executed_calls`.
+- **ZZ25** — `sse::sse_stream` now keeps a `Vec<u8>` tail across chunk
+  boundaries and only flushes the maximal valid UTF-8 prefix into the
+  string buffer. Emoji / CJK / accented characters no longer turn into
+  U+FFFD when a TCP/HTTP chunk lands mid-codepoint.
+- **ZZ57** — `download_chat_attachment` now canonicalises both the
+  attachments root and the resolved path and rejects with `NotFound`
+  if the resolved path escapes the root. Defence-in-depth against a
+  bad `storage_path` in the DB.
+- **ZZ60** — `set_agent_status` rejects anything outside
+  `{idle, working, paused, deprecated}` with `400 Bad Request` before
+  touching the DB or the executor.
+- **ZZ64** — Audit-log purge job awaits the tick *before* the body so
+  it no longer fires twice back-to-back at startup.
+- **ZZ65** — `executors.rehydrate_from_db()` failures at boot are now
+  surfaced via `tracing::error!` instead of silently swallowed.
+- **ZZ66** — All four sites that decrypted a secret and ran
+  `String::from_utf8(...).map_err(|e| AppError::Internal(e.to_string()))`
+  now use `.map_err(|_| ...)` so `FromUtf8Error::Display` can't drag
+  the decrypted plaintext (GitHub PAT / Tavily key / LLM API key) into
+  the log line.
+- **Z3 / A9 (partial)** — `WebFetchTool::with_default_client` now
+  installs a `Policy::custom` reqwest redirect policy that rejects
+  non-http(s) hops, caps the redirect chain at 5, and refuses IP-literal
+  hops that hit `is_private_or_internal`. Closes the `302 ->
+  169.254.169.254` metadata-endpoint exfil. The DNS-rebinding hostname
+  case (ZZ8) is still open.
+
+### Retracted on verification
+
+- **ZZ37** — see entry below; the audited "wrong ordering" was actually
+  a dependency-aware placement.
+
+### Still open (verified 2026-05-27)
+
+Spot-verifications confirm the following prior items are still open
+(no fix landed since):
 **Z1** (drift hook on error paths), **Z2** (`let _ = state.executors.*` — 16
 call sites in `main.rs` at lines 1988, 2009, 2345, 2370, 2394, 2658, 2708,
 2824, 2827, 2830, 2834, 3374, 3377, 3380, 4966, 4968), **Z3 / A9** (SSRF on
@@ -893,19 +943,21 @@ anchor on that index, drop the rest before it.
 
 ## DB layer findings (ZZ37–ZZ51)
 
-### ZZ37. Migration vector order ≠ filename order 🔴
+### ZZ37. ~~Migration vector order ≠ filename order~~ — Retracted 2026-05-27
 
 **File:** `crates/hive-db/migration/src/lib.rs:49`.
 
-`m20260514_000001_agent_skill_bindings` is listed *after*
-`m20260613_000001_agent_wires` in the `Migrator::migrations()` vector.
-SeaORM applies in vector order, but rolling forwards on a DB that was
-created on an older revision (no skill bindings yet, agent_wires
-applied) replays the skill-bindings migration with a `version` newer
-than its name suggests. Worse: any new migration filename inserted
-alphabetically between 0514 and 0613 may be considered "applied" in
-some envs and not others. **Fix:** restore chronological filename order
-and add a unit test asserting the vector is sorted by name.
+**Retracted on verification.** The original ordering placed
+`m20260514_000001_agent_skill_bindings` *after* `m20260613_*_agent_wires`
+deliberately: the migration's FK references `Skills::Table`
+(`m20260514_*_agent_skill_bindings.rs:65`), and the `skills` table is
+created in `m20260606_000001_redesign_foundations` (`:41`). Filename
+date is misleading (file authored later, dated retroactively), but the
+vector position is dependency-correct. An attempt to "fix" this by
+moving the migration to its chronological position broke every test
+that calls `Migrator::up()` against a fresh DB with
+`no such table: skills`. Reverted with a comment in `lib.rs` noting the
+intentional position.
 
 ### ZZ38. `seed_demo` is not idempotent under concurrent first-boot and not transactional 🔴
 

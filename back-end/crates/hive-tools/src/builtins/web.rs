@@ -115,6 +115,41 @@ impl WebFetchTool {
         let http = reqwest::Client::builder()
             .timeout(DEFAULT_FETCH_TIMEOUT)
             .user_agent("hive-agent/1.0 (+https://github.com/fibo3090-code/fresh-start)")
+            // Z3 / A9: `validate_url_destination` runs once on the
+            // user-supplied URL, but the default reqwest policy follows up
+            // to 10 redirects without re-validating. A public host that
+            // 30x's to `http://169.254.169.254/...` (AWS/GCP metadata) or
+            // `http://127.0.0.1:8787/...` (self-recursion into the no-auth
+            // local API) would otherwise exfiltrate creds or pivot into
+            // HIVE itself. Inspect each hop synchronously: reject
+            // non-http(s) schemes and IP literals that hit
+            // `is_private_or_internal`. Hostnames go through reqwest's
+            // own DNS, which the rebinding window (ZZ8) still covers
+            // imperfectly; that's a separate fix.
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 5 {
+                    return attempt.error("too many redirects");
+                }
+                let url = attempt.url();
+                match url.scheme() {
+                    "http" | "https" => {}
+                    other => {
+                        let reason = format!("redirect to non-http(s) scheme {other:?} refused");
+                        return attempt.error(reason);
+                    }
+                }
+                if let Some(host) = url.host_str() {
+                    if let Ok(ip) = host.parse::<IpAddr>() {
+                        if is_private_or_internal(&ip) {
+                            let reason = format!(
+                                "redirect to private/internal address {ip} refused"
+                            );
+                            return attempt.error(reason);
+                        }
+                    }
+                }
+                attempt.follow()
+            }))
             .build()
             .expect("reqwest client builds");
         Self::new(http)
