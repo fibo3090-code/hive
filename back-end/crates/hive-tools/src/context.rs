@@ -142,8 +142,15 @@ fn normalize_protected_path(path: &str) -> String {
 }
 
 fn is_system_protected(norm: &str) -> bool {
-    norm.split('/')
-        .any(|part| part == ".env" || part.starts_with(".env.") || part == ".git")
+    // `.hive` is HIVE's internal data directory inside the sandbox
+    // (todo.json, run-home for shell_exec children — see ZZ7). The agent
+    // reaches todos through the `todo` tool's direct sandbox API, not
+    // through `fs_read`, so denying `fs_*` / `shell_exec` access here
+    // keeps cached creds (.gitconfig, .npmrc, .cargo/credentials) that
+    // child processes write into HOME from leaking back into prompts.
+    norm.split('/').any(|part| {
+        part == ".env" || part.starts_with(".env.") || part == ".git" || part == ".hive"
+    })
 }
 
 #[cfg(test)]

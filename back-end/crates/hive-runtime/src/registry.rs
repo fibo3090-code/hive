@@ -185,10 +185,51 @@ impl ExecutorRegistry {
 
     /// On startup: walk every persisted agent and spin up an executor so the
     /// inbox can be drained without waiting for a fresh API call.
+    ///
+    /// ZZ13: Honour the persisted `parent_agent_id` so the cancel-token
+    /// tree is rebuilt correctly across restarts. The old shape called
+    /// the parent-less `ensure`, so every rehydrated child got a fresh
+    /// root token; a later `cancel_subtree(parent)` only cancelled the
+    /// parent while the child kept running.
     pub async fn rehydrate_from_db(&self) -> Result<usize, sea_orm::DbErr> {
         let all = agents::list_all(self.db.conn()).await?;
+        // Index by parent so we can BFS roots-first. The child must be
+        // ensured *after* its parent's token landed in the map, otherwise
+        // `ensure_with_parent` falls back to a fresh root token.
+        let mut by_parent: std::collections::HashMap<
+            Option<String>,
+            Vec<&hive_db::entities::agent::Model>,
+        > = std::collections::HashMap::new();
         for agent in &all {
-            let _ = self.ensure(&agent.id, &agent.project_id).await;
+            by_parent
+                .entry(agent.parent_agent_id.clone())
+                .or_default()
+                .push(agent);
+        }
+        let mut queue: std::collections::VecDeque<Option<String>> =
+            std::collections::VecDeque::new();
+        queue.push_back(None);
+        while let Some(parent) = queue.pop_front() {
+            if let Some(children) = by_parent.remove(&parent) {
+                for child in children {
+                    let _ = self
+                        .ensure_with_parent(
+                            &child.id,
+                            &child.project_id,
+                            child.parent_agent_id.as_deref(),
+                        )
+                        .await;
+                    queue.push_back(Some(child.id.clone()));
+                }
+            }
+        }
+        // Stragglers: agents whose `parent_agent_id` doesn't match any
+        // rehydrated row (dangling FK after corruption). Spin them up
+        // parent-less so they still get an executor.
+        for orphan_group in by_parent.into_values() {
+            for agent in orphan_group {
+                let _ = self.ensure(&agent.id, &agent.project_id).await;
+            }
         }
         Ok(all.len())
     }
@@ -243,6 +284,92 @@ mod tests {
         assert!(
             !restarted.cancel_token().is_cancelled(),
             "restarted executor must receive a fresh cancellation token"
+        );
+    }
+
+    #[tokio::test]
+    async fn rehydrate_preserves_parent_token_so_cancel_subtree_cascades() {
+        // ZZ13 regression: rehydrate_from_db must call ensure_with_parent
+        // (not the parent-less `ensure`) so the cancel-token tree survives
+        // a restart. Without the fix, a child's token is fresh-rooted and
+        // `cancel_subtree(parent)` only stops the parent.
+        use hive_db::repos::{agents, projects};
+
+        let registry = fresh_registry().await;
+        let db = registry.db.clone();
+
+        // Seed a parent + child agent in the DB.
+        let project = projects::create(
+            db.conn(),
+            projects::CreateProject {
+                name: "rehydrate-test".into(),
+                description: None,
+                sovereignty_tier: "local".into(),
+                budget_total_cents: 0,
+                status: "active".into(),
+            },
+        )
+        .await
+        .expect("create project");
+        let parent = agents::create(
+            db.conn(),
+            agents::CreateAgent {
+                project_id: project.id.clone(),
+                slug: "parent".into(),
+                name: "Parent".into(),
+                role: "coordinator".into(),
+                model: "claude-sonnet-4-6".into(),
+                status: "idle".into(),
+                parent_agent_id: None,
+                spawned_by_message_id: None,
+                enabled_tools: None,
+                system_prompt: None,
+                model_provider_id: None,
+                model_id: None,
+            },
+        )
+        .await
+        .expect("create parent");
+        let child = agents::create(
+            db.conn(),
+            agents::CreateAgent {
+                project_id: project.id.clone(),
+                slug: "child".into(),
+                name: "Child".into(),
+                role: "worker".into(),
+                model: "claude-haiku-4-5-20251001".into(),
+                status: "idle".into(),
+                parent_agent_id: Some(parent.id.clone()),
+                spawned_by_message_id: None,
+                enabled_tools: None,
+                system_prompt: None,
+                model_provider_id: None,
+                model_id: None,
+            },
+        )
+        .await
+        .expect("create child");
+
+        registry.rehydrate_from_db().await.expect("rehydrate");
+
+        let parent_token = registry
+            .token_for(&parent.id)
+            .await
+            .expect("parent has a token");
+        let child_token = registry
+            .token_for(&child.id)
+            .await
+            .expect("child has a token");
+
+        assert!(!parent_token.is_cancelled());
+        assert!(!child_token.is_cancelled());
+
+        registry.cancel_subtree(&parent.id).await;
+
+        assert!(parent_token.is_cancelled(), "parent must be cancelled");
+        assert!(
+            child_token.is_cancelled(),
+            "child must inherit cancellation through the parent's token tree"
         );
     }
 

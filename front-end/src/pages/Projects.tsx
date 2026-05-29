@@ -47,8 +47,12 @@ export default function Projects() {
                 'group relative rounded-xl border border-border bg-card p-5 text-left hover:border-primary/40 hover:glow-amber transition-all cursor-pointer',
                 activeProject?.id === project.id && 'border-primary/40 glow-amber'
               )}
-              onClick={() => {
-                setActiveProject(project.id);
+              onClick={async () => {
+                // Z11: await the active-project mutation before
+                // navigating. Without this the dashboard renders against
+                // the previous project until invalidation round-trips —
+                // visible flicker + a brief shot of stale data.
+                await setActiveProject(project.id);
                 navigate('/dashboard');
               }}
             >

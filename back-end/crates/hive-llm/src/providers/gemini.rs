@@ -264,14 +264,45 @@ impl LlmProvider for GeminiProvider {
 
         let byte_stream = response.bytes_stream();
         let sse = sse_stream(byte_stream);
-        let mapped = sse.flat_map(|item| {
+        // ZZ29: track whether any `Complete` made it out of the stream.
+        // Gemini's per-frame parser only emits Complete when it sees
+        // `finishReason` or `tokens_out > 0`; a network-truncated stream
+        // that produced text but no usage block left the runtime
+        // waiting forever for a terminal event. The EOF adapter below
+        // emits a fallback `Complete` (with no token info and
+        // `finish_reason: None`) so consumers always observe a
+        // terminator.
+        let complete_emitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let emitted_for_eof = complete_emitted.clone();
+        let mapped = sse.flat_map(move |item| {
+            let emitted = complete_emitted.clone();
             let results: Vec<Result<StreamEvent, LlmError>> = match item {
                 Err(e) => vec![Err(LlmError::Http(e))],
-                Ok(msg) => parse_event(&msg).into_iter().map(Ok).collect(),
+                Ok(msg) => parse_event(&msg)
+                    .into_iter()
+                    .inspect(|ev| {
+                        if matches!(ev, StreamEvent::Complete { .. }) {
+                            emitted.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    })
+                    .map(Ok)
+                    .collect(),
             };
             futures_util::stream::iter(results)
         });
-        Ok(Box::pin(mapped))
+        let eof_fallback = futures_util::stream::once(async move {
+            if emitted_for_eof.load(std::sync::atomic::Ordering::Relaxed) {
+                None
+            } else {
+                Some(Ok(StreamEvent::Complete {
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    finish_reason: None,
+                }))
+            }
+        })
+        .filter_map(futures_util::future::ready);
+        Ok(Box::pin(mapped.chain(eof_fallback)))
     }
 
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {

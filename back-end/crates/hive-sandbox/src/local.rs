@@ -89,6 +89,14 @@ pub struct LocalFsSandbox {
     root: PathBuf,
 }
 
+/// Subdirectory under the sandbox root that hosts HIVE-internal files
+/// (todo.json, the shell_exec child process's HOME, …). The file
+/// protection layer denies LLM-driven `fs_*`/`shell_exec` access into
+/// here so credentials that npm/cargo/git write into HOME (.npmrc,
+/// .cargo/credentials, .gitconfig) aren't readable by the agent that
+/// spawned the child (ZZ7).
+const HIVE_RUN_HOME_DIR: &str = ".hive/run-home";
+
 impl LocalFsSandbox {
     /// Create a sandbox rooted at `root`. Creates the directory if missing.
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, SandboxError> {
@@ -97,7 +105,17 @@ impl LocalFsSandbox {
         // Canonicalise so path-escape checks operate on the real path
         // (resolves `..`, symlinks at root).
         let root = std::fs::canonicalize(&root)?;
+        // Pre-create the per-sandbox HOME for shell_exec children. Lives
+        // under `.hive/` so the file-protection layer keeps the agent
+        // from reading the cached creds back via `fs_read` or
+        // `shell_exec`.
+        std::fs::create_dir_all(root.join(HIVE_RUN_HOME_DIR))?;
         Ok(Self { root })
+    }
+
+    /// Absolute path to the per-sandbox HOME used during `exec`.
+    fn run_home(&self) -> PathBuf {
+        self.root.join(HIVE_RUN_HOME_DIR)
     }
 
     /// Join a user-provided path to the root and verify it stays inside,
@@ -189,6 +207,13 @@ impl LocalFsSandbox {
     /// attacker can't plant a symlink and have a later operation
     /// follow it. (Reads of existing symlinks resolve via `resolve`'s
     /// canonicalisation, which already rejects out-of-root targets.)
+    /// Refuse if `path` is itself a symlink. Used to be the only
+    /// symlink guard for `write`, but the leaf-symlink check was racy
+    /// (ZZ11): an attacker could swap the leaf for a symlink between
+    /// `symlink_metadata` and the subsequent `tokio::fs::write`. The
+    /// `write` impl now opens with `O_NOFOLLOW` on Unix instead. This
+    /// helper is kept for tests + non-Unix fallback.
+    #[allow(dead_code)]
     fn refuse_symlink(&self, path: &Path) -> Result<(), SandboxError> {
         match std::fs::symlink_metadata(path) {
             Ok(meta) if meta.file_type().is_symlink() => {
@@ -246,33 +271,42 @@ impl Sandbox for LocalFsSandbox {
 
     async fn read(&self, path: &str) -> Result<Vec<u8>, SandboxError> {
         let resolved = self.resolve(path, false)?;
-        // Stat first so a 1 GB log file doesn't OOM the runner before the
-        // tool's own truncate logic runs. Hard cap at FS_READ_HARD_CAP; the
-        // caller (`fs_read` tool) applies a soft cap inside that.
-        match tokio::fs::metadata(&resolved).await {
-            Ok(meta) if meta.is_file() => {
-                if meta.len() as usize > FS_READ_HARD_CAP {
-                    return Err(SandboxError::Io(std::io::Error::other(format!(
-                        "file is {} bytes — refused (hard cap {} bytes); read a smaller slice or split it",
-                        meta.len(),
-                        FS_READ_HARD_CAP
-                    ))));
-                }
+        // ZZ10: open once and bound the read at the file descriptor level.
+        // The previous shape was `stat → check len ≤ cap → tokio::fs::read`,
+        // which is TOCTOU: a concurrent writer (peer agent, host process)
+        // could grow the file between the two syscalls, blowing past the
+        // cap and OOMing the runner. `Read::take(cap + 1)` on a single
+        // open handle removes that window — we then assert the final
+        // length is `≤ cap`, treating a read that filled `cap + 1` as
+        // proof the file overran the limit.
+        let resolved_for_err = resolved.clone();
+        let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, std::io::Error> {
+            use std::io::Read;
+            let file = std::fs::File::open(&resolved)?;
+            let meta = file.metadata()?;
+            if !meta.is_file() {
+                return Err(std::io::Error::other("not a regular file"));
             }
-            Ok(_) => {
-                return Err(SandboxError::Io(std::io::Error::other(
-                    "not a regular file",
-                )))
+            let mut buf = Vec::with_capacity(
+                (meta.len() as usize).min(FS_READ_HARD_CAP).saturating_add(1),
+            );
+            // +1 sentinel byte: if `take` filled it, the underlying file
+            // is strictly larger than the cap.
+            file.take((FS_READ_HARD_CAP as u64) + 1)
+                .read_to_end(&mut buf)?;
+            if buf.len() > FS_READ_HARD_CAP {
+                return Err(std::io::Error::other(format!(
+                    "file is over {FS_READ_HARD_CAP} bytes — refused; read a smaller slice or split it"
+                )));
             }
+            Ok(buf)
+        })
+        .await
+        .map_err(|join_err| SandboxError::Io(std::io::Error::other(join_err.to_string())))?;
+        match bytes {
+            Ok(b) => Ok(b),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(SandboxError::NotFound(resolved));
-            }
-            Err(e) => return Err(SandboxError::Io(e)),
-        }
-        match tokio::fs::read(&resolved).await {
-            Ok(bytes) => Ok(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Err(SandboxError::NotFound(resolved))
+                Err(SandboxError::NotFound(resolved_for_err))
             }
             Err(e) => Err(SandboxError::Io(e)),
         }
@@ -287,13 +321,74 @@ impl Sandbox for LocalFsSandbox {
             ))));
         }
         let resolved = self.resolve(path, false)?;
-        // Refuse if the target itself is a symlink — an attacker who
-        // could plant one could then redirect a later read/write.
-        self.refuse_symlink(&resolved)?;
         if let Some(parent) = resolved.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(&resolved, contents).await?;
+        // ZZ11: open with `O_NOFOLLOW` (Unix) / `FILE_FLAG_OPEN_REPARSE_POINT`
+        // (Windows) so the kernel refuses to traverse a symlink at the
+        // leaf — closes the TOCTOU window between `refuse_symlink`
+        // (lstat) and the subsequent `tokio::fs::write` (which followed
+        // the path again). On Unix `O_NOFOLLOW` returns `ELOOP` when the
+        // path is a symlink. Falls back to the old lstat-then-write
+        // pattern on platforms without those flags.
+        let contents = contents.to_vec();
+        let resolved_for_blocking = resolved.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), std::io::Error> {
+            #[cfg(unix)]
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut opts = std::fs::OpenOptions::new();
+                opts.write(true)
+                    .create(true)
+                    .truncate(true)
+                    .custom_flags(libc::O_NOFOLLOW);
+                let mut file = opts.open(&resolved_for_blocking).map_err(|e| {
+                    if matches!(e.raw_os_error(), Some(libc::ELOOP)) {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!(
+                                "refusing to write through symlink at {}",
+                                resolved_for_blocking.display()
+                            ),
+                        )
+                    } else {
+                        e
+                    }
+                })?;
+                file.write_all(&contents)?;
+                Ok(())
+            }
+            #[cfg(not(unix))]
+            {
+                // No portable `O_NOFOLLOW`: keep the lstat-then-write
+                // pattern (matches the prior behaviour). The symlink
+                // TOCTOU window remains on Windows; tracked separately.
+                if let Ok(meta) = std::fs::symlink_metadata(&resolved_for_blocking) {
+                    if meta.file_type().is_symlink() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!(
+                                "refusing to write through symlink at {}",
+                                resolved_for_blocking.display()
+                            ),
+                        ));
+                    }
+                }
+                std::fs::write(&resolved_for_blocking, &contents)
+            }
+        })
+        .await
+        .map_err(|join_err| SandboxError::Io(std::io::Error::other(join_err.to_string())))?
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidInput
+                && e.to_string().contains("symlink")
+            {
+                SandboxError::PathEscape(resolved.clone())
+            } else {
+                SandboxError::Io(e)
+            }
+        })?;
         Ok(())
     }
 
@@ -387,9 +482,14 @@ impl Sandbox for LocalFsSandbox {
                 command.env(var, value);
             }
         }
-        // HOME points at the workspace root — keeps tools that care
-        // (npm, cargo, git config) from writing into the operator's home.
-        command.env("HOME", &self.root);
+        // ZZ7: HOME points at `<root>/.hive/run-home/`, not the
+        // workspace root. With HOME=root, every git/npm/cargo invocation
+        // would scatter `.gitconfig`/`.npmrc`/`.cargo/credentials`
+        // (often holding tokens) all over the project tree — readable
+        // by a later `fs_read` or `fs_list`. With HOME inside the
+        // file-protection-protected `.hive/` zone instead, the same
+        // creds land where the LLM can't see them.
+        command.env("HOME", self.run_home());
 
         // Apply per-process resource caps (CPU, AS, NOFILE, NPROC on Linux)
         // via `pre_exec` so a runaway agent can't fork-bomb / leak GB / open
