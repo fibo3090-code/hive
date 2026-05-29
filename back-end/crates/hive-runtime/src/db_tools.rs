@@ -9,8 +9,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use hive_db::{
     repos::{
-        agent_eval_runs, agent_skill_bindings, agents, drift_events, notes, spec_document_sections,
-        spec_documents, tasks, tech_debt,
+        agent_eval_runs, agent_skill_bindings, agent_task_assignments, agents, drift_events, notes,
+        spec_document_sections, spec_documents, tasks, tech_debt,
     },
     Db,
 };
@@ -382,6 +382,32 @@ impl Tool for SetTaskStatus {
                 }
                 Err(e) => return Err(ToolError::Other(format!("set task status: {e}"))),
             };
+        // When the agent closes / blocks the task, mirror that on the
+        // `agent_task_assignments` row so the scheduler stops counting
+        // the agent as "in-flight" against `max_parallel_agents` and the
+        // UI gauges flip immediately. Mapping:
+        //   task `completed`  → assignment `finished`
+        //   task `blocked`    → assignment `blocked`
+        //   task `cancelled`  → assignment `cancelled`
+        // (in-progress / queued / pending leave the assignment alone —
+        // the agent is still on it.)
+        let assignment_state: Option<&str> = match status {
+            "completed" => Some("finished"),
+            "blocked" => Some("blocked"),
+            "cancelled" => Some("cancelled"),
+            _ => None,
+        };
+        if let Some(new_state) = assignment_state {
+            if let Some(agent_id) = ctx.agent_id.as_deref() {
+                let _ = agent_task_assignments::mirror_terminal_state_for_task(
+                    self.db.conn(),
+                    agent_id,
+                    &updated.id,
+                    new_state,
+                )
+                .await;
+            }
+        }
         // Append a note onto the Hive Mind so the operator sees *why* the
         // agent flipped the status — without forcing an Alert. The author
         // is the calling agent's id (or the fallback "agent" string).

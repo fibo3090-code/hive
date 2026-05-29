@@ -76,6 +76,61 @@ pub async fn list_for_task(db: &DatabaseConnection, task_id: &str) -> Result<Vec
         .await
 }
 
+/// Set the state of every assignment matching `(agent_id, task_id)` to a
+/// terminal value and stamp `completed_at`. Returns the rows affected.
+/// Used by `set_task_status` so closing a task also closes the assignment
+/// rather than leaving it stuck in `started` / `in-progress` forever.
+pub async fn mirror_terminal_state_for_task(
+    db: &DatabaseConnection,
+    agent_id: &str,
+    task_id: &str,
+    new_state: &str,
+) -> Result<u64, DbErr> {
+    let now = now_rfc3339();
+    let res = Entity::update_many()
+        .col_expr(
+            Column::State,
+            sea_orm::sea_query::Expr::value(new_state.to_owned()),
+        )
+        .col_expr(
+            Column::CompletedAt,
+            sea_orm::sea_query::Expr::value(now.clone()),
+        )
+        .col_expr(Column::UpdatedAt, sea_orm::sea_query::Expr::value(now))
+        .filter(Column::AgentId.eq(agent_id.to_owned()))
+        .filter(Column::TaskId.eq(task_id.to_owned()))
+        .filter(Column::State.is_not_in(["finished", "blocked", "cancelled", "aborted"]))
+        .exec(db)
+        .await?;
+    Ok(res.rows_affected)
+}
+
+/// Count the number of assignments whose `state` reflects in-flight work
+/// (`started` / `in-progress` / `requesting-input`) across `project_id`.
+/// Used by the scheduler's `max_parallel_agents` cap so the platform can
+/// promise "no more than N agents working concurrently".
+pub async fn count_active_for_project(
+    db: &DatabaseConnection,
+    project_id: &str,
+) -> Result<u64, DbErr> {
+    use crate::entities::task::{Column as TaskColumn, Entity as TaskEntity};
+    let task_ids: Vec<String> = TaskEntity::find()
+        .filter(TaskColumn::ProjectId.eq(project_id))
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    if task_ids.is_empty() {
+        return Ok(0);
+    }
+    Entity::find()
+        .filter(Column::TaskId.is_in(task_ids))
+        .filter(Column::State.is_in(["started", "in-progress", "requesting-input"]))
+        .count(db)
+        .await
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateAssignment {

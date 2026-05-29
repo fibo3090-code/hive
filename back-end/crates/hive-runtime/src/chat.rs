@@ -455,7 +455,23 @@ struct CancelledTurnState<'a> {
     agent_id: Option<&'a str>,
     provider_id: &'a str,
     model: &'a str,
+    /// Z10: the up-front reservation row id. When `Some`, the partial
+    /// cost is recorded by **updating** the reservation instead of
+    /// inserting a parallel row — so the budget sum doesn't grow by
+    /// `RESERVATION_CENTS + actual_cost` and the cost-event count stays
+    /// at one row per turn. When `None` (e.g. budget refused before
+    /// the reservation landed), `finalize_cancelled` is not invoked
+    /// because there's no partial spend to record.
+    reservation_id: Option<&'a str>,
 }
+
+/// Pessimistic floor we charge against the project budget for every
+/// turn before it starts (Z10). The actual cost replaces it at finalize.
+/// $0.50 is a couple of cents above the average cheap-model turn and
+/// well under a small Opus turn — picked so concurrent turns can't
+/// collectively bust the cap by more than `N × 50¢`. The exact number
+/// matters less than that it's non-zero.
+const RESERVATION_CENTS: i64 = 50;
 
 async fn finalize_cancelled(
     db: &Db,
@@ -478,15 +494,33 @@ async fn finalize_cancelled(
     )
     .await?;
 
-    // Persist the partial cost so the budget tally stays honest even
-    // when the operator cancelled or the wall-clock timeout fired.
-    // Best-effort: a DB error here is logged but never fails the cancel
-    // path the operator already observed.
+    // Z10: update the up-front reservation row in place rather than
+    // inserting a second row, so the budget sum stays accurate without
+    // leaving the +RESERVATION_CENTS floor as permanent spend.
     let memo = format!(
         "provider={} model={} status=cancelled",
         state.provider_id, state.model
     );
-    if let Err(err) = cost_events::insert(
+    if let Some(reservation_id) = state.reservation_id {
+        if let Err(err) = cost_events::update_to_final(
+            db.conn(),
+            reservation_id,
+            "chat.cancelled",
+            state.total_tokens_in as i32,
+            state.total_tokens_out as i32,
+            state.total_cost,
+            Some(&memo),
+        )
+        .await
+        {
+            tracing::warn!(
+                thread_id,
+                assistant_message_id,
+                error = %err,
+                "finalize_cancelled: cost_events update failed",
+            );
+        }
+    } else if let Err(err) = cost_events::insert(
         db.conn(),
         cost_events::NewCostEvent {
             project_id: state.project_id,
@@ -514,6 +548,55 @@ async fn finalize_cancelled(
         json!({ "threadId": thread_id, "messageId": assistant_message_id }),
     );
     Ok(())
+}
+
+/// Z10: atomically check the project budget and claim a `RESERVATION_CENTS`
+/// reservation row. Returns the new row id on success; `Ok(None)` if the
+/// project would exceed budget with this reservation added.
+///
+/// Wraps both the SUM and the INSERT in a transaction so concurrent
+/// turns can't both read "under budget" and both proceed: on SQLite
+/// the INSERT acquires the database-level write lock, serialising
+/// concurrent reservations; on Postgres the same pattern serialises
+/// per-row at READ COMMITTED. Postgres at high concurrency may still
+/// need SERIALIZABLE for a perfect guarantee — tracked separately.
+async fn reserve_budget_atomic(
+    db: &Db,
+    project_id: &str,
+    agent_id: Option<&str>,
+    budget_total_cents: i64,
+    provider_id: &str,
+    model: &str,
+) -> Result<Option<(String, i64)>, ChatError> {
+    use sea_orm::TransactionTrait;
+    let txn = db.conn().begin().await?;
+    // Insert FIRST so the write lock is held before the budget check
+    // SELECT runs; concurrent reservers wait at their own INSERT.
+    let reservation_memo = format!("reservation provider={provider_id} model={model}");
+    let row = cost_events::insert(
+        &txn,
+        cost_events::NewCostEvent {
+            project_id,
+            session_id: None,
+            agent_id,
+            kind: "reservation",
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_cents: RESERVATION_CENTS,
+            memo: Some(&reservation_memo),
+        },
+    )
+    .await?;
+    let spent_with_reservation =
+        cost_events::total_cost_cents_for_project(&txn, project_id).await?;
+    if budget_total_cents > 0 && spent_with_reservation > budget_total_cents {
+        // Roll back the reservation so the project's spend doesn't
+        // include the refused turn.
+        txn.rollback().await?;
+        return Ok(None);
+    }
+    txn.commit().await?;
+    Ok(Some((row.id, spent_with_reservation)))
 }
 
 /// Hard wall-clock budget for a single assistant turn. When exceeded,
@@ -673,17 +756,35 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         .await?
         .ok_or_else(|| ChatError::NotFound(thread_id.clone()))?;
 
-    // Budget enforcement: refuse to start a turn once the project's cumulative
-    // spend has reached its budget. (`budget_total_cents <= 0` = unlimited.)
+    // Z10: atomic budget gate. Reserve `RESERVATION_CENTS` against the
+    // project up-front in a transaction; concurrent turns can't both
+    // pass the SUM check because the reservation INSERT serialises
+    // them. The reservation row is then *updated in place* at
+    // finalize / cancel / error rather than parallel-inserted, so the
+    // total cost-event count remains "one row per turn" and the
+    // budget sum is always accurate.
+    let mut reservation_id: Option<String> = None;
     if let Ok(Some(project)) = projects::get(db.conn(), &project_id).await {
-        if project.budget_total_cents > 0 {
-            let spent = cost_events::total_cost_cents_for_project(db.conn(), &project_id)
-                .await
-                .unwrap_or(0);
-            if spent >= project.budget_total_cents {
+        match reserve_budget_atomic(
+            &db,
+            &project_id,
+            agent_id.as_deref(),
+            project.budget_total_cents,
+            &provider_id,
+            &model,
+        )
+        .await?
+        {
+            Some((id, _spent_with_reservation)) => {
+                reservation_id = Some(id);
+            }
+            None => {
+                let spent_now = cost_events::total_cost_cents_for_project(db.conn(), &project_id)
+                    .await
+                    .unwrap_or(0);
                 let detail = format!(
                     "This project has reached its budget (${:.2} of ${:.2}). Raise the budget in Settings → project, or wait for the next cycle. No more agent turns will run until then.",
-                    spent as f64 / 100.0,
+                    spent_now as f64 / 100.0,
                     project.budget_total_cents as f64 / 100.0,
                 );
                 let _ = chat_messages::finalize(
@@ -923,6 +1024,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                     agent_id: agent_id.as_deref(),
                     provider_id: &provider_id,
                     model: &model,
+                    reservation_id: reservation_id.as_deref(),
                 },
             )
             .await?;
@@ -968,21 +1070,38 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                 .await;
                 // Persist cost even on LLM error — tokens may have been
                 // consumed before the stream broke. Zero Financial Surprise.
+                // Z10: update the up-front reservation in place if it
+                // exists; only fall back to an insert if no reservation
+                // was claimed (e.g. project lookup failed and the
+                // reservation step never ran).
                 let err_memo = format!("provider={provider_id} model={model} status=error");
-                let _ = cost_events::insert(
-                    db.conn(),
-                    cost_events::NewCostEvent {
-                        project_id: &project_id,
-                        session_id: None,
-                        agent_id: agent_id.as_deref(),
-                        kind: "chat.error",
-                        tokens_in: total_tokens_in as i32,
-                        tokens_out: total_tokens_out as i32,
-                        cost_cents: total_cost,
-                        memo: Some(&err_memo),
-                    },
-                )
-                .await;
+                if let Some(reservation_id) = reservation_id.as_deref() {
+                    let _ = cost_events::update_to_final(
+                        db.conn(),
+                        reservation_id,
+                        "chat.error",
+                        total_tokens_in as i32,
+                        total_tokens_out as i32,
+                        total_cost,
+                        Some(&err_memo),
+                    )
+                    .await;
+                } else {
+                    let _ = cost_events::insert(
+                        db.conn(),
+                        cost_events::NewCostEvent {
+                            project_id: &project_id,
+                            session_id: None,
+                            agent_id: agent_id.as_deref(),
+                            kind: "chat.error",
+                            tokens_in: total_tokens_in as i32,
+                            tokens_out: total_tokens_out as i32,
+                            cost_cents: total_cost,
+                            memo: Some(&err_memo),
+                        },
+                    )
+                    .await;
+                }
                 bus.emit(
                     format!("chat.{thread_id}.error"),
                     json!({
@@ -1005,6 +1124,21 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         if !trimmed.is_empty() {
             last_non_empty_assistant_text = Some(outcome.accumulated.clone());
             if !transcript.is_empty() {
+                // ROADMAP §6 / interleaved-stream cosmetic: emit the
+                // same `\n\n` separator over SSE that the persisted
+                // body uses. Without this, the live stream reads as
+                // "round1textround2text…" while a reload shows
+                // "round1text\n\nround2text…" — same content, jarring
+                // visual difference. Emitted before the round's text
+                // is pushed into the local transcript so order matches.
+                bus.emit(
+                    format!("chat.{thread_id}.token"),
+                    json!({
+                        "threadId": thread_id,
+                        "messageId": assistant_message_id,
+                        "delta": "\n\n",
+                    }),
+                );
                 transcript.push_str("\n\n");
             }
             transcript.push_str(trimmed);
@@ -1027,6 +1161,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                     agent_id: agent_id.as_deref(),
                     provider_id: &provider_id,
                     model: &model,
+                    reservation_id: reservation_id.as_deref(),
                 },
             )
             .await?;
@@ -1075,6 +1210,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
                         agent_id: agent_id.as_deref(),
                         provider_id: &provider_id,
                         model: &model,
+                        reservation_id: reservation_id.as_deref(),
                     },
                 )
                 .await?;
@@ -1316,21 +1452,41 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     .await?;
     let _ = chat_threads::touch(db.conn(), &thread_id).await;
 
+    // Z10: success path now updates the up-front reservation in place
+    // rather than inserting a second row. The reservation was
+    // `RESERVATION_CENTS` ($0.50); the update overwrites it with the
+    // real spend so the project budget reflects actual cost only.
     let memo = format!("provider={provider_id} model={model}");
-    let _ = cost_events::insert(
-        db.conn(),
-        cost_events::NewCostEvent {
-            project_id: &project_id,
-            session_id: None,
-            agent_id: agent_id.as_deref(),
-            kind: "chat.completion",
-            tokens_in: total_tokens_in as i32,
-            tokens_out: total_tokens_out as i32,
-            cost_cents: total_cost,
-            memo: Some(&memo),
-        },
-    )
-    .await;
+    let final_event_result = if let Some(reservation_id) = reservation_id.as_deref() {
+        cost_events::update_to_final(
+            db.conn(),
+            reservation_id,
+            "chat.completion",
+            total_tokens_in as i32,
+            total_tokens_out as i32,
+            total_cost,
+            Some(&memo),
+        )
+        .await
+        .map(|_| ())
+    } else {
+        cost_events::insert(
+            db.conn(),
+            cost_events::NewCostEvent {
+                project_id: &project_id,
+                session_id: None,
+                agent_id: agent_id.as_deref(),
+                kind: "chat.completion",
+                tokens_in: total_tokens_in as i32,
+                tokens_out: total_tokens_out as i32,
+                cost_cents: total_cost,
+                memo: Some(&memo),
+            },
+        )
+        .await
+        .map(|_| ())
+    };
+    let _ = final_event_result;
 
     bus.emit(
         format!("chat.{thread_id}.complete"),
