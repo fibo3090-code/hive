@@ -77,6 +77,34 @@ pub fn context_window_for(kind: ProviderKind, model: &str) -> u64 {
     }
 }
 
+/// Default `max_tokens` for a model when the caller doesn't specify one.
+/// Anthropic *requires* `max_tokens` on every request and historically had a
+/// hardcoded 4096 fallback (ZZ32) which silently truncated long generations
+/// on Claude 4.x — Opus/Sonnet support 8k–64k output. This helper picks a
+/// model-aware default that's still safely under each family's ceiling so
+/// long planning turns and big code rewrites no longer get cut off mid-stream.
+pub fn default_max_tokens_for(kind: ProviderKind, model: &str) -> u32 {
+    let m = model.to_ascii_lowercase();
+    match kind {
+        ProviderKind::Anthropic => {
+            if m.contains("opus-4") || m.contains("sonnet-4") {
+                16_384
+            } else if m.contains("haiku-4")
+                || m.contains("claude-4")
+                || m.contains("opus-3")
+                || m.contains("sonnet-3")
+            {
+                8_192
+            } else {
+                4_096
+            }
+        }
+        // Other providers either don't require max_tokens or set their own
+        // defaults; the runtime can pass through `None` for them.
+        _ => 4_096,
+    }
+}
+
 /// Whether a given model is expected to support tool/function calling.
 ///
 /// Provider APIs let *every* request opt into tools, but for some models

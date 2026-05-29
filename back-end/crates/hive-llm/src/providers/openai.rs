@@ -342,118 +342,130 @@ fn parse_event(msg: &crate::sse::SseMessage, state: &Mutex<StreamState>) -> Vec<
         }
     };
 
-    // Usage chunk arrives last (when `stream_options.include_usage` is on).
-    // Emit Complete with both the real tokens AND the cached finish_reason.
-    if let Some(usage) = value.get("usage") {
-        if usage.is_object() {
-            let tokens_in = usage
-                .get("prompt_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32;
-            let tokens_out = usage
-                .get("completion_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32;
-            let finish = state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .finish_reason
-                .clone();
-            return vec![StreamEvent::Complete {
-                tokens_in,
-                tokens_out,
-                finish_reason: finish,
-            }];
-        }
-    }
+    // ZZ27: process `choices` (including any `finish_reason`) *before*
+    // the usage chunk. The OpenAI spec allows a single chunk to carry
+    // both `usage` and `choices[].finish_reason`. Returning early on
+    // `usage` meant the finish_reason cache write further down never
+    // ran for that chunk, so the emitted `Complete` had
+    // `finish_reason: None`. Now: drain `choices` first (caches the
+    // reason on `state`), then check `usage` and emit `Complete`
+    // picking up the just-cached reason.
 
-    let Some(choices) = value.get("choices").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    let Some(choice) = choices.first() else {
-        return Vec::new();
-    };
-
+    // Early return only when there are no choices at all — keeps
+    // pure-comment / heartbeat frames cheap.
+    let choices = value.get("choices").and_then(Value::as_array);
+    let choice = choices.and_then(|c| c.first());
     let mut events: Vec<StreamEvent> = Vec::new();
-    let delta = choice.get("delta");
 
-    // Text deltas. Multiple deltas can coexist with tool calls in one chunk,
-    // so emit both rather than picking one.
-    if let Some(text) = delta
-        .and_then(|d| d.get("content"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-    {
-        events.push(StreamEvent::Delta(StreamChunk {
-            delta: text.to_owned(),
-        }));
-    }
+    if let Some(choice) = choice {
+        let delta = choice.get("delta");
 
-    // Tool-call deltas. First frame for a given index carries id + name;
-    // subsequent frames carry partial `function.arguments`. The runtime
-    // accumulates the chunks under the tool-call id and parses at end.
-    if let Some(tool_calls) = delta
-        .and_then(|d| d.get("tool_calls"))
-        .and_then(Value::as_array)
-    {
-        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-        for tc in tool_calls {
-            let Some(index) = tc.get("index").and_then(Value::as_u64) else {
-                continue;
-            };
-            let function = tc.get("function");
-            // Detect a new tool call: presence of `id` field on this frame.
-            if let Some(id) = tc.get("id").and_then(Value::as_str) {
-                let name = function
-                    .and_then(|f| f.get("name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
-                s.open_tool_calls
-                    .insert(index, OpenAiToolCallState { id: id.to_owned() });
-                events.push(StreamEvent::ToolCallStart {
-                    id: id.to_owned(),
-                    name,
-                });
-            }
-            // Always check for an args chunk on this frame — the first
-            // frame may include an empty `arguments: ""` (skip empty
-            // strings to avoid trailing-empty Delta events).
-            if let Some(args_chunk) = function
-                .and_then(|f| f.get("arguments"))
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-            {
-                if let Some(open) = s.open_tool_calls.get(&index) {
-                    events.push(StreamEvent::ToolCallDelta {
-                        id: open.id.clone(),
-                        args_chunk: args_chunk.to_owned(),
+        // Text deltas. Multiple deltas can coexist with tool calls in one
+        // chunk, so emit both rather than picking one.
+        if let Some(text) = delta
+            .and_then(|d| d.get("content"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            events.push(StreamEvent::Delta(StreamChunk {
+                delta: text.to_owned(),
+            }));
+        }
+
+        // Tool-call deltas. First frame for a given index carries id +
+        // name; subsequent frames carry partial `function.arguments`.
+        // The runtime accumulates chunks under the tool-call id and
+        // parses at end.
+        if let Some(tool_calls) = delta
+            .and_then(|d| d.get("tool_calls"))
+            .and_then(Value::as_array)
+        {
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            for tc in tool_calls {
+                let Some(index) = tc.get("index").and_then(Value::as_u64) else {
+                    continue;
+                };
+                let function = tc.get("function");
+                if let Some(id) = tc.get("id").and_then(Value::as_str) {
+                    let name = function
+                        .and_then(|f| f.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
+                    s.open_tool_calls
+                        .insert(index, OpenAiToolCallState { id: id.to_owned() });
+                    events.push(StreamEvent::ToolCallStart {
+                        id: id.to_owned(),
+                        name,
                     });
+                }
+                if let Some(args_chunk) = function
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    if let Some(open) = s.open_tool_calls.get(&index) {
+                        events.push(StreamEvent::ToolCallDelta {
+                            id: open.id.clone(),
+                            args_chunk: args_chunk.to_owned(),
+                        });
+                    }
                 }
             }
         }
+
+        // Finish_reason carries the terminator. For `tool_calls` we also
+        // need to emit `ToolCallEnd` for every open tool call. Cache the
+        // reason on `state` so the (possibly same-chunk) `usage` block
+        // below picks it up, and pre-emit a Complete with tokens=0 in
+        // case `include_usage` is off and no usage chunk follows.
+        if let Some(reason) = choice
+            .get("finish_reason")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        {
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            for (_, open) in s.open_tool_calls.drain() {
+                events.push(StreamEvent::ToolCallEnd { id: open.id });
+            }
+            s.finish_reason = Some(reason.clone());
+            events.push(StreamEvent::Complete {
+                tokens_in: 0,
+                tokens_out: 0,
+                finish_reason: Some(reason),
+            });
+        }
     }
 
-    // Finish_reason carries the terminator. For `tool_calls` we also need to
-    // emit `ToolCallEnd` for every open tool call so the runtime knows the
-    // partial args are complete and parses them.
-    if let Some(reason) = choice
-        .get("finish_reason")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
+    // ZZ27: usage handled *after* `choices`. The OpenAI spec allows a
+    // single chunk to carry both `usage` and `choices[].finish_reason`.
+    // Previously we returned early on `usage` so the finish_reason
+    // cache write below never ran for that chunk, emitting a `Complete`
+    // with `finish_reason: None`. Now choices runs first (caches the
+    // reason), and the usage block here reads the just-cached value.
+    if value
+        .get("usage")
+        .map(|u| u.is_object())
+        .unwrap_or(false)
     {
-        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-        for (_, open) in s.open_tool_calls.drain() {
-            events.push(StreamEvent::ToolCallEnd { id: open.id });
-        }
-        // Cache so the (later) usage chunk's Complete can copy the
-        // finish_reason. Pre-emit a Complete with tokens=0 in case
-        // `include_usage` is off and no usage chunk follows.
-        s.finish_reason = Some(reason.clone());
+        let usage = value.get("usage").unwrap();
+        let tokens_in = usage
+            .get("prompt_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        let tokens_out = usage
+            .get("completion_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        let finish = state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .finish_reason
+            .clone();
         events.push(StreamEvent::Complete {
-            tokens_in: 0,
-            tokens_out: 0,
-            finish_reason: Some(reason),
+            tokens_in,
+            tokens_out,
+            finish_reason: finish,
         });
     }
 

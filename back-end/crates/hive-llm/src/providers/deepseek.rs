@@ -75,11 +75,66 @@ impl LlmProvider for DeepSeekProvider {
     }
 
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, LlmError> {
-        self.inner.chat_stream(request).await
+        self.inner.chat_stream(strip_tools_for_reasoner(request)).await
     }
 
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
-        self.inner.chat(request).await
+        self.inner.chat(strip_tools_for_reasoner(request)).await
+    }
+}
+
+/// ZZ31: `deepseek-reasoner` (R1) returns 400 when the request includes
+/// `tools` — it doesn't support function calling while reasoning is on.
+/// `supports_tools` correctly returns `false` for that model id, but the
+/// runtime / a caller can still race a stale request or forget to check.
+/// Strip `tools` defensively here so the model gets a clean request, and
+/// log a `warn!` so the unexpected drop is visible in the trace.
+fn strip_tools_for_reasoner(mut request: ChatRequest) -> ChatRequest {
+    if request.model.contains("reasoner") && !request.tools.is_empty() {
+        tracing::warn!(
+            model = %request.model,
+            tool_count = request.tools.len(),
+            "DeepSeek: stripping tools — `deepseek-reasoner` doesn't support tool use"
+        );
+        request.tools.clear();
+    }
+    request
+}
+
+#[cfg(test)]
+mod strip_tests {
+    use super::*;
+    use crate::chat::{ChatMessage, ToolDefinition};
+    use serde_json::json;
+
+    #[test]
+    fn strips_tools_for_reasoner_model() {
+        let request = ChatRequest::new(
+            "deepseek-reasoner",
+            vec![ChatMessage::user("hello")],
+        )
+        .with_tools(vec![ToolDefinition {
+            name: "fs_read".into(),
+            description: "read".into(),
+            input_schema: json!({}),
+        }]);
+        let stripped = strip_tools_for_reasoner(request);
+        assert!(stripped.tools.is_empty());
+    }
+
+    #[test]
+    fn preserves_tools_for_chat_model() {
+        let request = ChatRequest::new(
+            "deepseek-chat",
+            vec![ChatMessage::user("hello")],
+        )
+        .with_tools(vec![ToolDefinition {
+            name: "fs_read".into(),
+            description: "read".into(),
+            input_schema: json!({}),
+        }]);
+        let stripped = strip_tools_for_reasoner(request);
+        assert_eq!(stripped.tools.len(), 1);
     }
 }
 

@@ -10,7 +10,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::chat::{ChatRequest, ChatResponse, ChatRole, StreamChunk, StreamEvent, ToolCall};
-use crate::model_metadata::{context_window_for, supports_streaming_tools, supports_tools};
+use crate::model_metadata::{
+    context_window_for, default_max_tokens_for, supports_streaming_tools, supports_tools,
+};
 use crate::sse::sse_stream;
 use crate::{ChatStream, LlmError, LlmProvider, ModelInfo, ProviderConfig, ProviderKind};
 
@@ -120,9 +122,16 @@ fn request_body(request: &ChatRequest) -> Value {
         }
     }
 
+    // ZZ32: Anthropic requires `max_tokens` on every request. The old
+    // hardcoded fallback of 4096 silently truncated long generations on
+    // Claude 4.x (Opus/Sonnet support 16k+ output). Pick the family
+    // default from `model_metadata` when the caller didn't override.
+    let max_tokens = request
+        .max_tokens
+        .unwrap_or_else(|| default_max_tokens_for(ProviderKind::Anthropic, &request.model));
     let mut body = json!({
         "model": request.model,
-        "max_tokens": request.max_tokens.unwrap_or(4096),
+        "max_tokens": max_tokens,
         "messages": turns,
     });
     if !system.is_empty() {
