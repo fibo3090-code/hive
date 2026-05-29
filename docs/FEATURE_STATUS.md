@@ -1,11 +1,13 @@
 # Hive Feature Status
 
-Living matrix mapping every promised feature to its current implementation state and dependency profile. Update whenever a feature ships, gets disabled, or moves between local/server scopes. (How the built parts work → [`architecture.md`](architecture.md); the forward plan → [`ROADMAP.md`](ROADMAP.md).)
+Living matrix mapping every promised feature to its current implementation state and dependency profile. Update whenever a feature ships, gets disabled, or moves between local/server scopes. (How the built parts work → [`architecture.md`](architecture.md); the forward plan → [`ROADMAP.md`](ROADMAP.md); the outstanding-issues queue → [`BACKLOG.md`](BACKLOG.md).)
 
-Legend
+**Legend**
 - **Status**: `done` · `partial` · `mock` (UI exists, no backend) · `planned` · `removed`
 - **Dep**: `local` (works fully offline) · `server` (needs the Hive central server — planned, not built) · `cloud-llm` (needs a configured LLM provider) · `git-remote` (needs a GitHub/GitLab token)
 - **Phase**: which redesign phase delivered/will deliver this
+
+**Audit reference.** Closed audit items are cross-referenced in this doc; the canonical list of fixed items, open critical work, and the planned remediation order lives in [`BACKLOG.md`](BACKLOG.md). As of the latest sweep (2026-05-28), four batches of fixes have shipped against the 2026-05-27 audit — see BACKLOG §ZZ "Fixed in this pass".
 
 ## Onboarding
 
@@ -51,7 +53,7 @@ Legend
 | Node graph view (ReactFlow) | done | local | 1 | |
 | Org chart view | removed | — | 1 | Toggle and component deleted |
 | Agent detail drawer | done | local | 1 | |
-| Pause / Resume agent | partial | server | 1 | DB row + in-process `ExecutorRegistry::{pause,resume,terminate}` are flipped together. Executor parks the inbox via `Notify` on `Paused`; terminated agents drop their cancellation token. **Caveat (audit 2026-05-27, BACKLOG ZZ2 / Z17):** the chat turn loop uses a separate `Arc<Mutex<bool>>` cancel flag that is *not* wired to the executor's `CancellationToken`, so pause/terminate take effect only *between* inbox items — an in-flight `run_turn` keeps streaming and billing. Also: the 16 `let _ = state.executors.*` call sites in `main.rs` swallow errors and let the DB row flip while the executor refuses (BACKLOG Z2) |
+| Pause / Resume agent | done | server | 1 | DB row + in-process `ExecutorRegistry::{pause,resume,terminate}` are flipped together. Executor parks the inbox via `Notify` on `Paused`; terminated agents drop their cancellation token. `run_turn` spawns a bridge that awaits `executors.token_for(agent).cancelled()` and flips the chat-turn `cancel` flag, so `terminate` / `cancel_subtree` actually interrupt the in-flight LLM stream within 50 ms (ZZ2 batch 3). All canonical lifecycle endpoints (`pause_agent` / `resume_agent` / `terminate_agent` / `set_agent_status`) write audit entries (Z8 closed). `set_agent_status` validates against `{idle, working, paused, deprecated}` before any side effect (ZZ60). **Remaining nit:** `pause()` (vs. `terminate`) doesn't yet interrupt the current turn — it still parks at the next inbox boundary; tracked as Z17 (pure pause-vs-cancel semantics, separate per-turn signal). |
 | Delete agent | done | server | 1 | Renamed from "Terminate", added confirm dialog |
 | Spawn agent (modal) | done | local | 4 | Uses the shared `AgentFormFields` component (name, role + presets, model, system prompt, tool allowlist grouped by category) — identical to the Forge builder and the HiveGraph config dialog. POSTs `/v1/projects/:id/agents` |
 | Wires (parent→child authority + comm) | done | local | 4 | `agent_wires` table + `GET/POST /v1/projects/:pid/wires`, `DELETE /v1/wires/:id`. `spawn_agent` records a wire automatically; agent visibility (`message_agent` / `list_visible_agents` / `request_relay`) walks this graph. **Caveats (audit 2026-05-27):** ZZ17 cycle-prevention is TOCTOU (safe on SQLite by accident, racy on Postgres); ZZ48 `agents.parent_agent_id` lineage and the `agent_wires` graph can disagree (nothing rejects a wire that contradicts lineage). |
@@ -83,7 +85,7 @@ Legend
 | Runtime feed (traces) | done | server | 1 | |
 | Session replay | partial | server | 1 | Empty until runtime emits replay events |
 | Live SSE updates on dashboards | partial | local | 5 | The global `/v1/events` stream already drives query invalidation for cost/task/agent changes (see `realtime/useSse.ts`). A dedicated `GET /v1/projects/:pid/events` multiplexed stream is still planned. **Caveats (audit 2026-05-27):** ZZ69 several backend event names have no handler in `useSse` (`agent_spawn_request.*`, `agent_task_assignment.*`, `chat.thread.cleared`, `drift_event.updated`, `spec_document.decomposed`); ZZ70 `sync.required` triggers an unscoped `invalidateQueries()` that stampedes on lag; Z4 / ZZ72 the Modules page still opens a duplicate `EventSource` defeating the singleton cap. |
-| Runtime drift auto-detection | planned | local | 5 | `hive-runtime/src/drift.rs` has scoring fns but the turn loop doesn't call them yet; agents can write events via the `record_drift` tool |
+| Runtime drift auto-detection | done | local | 5 | The outer `run_turn` reads persisted `chat_messages.tool_calls` after the inner returns and calls `drift_hook::record_after_turn` on **every** exit path — success, cancel, timeout, LLM-error, and budget-refusal alike (Z1 closed batch 2). Scoring lives in `drift.rs`; four bands (`<0.4` / `0.4-0.69` / `0.7-0.89` / `≥0.9`) with auto-pause at ≥0.9. Agents can still write events directly via the `record_drift` tool. UI panel on Planning → Drift is still partial. |
 | Budget enforcement | partial | local | 5 | `chat::run_turn` refuses to start a turn once cumulative `cost_events` spend reaches `budget_total_cents`; emits a `budget_exceeded` error. `<= 0` = unlimited. Partial spend on cancel / timeout / LLM-error is persisted via `finalize_cancelled`. **Caveat (audit 2026-05-27, BACKLOG Z10):** the check and the `cost_events` insert are not atomic — N concurrent turns all read "under budget" and proceed, total can overshoot by N × per-turn cost. The 2026-05-27 audit also surfaces ZZ55 (`update_settings` writes the budget value via ~10 non-transactional `put_value` calls). |
 | Interleaved persistence of assistant narration | done | local | 3 | The full per-round transcript is persisted (rounds joined by blank lines), so a reload matches the live stream |
 
@@ -122,7 +124,7 @@ Legend
 | `delete_agent` / `monitor_agent` / `delegate_task` | done | local | 5 | `hive-runtime::agent_tools`. `delete_agent` retires a direct sub-agent (cancel subtree + terminate + status=deprecated); `monitor_agent` reads status/runtime-state/recent inbox; `delegate_task` creates a tracked task assigned to a visible agent and dispatches it |
 | `request_capability` / `monitor_spawn_request` | done | local | 4 | B4: coordinator asks for an MCP/connector it lacks; runtime tool writes an `agent_spawn_requests` row and sends the id over `spawn_pipeline_tx` (mpsc). `hive-api` consumer rebuilds `BuildPipelineDeps` and runs the synthesis pipeline; agent observes via `monitor_spawn_request` or the `/v1/spawn-requests` SSE stream. Coordinator-only |
 | `record_eval` | done | local | 5 | D1: writes an `agent_eval_runs` row; surfaced on the Stats → Leaderboard tab |
-| File Protection Zones | partial | local | 5 | `ToolContext::check_path_allowed` centralises the deny list (`.env*`, `.git/`, user-protected) for `fs_read` / `fs_list` / `fs_write` / `shell_exec` (argv path-like tokens). Normalises `./`, `\`, trailing `/`, and Windows case-folding. **Caveats (audit 2026-05-27):** ZZ5 the prefix check is anchored to repo root so `apps/web/.env`, nested submodules, etc. are NOT protected (monorepos break it); ZZ6 the `shell_exec` argv heuristic is easily bypassed (`sh -c 'cat .env'`, `awk '{print}' .env`, etc.); ZZ7 `shell_exec` sets `HOME = workspace` so `.gitconfig`/`.npmrc`/`.cargo/credentials` get written into the project tree and aren't on the deny list |
+| File Protection Zones | done | local | 5 | `ToolContext::check_path_allowed` centralises the deny list — `.env`, `.env.*`, `.git/`, `.hive/`, plus user-protected — scanned **per path component** so nested `apps/web/.env.production` and submodule `vendor/.git` are also blocked (ZZ5 closed). Called from `fs_read` / `fs_list` / `fs_write` / `str_replace` and from `shell_exec` for path-like argv tokens. `shell_exec`'s HOME points at the protected `<root>/.hive/run-home/` so cached creds that npm/cargo/git write don't leak into the next `fs_read` (ZZ7 closed). Path normalisation handles `./`, `\`, trailing `/`, and Windows case-folding. **Permission Matrix is now enforced** before tool invoke — `Plan` / `Build` / `Explore` profiles actually narrow behaviour (ZZ4 closed in 9eb75a3). **Remaining gap:** the `shell_exec` argv heuristic is best-effort against `sh -c 'cat .env'`, `awk '{print}' .env`, etc. (ZZ6) — proper containment is on the Docker-sandbox roadmap. |
 
 ## Forge
 
@@ -173,3 +175,50 @@ The following will stay disabled with a tooltip until the central server exists:
 - Fake "estimated cost" heuristic (`front-end/src/lib/cost-estimate.ts`) — removed from onboarding and the agent-spawn modal
 - Mock Code & Versioning fixtures — replaced with the real `git/*` endpoints
 - Dead UI: `Index.tsx`, `CostForecastModal`, `BudgetExtensionModal`, `WakeReportModal`
+- `m20260514_agent_skill_bindings`-out-of-order migration "fix" (ZZ37 retracted — the audit was wrong; the vector ordering is dependency-correct because the migration's FK references `Skills::Table` which is created later in `m20260606_redesign_foundations`)
+
+## Recently closed audit findings (2026-05-27 → 2026-05-28)
+
+Reverse-chronological. The full inventory + ranking lives in [`BACKLOG.md`](BACKLOG.md).
+
+**Batch 4 (`1c17673`)** — sandbox security + LLM correctness + small frontend
+- **ZZ7** `shell_exec` HOME → `<root>/.hive/run-home/` (no more cached-cred leak via `fs_read`)
+- **ZZ10** `fs_read` size-cap TOCTOU closed via `File::take(cap+1)`
+- **ZZ11** `fs_write` symlink TOCTOU closed via `O_NOFOLLOW` on Unix
+- **ZZ13** `rehydrate_from_db` honours `parent_agent_id` so `cancel_subtree` cascades to rehydrated children
+- **ZZ27** OpenAI `parse_event` processes `choices` first so finish_reason isn't dropped when a chunk carries both
+- **ZZ29** Gemini chat stream emits a fallback `Complete` on EOF when no finish-reason / usage chunk arrived
+- **ZZ31** DeepSeek strips `tools` from R1 requests defensively (in addition to the `supports_tools=false` gate)
+- **ZZ32** Anthropic `max_tokens` picks model-aware defaults via `default_max_tokens_for` instead of the silent 4096 cap
+- **Z11** `Projects.tsx` awaits `setActiveProject` before navigating to `/dashboard`
+- **Z15** `NotFound.tsx` uses `<Link>` instead of `<a href>`
+
+**Operator commit `9eb75a3`** — between batches 3 and 4
+- **ZZ4** `PermissionMatrix` enforced in `ToolRegistry::invoke` with `Plan` / `Build` / `Explore` profile coverage tests
+- **ZZ5** `is_system_protected` switched to a path-component scan (catches nested `.env` / `.git`)
+- **Z14** `Projects.tsx` budget-percentage zero-guard
+
+**Batch 3 (`558f283`)**
+- **ZZ2** (partial) cancel-token bridge → in-flight chat turns actually cancel on `cancel_subtree` / `terminate`
+- **B4c** `run_pipeline` resumes from `awaiting-approval` instead of re-running stages 0–2
+- **Z2** (extended) `set_agent_status` + `toggle_project_session` bubble executor pause/resume/terminate failures
+
+**Batch 2 (`bb5b4be`)**
+- **Z1** drift hook hoisted to outer `run_turn`, fires on every exit
+- **ZZ38** `seed_demo` claims `status: "in-progress"` sentinel up-front via new `settings::put_value_if_absent`
+- **ZZ52** `approve_spawn_request` uses atomic `agent_spawn_requests::transition_status`
+- **B4b** spawn-pipeline mpsc consumer dedups in-flight ids
+- **ZZ53** `delete_project` terminates executors + `remove_dir_all`s the workspace before the DB cascade
+- **Z8** (partial) `pause_agent` / `resume_agent` / `terminate_agent` write audit entries
+- **Z2** (partial) `terminate_agent` propagates executor errors via `?`
+
+**Batch 1 (`cea2fe9`)**
+- **ZZ1** `fs_write` planted-parent-symlink escape closed via deepest-existing-ancestor canonicalise
+- **ZZ3** Loop detector reads `"arguments"` instead of always-Null `"args"`
+- **ZZ25** SSE stream keeps a `Vec<u8>` tail across chunks; no more U+FFFD on multi-byte boundaries
+- **Z3 / A9** (partial) `WebFetchTool` redirect policy rejects IP-literal hops to private addresses
+- **ZZ57** `download_chat_attachment` canonicalises + prefix-checks
+- **ZZ60** `set_agent_status` enum-validates body.status
+- **ZZ64** audit purge job awaits the tick before the body
+- **ZZ65** `rehydrate_from_db` failures surface via `tracing::error!`
+- **ZZ66** Four secret-decrypt sites use `.map_err(|_| ...)`

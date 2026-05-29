@@ -8,20 +8,23 @@ commands, searching the web, talking to each other, committing to git, writing
 shared notes — while you watch the agent graph, read the threads, and steer.
 
 It runs entirely on your machine by default: SQLite, `127.0.0.1` only, no auth,
-a local Ollama fallback when no cloud LLM key is set, a local SearXNG fallback
-for web search, and a path-jailed local-filesystem sandbox. Bring your own keys
-(Anthropic / OpenAI / Gemini, Tavily, a GitHub PAT) to use the cloud variants;
-they're stored encrypted at rest. A few features are explicitly **server-only**
-and stay disabled with a tooltip until a "Hive central server" exists
-(template gallery, marketplace, public agent registry, the *Cloud* sovereignty
-tier) — that server is planned, not built.
+a local Ollama fallback when no cloud LLM key is set, a zero-config
+DuckDuckGo HTML-scraper fallback for web search (with SearXNG and Tavily as
+upgrades), and a path-jailed local-filesystem sandbox with three-layer escape
+defense (`..` reject → component normalisation → FS canonicalisation of the
+deepest existing ancestor) plus `O_NOFOLLOW` on writes. Bring your own keys
+(Anthropic / OpenAI / Gemini / DeepSeek / Tavily / a GitHub PAT) to use the
+cloud variants; they're sealed with ChaCha20-Poly1305 at rest. A few features
+are explicitly **server-only** and stay disabled with a tooltip until a
+"Hive central server" exists (template gallery, marketplace, public agent
+registry, the *Cloud* sovereignty tier) — that server is planned, not built.
 
-- **Backend**: a Rust/Axum workspace exposing an HTTP + SSE API on `:8787`.
-- **Frontend**: a React + TypeScript SPA (Vite, TanStack Query, shadcn/ui, Tailwind) on `:8080`.
+- **Backend**: a Rust/Axum workspace (~38 k LOC across 11 crates) exposing an HTTP + SSE API on `:8787`.
+- **Frontend**: a React + TypeScript SPA (~21 k LOC; Vite, TanStack Query, ReactFlow, Monaco, shadcn/ui, Tailwind) on `:8080`.
 
 The two halves never share a process; long work (chat turns, agent turns,
-module synthesis) runs as background tasks that stream progress over one shared
-`GET /v1/events` SSE stream.
+module synthesis) runs as background Tokio tasks that stream progress over a
+single shared `GET /v1/events` SSE stream.
 
 ## Quickstart
 
@@ -38,13 +41,16 @@ make dev-back    # one terminal — cargo run -p hive-api -- serve
 make dev-front   # another     — npm run dev (in front-end/)
 ```
 
-The first backend start creates `back-end/data/` (the SQLite database +
-per-project sandbox workspaces), runs migrations, generates a master encryption
-key at `~/.hive/master.key` (chmod 0600 on Unix; chat attachments also live
-under `~/.hive/`), probes Ollama at `localhost:11434`, and seeds three demo
-projects + agents so the UI has something to render. Override the database URL
-in `back-end/config/local.toml` (`[database] url = …`). To wipe state, delete
-`back-end/data/` and `~/.hive/` and rerun.
+The first backend start:
+1. Creates `back-end/data/` — SQLite database (`hive.db`), per-project sandbox workspaces at `data/workspaces/<project_id>/`, and per-project chat-attachment storage at `data/attachments/<project_id>/`.
+2. Runs all 21 migrations.
+3. Generates a master encryption key at `~/.hive/master.key` (`0600` on Unix) for ChaCha20-Poly1305 sealing of LLM / Tavily / GitHub credentials.
+4. Probes Ollama at `localhost:11434` so `web_search` and a local-model fallback work without keys.
+5. Seeds three demo projects + agents (idempotently — a `settings(scope='system', key='seed.demo.completed')` sentinel is claimed up-front via `ON CONFLICT DO NOTHING`, so two concurrent first-boots can't double-seed).
+6. Heals any agent rows stuck on the legacy six-tool list via `seed::heal_enabled_tools`.
+
+Override the database URL in `back-end/config/local.toml` (`[database] url = …`).
+To wipe state, delete `back-end/data/` and `~/.hive/master.key` and rerun.
 
 ## Layout
 

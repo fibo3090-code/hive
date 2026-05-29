@@ -448,10 +448,73 @@ high-leverage 🟠s. Then sweep the 🟡/🟢 list as cleanup.
 
 Second deep-audit pass after the 2026-05-25 sweep.
 
-### Fixed 2026-05-27 in this pass
+### Fixed 2026-05-27 → 2026-05-28 in this pass
 
-The surgical fix batches landed in the same PR as this audit. Total:
-**17 items closed** (mostly 🔴/🟠), full workspace test suite passes.
+Five surgical fix landings against the audit queue. Total: **30 items
+closed** (every 🔴 except `pause()`-vs-cancel — Z17), `cargo clippy
+--workspace --all-targets -- -D warnings` clean throughout, full workspace
+`cargo test` suite passes (245+ tests).
+
+**Batch 4 — fifth commit `1c17673`** (sandbox + LLM correctness + small
+frontend):
+
+- **ZZ7** — `shell_exec` HOME now points at `<root>/.hive/run-home/`. The
+  pre-existing `.hive` entry in `is_system_protected` (ZZ5 closed by the
+  operator in `9eb75a3`) keeps the cached `.gitconfig` / `.npmrc` /
+  `.cargo/credentials` from reaching the next `fs_read` or `fs_list`.
+- **ZZ10** — `fs_read` size-cap TOCTOU closed. Open once, then
+  `File::take(FS_READ_HARD_CAP + 1).read_to_end(...)`. A read that
+  fills `cap + 1` proves the file overran the limit; no stat-then-read
+  window for a concurrent writer to slip through.
+- **ZZ11** — `fs_write` symlink TOCTOU closed on Unix via `OpenOptions`
+  with `custom_flags(libc::O_NOFOLLOW)` — the kernel refuses to traverse
+  a symlink at the leaf with `ELOOP`. The Windows fallback keeps the
+  prior lstat-then-write (no portable `O_NOFOLLOW`); tracked separately.
+- **ZZ13** — `ExecutorRegistry::rehydrate_from_db` now BFS-walks the
+  lineage and calls `ensure_with_parent` so each rehydrated child
+  inherits the parent's `CancellationToken`. After a restart,
+  `cancel_subtree(parent)` properly cascades to descendants again.
+  Regression test
+  `rehydrate_preserves_parent_token_so_cancel_subtree_cascades`.
+- **ZZ27** — OpenAI `parse_event` processes `choices` first (caching
+  `finish_reason` on `state`) and handles `usage` after, so a chunk
+  carrying both fields no longer emits a `Complete` with
+  `finish_reason: None`. The pre-emit-on-finish chunk stays as a fallback
+  for `include_usage=off` — the deeper ZZ28 single-Complete + EOF
+  fallback ships separately when tests are updated.
+- **ZZ29** — Gemini `chat_stream` tracks whether `Complete` made it out
+  of the per-frame parser and chains a fallback on EOF. A
+  network-truncated stream with zero tokens no longer leaves consumers
+  waiting forever for a terminator.
+- **ZZ31** — `DeepSeekProvider` strips `tools` defensively for any model
+  whose id contains `"reasoner"` (`deepseek-reasoner` returns 400 on
+  tool requests). `supports_tools` already returned `false`, but the
+  runtime / a caller can race a stale request — now the strip is
+  belt-and-braces and logs a `warn!`.
+- **ZZ32** — New `model_metadata::default_max_tokens_for` returns
+  family-aware defaults (Opus/Sonnet 4.x: 16384; Haiku 4.x / Claude 3.x:
+  8192; fallback: 4096). `AnthropicProvider` uses it instead of the
+  hardcoded 4096 so long generations on Claude 4.x no longer silently
+  truncate.
+- **Z11** — `Projects.tsx` `await`s `setActiveProject` before
+  `navigate('/dashboard')` so the dashboard renders against the freshly
+  active project, not the previous one.
+- **Z15** — `NotFound.tsx` uses React Router's `<Link>` instead of
+  `<a href="/">` so the 404 → home click no longer reloads the bundle,
+  drops React state, and kills the SSE connection.
+
+**Operator commit `9eb75a3`** (landed between batches 3 and 4):
+
+- **ZZ4** — `ToolRegistry::invoke` gates every dispatch on
+  `ctx.permissions().decide(name, action_class)`. `Plan` / `Build` /
+  `Explore` profiles now actually narrow behaviour. New tests
+  `explore_profile_denies_write_tools_before_invocation` and
+  `build_profile_surfaces_ask_as_permission_block`.
+- **ZZ5** — `is_system_protected` switched to a path-component scan
+  (`.split('/').any(|p| p == ".env" || p.starts_with(".env.") || p ==
+  ".git")`), so nested `apps/web/.env` and submodule `.git` are also
+  blocked. Tests added.
+- **Z14** — `Projects.tsx` budget-percentage zero-guard.
 
 **Batch 1 — first commit `cea2fe9`:**
 

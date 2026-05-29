@@ -4,29 +4,57 @@ The forward plan. For *current* status of every feature see
 [`FEATURE_STATUS.md`](FEATURE_STATUS.md); for how the built parts work see
 [`architecture.md`](architecture.md). Actionable technical debt and remaining bugs are tracked in [`BACKLOG.md`](BACKLOG.md).
 
-> **2026-05-27 audit pass:** a six-track deep audit (security, runtime
-> concurrency, API layer, DB layer, LLM clients, frontend) surfaced 81
-> additional findings (ZZ1–ZZ81 in [`BACKLOG.md`](BACKLOG.md)), including
-> several 🔴 items — `fs_write` directory-escape via planted symlink
-> (ZZ1), cancel/pause decoupled from the in-flight LLM stream (ZZ2),
-> the loop detector reading the wrong JSON key and never matching (ZZ3),
-> the `PermissionMatrix` being dead code (ZZ4), UTF-8 corruption on
-> stream chunk boundaries (ZZ25), the SeaORM migration vector being out
-> of filename order (ZZ37), non-transactional `seed_demo` (ZZ38),
-> `approve_spawn_request` double-spawning the synthesis pipeline (ZZ52),
-> and `delete_project` not stopping executors or cleaning the workspace
-> (ZZ53). The revised sprint ordering is at the bottom of
-> [`BACKLOG.md`](BACKLOG.md). The items below predate that audit; treat
-> the audit findings as the higher-priority queue until they're worked
-> through.
+> **2026-05-27 → 2026-05-28 audit + remediation:** a six-track deep audit
+> (security, runtime concurrency, API layer, DB layer, LLM clients,
+> frontend) surfaced 81 findings (ZZ1–ZZ81 in [`BACKLOG.md`](BACKLOG.md)).
+> **Four batches of remediation** (`cea2fe9` · `bb5b4be` · `558f283` ·
+> `1c17673`) plus operator commit `9eb75a3` have **closed 30 of those
+> items**, including every 🔴 except `pause()`-interrupts-current-turn
+> (the pure-pause-vs-cancel signal, Z17 — `terminate` interrupts
+> correctly via ZZ2). See [`BACKLOG.md`](BACKLOG.md) §ZZ "Fixed in this
+> pass" for the canonical closure list. The items below describe the
+> *forward* roadmap; outstanding audit items remain the higher-priority
+> queue until burned down — see BACKLOG's "Revised next-sprint order".
 
 Each item below is a multi-commit effort; rough descending priority.
 
 ## Recently delivered
 
-These shipped since the last ROADMAP refresh; kept here so the current open
+These shipped since the last ROADMAP refresh; kept here so current open
 items don't drift into old plans. Confirm in
 [`FEATURE_STATUS.md`](FEATURE_STATUS.md) before acting on any of them.
+
+**Audit-driven (2026-05-27 → 2026-05-28)** — see BACKLOG §ZZ "Fixed in this
+pass" for the full chronological list (30 closures across four batches):
+
+- **Drift hook on every exit path** (Z1) — moved from `run_turn_inner`
+  (success-only) to outer `run_turn`; cancel/timeout/LLM-error/budget
+  exits now score drift too. Runtime drift auto-detection is now `done`.
+- **Cancel actually interrupts the LLM stream** (ZZ2) — `run_turn`
+  bridges `executors.token_for(agent).cancelled()` into the chat-turn
+  cancel flag, so `terminate` / `cancel_subtree` stop the stream within
+  50 ms instead of "at the next inbox boundary".
+- **`PermissionMatrix` enforced** (ZZ4) — `ToolRegistry::invoke` now
+  calls `decide(name, action_class)` before every tool dispatch.
+- **`fs_write` planted-parent-symlink escape closed** (ZZ1) plus the
+  `fs_read` / `fs_write` size-cap / symlink TOCTOUs (ZZ10 / ZZ11)
+  via `O_NOFOLLOW` + `File::take(cap+1)`.
+- **`shell_exec` no longer leaks cached creds** (ZZ7) — HOME points at
+  the protected `<root>/.hive/run-home/`.
+- **Spawn pipeline idempotent under duplicate approval** (ZZ52 + B4b +
+  B4c) — atomic `transition_status`, mpsc dedup `HashSet`, resume-from-
+  approved.
+- **`delete_project` reclaims executors + workspace + attachments**
+  (ZZ53).
+- **`seed_demo` claims sentinel up-front** (ZZ38) — concurrent first-boots
+  can't both run the body.
+- **Loop detector reads `arguments`** (ZZ3) — was always-Null `args`.
+- **LLM streaming UTF-8 + ordering fixes** (ZZ25 / ZZ27 / ZZ29 / ZZ31 /
+  ZZ32) — no more U+FFFD mid-codepoint, no more lost finish_reason,
+  Gemini emits Complete on EOF, DeepSeek strips tools for R1, Anthropic
+  picks model-aware `max_tokens` defaults.
+
+**Pre-audit deliveries:**
 
 - **B1 coordinator-led onboarding** (was §1): `POST /v1/coordinator/converse` +
   `StepCoordinatorChat`. Project is created on step-3 entry (not at Launch);
@@ -43,12 +71,13 @@ items don't drift into old plans. Confirm in
   RAII `LockGuard` in `hive-tools/src/locks.rs`. `GET /v1/sandbox-locks`,
   `useSandboxLocks` polls every 2s.
 - **Pause/resume executor sync**: `PATCH /v1/agents/:id/status` and session
-  toggle now flip `ExecutorRegistry::{pause,resume,terminate}` alongside
-  the DB row. Pause actually parks the inbox via `Notify`.
+  toggle flip `ExecutorRegistry::{pause,resume,terminate}` alongside the
+  DB row. Pause parks the inbox via `Notify`.
 - **File Protection Zones uniform**: `ToolContext::check_path_allowed`
-  protects `fs_read` / `fs_list` / `fs_write` / `shell_exec` against `.env*`,
-  `.git/`, and user-protected paths with case/normalisation-aware checks.
-- **Cost events on cancel / timeout / LLM-error**: partial spend now hits
+  protects `fs_read` / `fs_list` / `fs_write` / `shell_exec` against
+  `.env*`, `.git/`, `.hive/`, and user-protected paths with
+  component-wise + case/normalisation-aware checks.
+- **Cost events on cancel / timeout / LLM-error**: partial spend hits
   the ledger so `budget_total_cents` stays enforceable.
 
 ## 1. Coordinator-led onboarding — remaining
@@ -92,35 +121,25 @@ Make skills usable at runtime (today they're just rows + a Forge CRUD UI).
 
 ## 4. Auto-MCP synthesis — remaining UI surface
 
-B4 (`request_capability`, `monitor_spawn_request`, mpsc-decoupled pipeline) is
-shipped. What's left:
+B4 (`request_capability`, `monitor_spawn_request`, mpsc-decoupled pipeline),
+B4b (in-flight dedup), and B4c (resume-from-approved) are all shipped. The
+only outstanding item is the frontend:
 
-- Frontend spawn-requests review surface: `api/spawn-requests.ts` client exists
-  and a polling hook `useSpawnRequests` is wired — page UI to show the pipeline
-  state machine, surface the approval gate, and render the generated manifest /
-  handler is still TODO.
-- Pipeline mpsc consumer has no in-flight dedup (same `spawn_request_id` can be
-  processed twice — see BACKLOG).
-- `approve_spawn_request` re-runs the synthesis from stage 0, double-billing
-  the LLM — should resume from `awaiting-approval` (see BACKLOG).
+- **Spawn-requests review surface** — `api/spawn-requests.ts` client and a
+  polling `useSpawnRequests` hook exist; `pages/SpawnRequests.tsx` exists
+  as a stub. Still TODO: render the pipeline state machine
+  (queued → planning-needs → … → completed), surface the approval gate,
+  show the generated MCP manifest + handler code for operator review.
 
-## 5. Drift auto-detection — wired, has gaps
+## 5. Drift auto-detection — **closed**
 
-The turn loop now calls `record_after_turn` after each successful turn, scores
-via `drift.rs`, and auto-pauses at score ≥ 0.9 (see
-[`architecture.md`](architecture.md#drift-hook) and CLAUDE.md §3b.5). Bands are
-the graduated response originally specified.
-
-What's left:
-
-- **The hook is skipped on cancel / timeout / LLM-error / budget exits** —
-  precisely the moments drift is most likely. Wrap `run_turn_inner` in a
-  defer-style guard so `record_after_turn` runs regardless of exit path.
-- Auto-pause uses `let _ = registry.pause(...)` and only `tracing::warn!`s on
-  `NotFound` — if the executor wasn't pre-`ensure`d, the DB and executor
-  diverge silently (same bug class as in `set_agent_status`).
-- UI surface on Planning → Drift is partial; the alerts/notifications side
-  works but the dedicated panel still says "planned".
+The drift hook now runs on every `run_turn` exit (success / cancel /
+timeout / LLM-error / budget-refusal) via the outer-`run_turn`
+hoist landed in batch 2 (Z1). Scoring lives in `drift.rs`; four bands
+with auto-pause at ≥0.9 (see
+[architecture §4.5](architecture.md#45-drift-hook-drift_hookrecord_after_turn)).
+What's left is UI-side polish on Planning → Drift; the runtime side
+is complete.
 
 ## 6. Smaller / cleanup
 
