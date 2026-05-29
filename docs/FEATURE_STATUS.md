@@ -17,7 +17,7 @@ Living matrix mapping every promised feature to its current implementation state
 | Source: Template | planned | server | — | Disabled with explicit `Server-only` badge |
 | Source: Import existing codebase | planned | local | later | Disabled with `Planned` badge |
 | Budget slider | done | local | 0 | |
-| Max parallel agents | done | local | 1 | Renamed from "max agents"; queueing of overflow agents not yet implemented |
+| Max parallel agents | done | local | 1 | Cap enforced per project by `hive-runtime::scheduler` — reads `runtime.maxParallelAgents` from project scope then global scope (default 4). Each tick counts in-flight `agent_task_assignments` (state ∈ {`started`, `in-progress`, `requesting-input`}) and stops dispatching once the count hits the cap; overflow agents wait for the next tick. Closes the assignment-state mirroring loop: when an agent calls `set_task_status` to `completed` / `blocked` / `cancelled`, the matching assignment transitions to `finished` / `blocked` / `cancelled` so the cap counter releases immediately. |
 | Sovereignty tier: Local | done | local | 0 | Forced default |
 | Sovereignty tier: Cloud | planned | server | — | Disabled card |
 | Sovereignty tier: Hybrid | removed | — | 1 | Removed entirely |
