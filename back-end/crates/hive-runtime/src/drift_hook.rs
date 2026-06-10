@@ -214,6 +214,14 @@ async fn inner(
             );
         }
         if let Some(reg) = executors {
+            // `pause` is a no-op-with-error when no executor exists for
+            // this agent (e.g. created via `create_agent` without an
+            // `ensure`, or drained by a prior `terminate`). Ensuring it
+            // first guarantees the in-process `Paused` state is actually
+            // set, so any inbox item that arrives later parks instead of
+            // running — matching the DB row we just flipped. Without this,
+            // the DB says "paused" but the registry never learns.
+            reg.ensure(agent_id, project_id).await;
             if let Err(err) = reg.pause(agent_id).await {
                 tracing::warn!(
                     project_id, agent_id, error = %err,
