@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::events::EventBus;
 use crate::executor::InboxItem;
-use crate::registry::ExecutorRegistry;
+use crate::registry::{ExecutorRegistry, RegistryError};
 
 /// Resolve whether `caller` may message `target` in `project`. If the project
 /// has no wires at all, fall back to "same project" so projects that don't use
@@ -549,10 +549,23 @@ impl Tool for DeleteAgent {
                 "{agent_id} is not one of your direct sub-agents"
             )));
         }
+        // C092: don't swallow executor-sync errors with `let _`.
         self.executors.cancel_subtree(agent_id).await;
-        let _ = self.executors.terminate(agent_id).await;
-        let _ =
-            agents::set_status(self.db.conn(), &target.project_id, agent_id, "deprecated").await;
+        // `NotFound` is benign on delete — the agent may have had no live
+        // executor. Any other error means the registry is wedged; log it but
+        // still flip the DB row (the DB is the source of truth for the
+        // operator-visible status).
+        if let Err(err) = self.executors.terminate(agent_id).await {
+            if !matches!(err, RegistryError::NotFound(_)) {
+                tracing::warn!(agent_id, error = %err, "delete_agent: executor terminate failed");
+            }
+        }
+        // The DB status flip MUST succeed: returning Ok while the row still
+        // reads `working`/`idle` is exactly the DB↔executor split-brain this
+        // fix closes — the UI would show a live agent whose executor is gone.
+        agents::set_status(self.db.conn(), &target.project_id, agent_id, "deprecated")
+            .await
+            .map_err(|e| ToolError::Other(format!("mark agent {agent_id} deprecated: {e}")))?;
         Ok(json!({ "ok": true, "agentId": agent_id, "status": "deprecated" }))
     }
 }
