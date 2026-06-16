@@ -1,13 +1,13 @@
 # Hive Feature Status
 
-Living matrix mapping every promised feature to its current implementation state and dependency profile. Update whenever a feature ships, gets disabled, or moves between local/server scopes. (How the built parts work → [`architecture.md`](architecture.md); the forward plan → [`ROADMAP.md`](ROADMAP.md); the outstanding-issues queue → [`BACKLOG.md`](BACKLOG.md).)
+Living matrix mapping every promised feature to its current implementation state and dependency profile. Update whenever a feature ships, gets disabled, or moves between local/server scopes. (Docs index → [`README.md`](README.md); how the built parts work → [`architecture.md`](architecture.md); the forward plan → [`ROADMAP.md`](ROADMAP.md); the outstanding bug/debt/audit register → [`BACKLOG.md`](BACKLOG.md).)
 
 **Legend**
 - **Status**: `done` · `partial` · `mock` (UI exists, no backend) · `planned` · `removed`
 - **Dep**: `local` (works fully offline) · `server` (needs the Hive central server — planned, not built) · `cloud-llm` (needs a configured LLM provider) · `git-remote` (needs a GitHub/GitLab token)
 - **Phase**: which redesign phase delivered/will deliver this
 
-**Audit reference.** Closed audit items are cross-referenced in this doc; the canonical list of fixed items, open critical work, and the planned remediation order lives in [`BACKLOG.md`](BACKLOG.md). As of the latest sweep (2026-05-28), four batches of fixes have shipped against the 2026-05-27 audit — see BACKLOG §ZZ "Fixed in this pass".
+**Audit reference.** Closed audit items are cross-referenced in this doc; the canonical, unified register of fixed items, open work, severity, and remediation order lives in [`BACKLOG.md`](BACKLOG.md) (the 2026-06-15 C-ID audit, with the `Z/ZZ` and `A.x` history folded in via Legacy columns; fix log in §6). The notes below predate the 2026-06-15 audit — where a feature is marked `done` but BACKLOG lists an open C-ID against it (e.g. drift auto-pause split-brain C094, Gemini key-in-URL C202, `todo.rs` missing lock C168), **BACKLOG wins.**
 
 ## Onboarding
 

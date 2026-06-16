@@ -58,7 +58,7 @@ To wipe state, delete `back-end/data/` and `~/.hive/master.key` and rerun.
 |---|---|
 | `back-end/` | Cargo workspace: `hive-api`, `hive-domain`, `hive-db` (+ `migration/`), `hive-runtime`, `hive-llm`, `hive-tools`, `hive-sandbox`, `hive-search`, `hive-git`, `hive-crypto`, `hive-seed`. See [`back-end/README.md`](back-end/README.md). |
 | `front-end/` | React + TypeScript SPA. See [`front-end/README.md`](front-end/README.md). |
-| `docs/` | [`architecture.md`](docs/architecture.md) (design reference), [`FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) (the living feature matrix), [`ROADMAP.md`](docs/ROADMAP.md) (the forward plan), [`BACKLOG.md`](docs/BACKLOG.md) (remaining issues), and [`OPERATOR_NOTES.md`](docs/OPERATOR_NOTES.md) (runtime tips). |
+| `docs/` | Start at the index — [`docs/README.md`](docs/README.md). Holds [`architecture.md`](docs/architecture.md) (design reference), [`FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) (the living feature matrix), [`ROADMAP.md`](docs/ROADMAP.md) (the forward plan), [`BACKLOG.md`](docs/BACKLOG.md) (the unified bug/debt/audit register), [`SECURITY.md`](docs/SECURITY.md), [`TESTING.md`](docs/TESTING.md), and [`OPERATOR_NOTES.md`](docs/OPERATOR_NOTES.md) (runtime tips). |
 
 ## Configuration
 
@@ -92,9 +92,12 @@ Backend CLI (in `back-end/`): `cargo run -p hive-api -- serve` (runs migrations
 
 ## More
 
+- [`docs/README.md`](docs/README.md) — **the documentation index** (start here).
 - [`docs/architecture.md`](docs/architecture.md) — topology, crates, core concepts, the chat-turn flow, technical schema, and future design sketches.
 - [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) — what's `done` / `partial` / `mock` / `planned` / `removed`, with dependency profile.
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — the high-level forward plan.
-- [`docs/BACKLOG.md`](docs/BACKLOG.md) — exhaustive list of remaining issues and planned technical solutions.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — the high-level forward plan (features).
+- [`docs/BACKLOG.md`](docs/BACKLOG.md) — the unified, code-verified register of remaining bugs, debt, security holes, and test gaps.
+- [`docs/SECURITY.md`](docs/SECURITY.md) — security posture and known holes (read before exposing off-loopback).
+- [`docs/TESTING.md`](docs/TESTING.md) — testing strategy and coverage gaps.
 - [`docs/OPERATOR_NOTES.md`](docs/OPERATOR_NOTES.md) — technical notes for running the chat runner and small-model tips.
 - [`back-end/README.md`](back-end/README.md) · [`front-end/README.md`](front-end/README.md) — dev setup per half.
