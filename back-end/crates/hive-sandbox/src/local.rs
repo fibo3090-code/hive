@@ -381,9 +381,7 @@ impl Sandbox for LocalFsSandbox {
         .await
         .map_err(|join_err| SandboxError::Io(std::io::Error::other(join_err.to_string())))?
         .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::InvalidInput
-                && e.to_string().contains("symlink")
-            {
+            if e.kind() == std::io::ErrorKind::InvalidInput && e.to_string().contains("symlink") {
                 SandboxError::PathEscape(resolved.clone())
             } else {
                 SandboxError::Io(e)

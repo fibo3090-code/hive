@@ -18,9 +18,14 @@ fn default_kind() -> String {
     "dependency".to_owned()
 }
 
-pub async fn create<C: ConnectionTrait>(db: &C, input: CreateTaskDependency) -> Result<Model, DbErr> {
+pub async fn create<C: ConnectionTrait>(
+    db: &C,
+    input: CreateTaskDependency,
+) -> Result<Model, DbErr> {
     if input.from_task_id == input.to_task_id {
-        return Err(DbErr::Custom("self-loop task dependency is not allowed".into()));
+        return Err(DbErr::Custom(
+            "self-loop task dependency is not allowed".into(),
+        ));
     }
     let duplicate = Entity::find()
         .filter(Column::ProjectId.eq(&input.project_id))
@@ -30,7 +35,9 @@ pub async fn create<C: ConnectionTrait>(db: &C, input: CreateTaskDependency) -> 
         .one(db)
         .await?;
     if duplicate.is_some() {
-        return Err(DbErr::Custom("duplicate task dependency is not allowed".into()));
+        return Err(DbErr::Custom(
+            "duplicate task dependency is not allowed".into(),
+        ));
     }
     ActiveModel {
         id: Set(new_id()),

@@ -23,7 +23,9 @@ pub async fn create<C: ConnectionTrait>(
     input: CreateSprintDependency,
 ) -> Result<Model, DbErr> {
     if input.from_sprint_id == input.to_sprint_id {
-        return Err(DbErr::Custom("self-loop sprint dependency is not allowed".into()));
+        return Err(DbErr::Custom(
+            "self-loop sprint dependency is not allowed".into(),
+        ));
     }
     let duplicate = Entity::find()
         .filter(Column::ProjectId.eq(&input.project_id))
@@ -33,7 +35,9 @@ pub async fn create<C: ConnectionTrait>(
         .one(db)
         .await?;
     if duplicate.is_some() {
-        return Err(DbErr::Custom("duplicate sprint dependency is not allowed".into()));
+        return Err(DbErr::Custom(
+            "duplicate sprint dependency is not allowed".into(),
+        ));
     }
     ActiveModel {
         id: Set(new_id()),

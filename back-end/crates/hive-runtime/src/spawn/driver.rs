@@ -287,7 +287,16 @@ pub async fn run_pipeline(
         }
 
         if !apis.is_empty() {
-            run_synthesis_stage(db, deps.as_ref(), &ctx, bus, &apis, &mut synthesized_mcp_ids, &mut bound_mcp_ids).await?;
+            run_synthesis_stage(
+                db,
+                deps.as_ref(),
+                &ctx,
+                bus,
+                &apis,
+                &mut synthesized_mcp_ids,
+                &mut bound_mcp_ids,
+            )
+            .await?;
         }
     }
 

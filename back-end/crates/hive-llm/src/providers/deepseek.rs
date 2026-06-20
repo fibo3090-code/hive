@@ -75,7 +75,9 @@ impl LlmProvider for DeepSeekProvider {
     }
 
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, LlmError> {
-        self.inner.chat_stream(strip_tools_for_reasoner(request)).await
+        self.inner
+            .chat_stream(strip_tools_for_reasoner(request))
+            .await
     }
 
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
@@ -109,30 +111,24 @@ mod strip_tests {
 
     #[test]
     fn strips_tools_for_reasoner_model() {
-        let request = ChatRequest::new(
-            "deepseek-reasoner",
-            vec![ChatMessage::user("hello")],
-        )
-        .with_tools(vec![ToolDefinition {
-            name: "fs_read".into(),
-            description: "read".into(),
-            input_schema: json!({}),
-        }]);
+        let request = ChatRequest::new("deepseek-reasoner", vec![ChatMessage::user("hello")])
+            .with_tools(vec![ToolDefinition {
+                name: "fs_read".into(),
+                description: "read".into(),
+                input_schema: json!({}),
+            }]);
         let stripped = strip_tools_for_reasoner(request);
         assert!(stripped.tools.is_empty());
     }
 
     #[test]
     fn preserves_tools_for_chat_model() {
-        let request = ChatRequest::new(
-            "deepseek-chat",
-            vec![ChatMessage::user("hello")],
-        )
-        .with_tools(vec![ToolDefinition {
-            name: "fs_read".into(),
-            description: "read".into(),
-            input_schema: json!({}),
-        }]);
+        let request = ChatRequest::new("deepseek-chat", vec![ChatMessage::user("hello")])
+            .with_tools(vec![ToolDefinition {
+                name: "fs_read".into(),
+                description: "read".into(),
+                input_schema: json!({}),
+            }]);
         let stripped = strip_tools_for_reasoner(request);
         assert_eq!(stripped.tools.len(), 1);
     }

@@ -25,11 +25,11 @@ pub mod settings;
 pub mod skills;
 pub mod spec_document_sections;
 pub mod spec_documents;
-pub mod sprints;
 pub mod sprint_dependencies;
+pub mod sprints;
 pub mod synthesis_jobs;
-pub mod tasks;
 pub mod task_dependencies;
+pub mod tasks;
 pub mod tech_debt;
 
 use ulid::Ulid;

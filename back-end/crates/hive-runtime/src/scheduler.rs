@@ -277,12 +277,20 @@ async fn task_is_unlocked(
             return false;
         }
     };
-    for edge in sprint_edges.iter().filter(|edge| edge.to_sprint_id == sprint_id) {
+    for edge in sprint_edges
+        .iter()
+        .filter(|edge| edge.to_sprint_id == sprint_id)
+    {
         let upstream_tasks = all_tasks
             .iter()
-            .filter(|candidate| candidate.sprint_id.as_deref() == Some(edge.from_sprint_id.as_str()))
+            .filter(|candidate| {
+                candidate.sprint_id.as_deref() == Some(edge.from_sprint_id.as_str())
+            })
             .collect::<Vec<_>>();
-        if upstream_tasks.iter().any(|candidate| candidate.status != "completed") {
+        if upstream_tasks
+            .iter()
+            .any(|candidate| candidate.status != "completed")
+        {
             return false;
         }
     }
@@ -421,9 +429,7 @@ mod tests {
 
     #[tokio::test]
     async fn max_parallel_falls_back_to_default_when_unset() {
-        let db = Db::connect("sqlite::memory:", true)
-            .await
-            .expect("connect");
+        let db = Db::connect("sqlite::memory:", true).await.expect("connect");
         let cap = read_max_parallel(&db, "any-project").await;
         assert_eq!(cap, DEFAULT_MAX_PARALLEL_AGENTS);
     }
@@ -431,9 +437,7 @@ mod tests {
     #[tokio::test]
     async fn max_parallel_reads_project_scope_first() {
         use hive_db::repos::settings;
-        let db = Db::connect("sqlite::memory:", true)
-            .await
-            .expect("connect");
+        let db = Db::connect("sqlite::memory:", true).await.expect("connect");
         // Global says 2, project says 5 — project should win.
         settings::put_value(db.conn(), "global", MAX_PARALLEL_KEY, json!(2))
             .await

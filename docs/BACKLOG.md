@@ -53,17 +53,21 @@ C-ID finding has an older A./Z/ZZ equivalent, that provenance is shown in the
 
 ## 1. Status snapshot
 
-| Severity | Confirmed (audit) | Unique defects | OPEN | Fixed / unmerged |
+| Severity | Confirmed (audit) | Unique defects | OPEN | Fixed (on `main`) |
 |---|---:|---:|---:|---:|
-| 🔴 Critical | 29 | 18 | 17 | 1 unmerged (C094) |
-| 🟠 High | 150 | ~95 | ~93 | a few (see §6) |
+| 🔴 Critical | 29 | 18 | ~14 | 3 (C026/C074, C092, C202/C203) |
+| 🟠 High | 150 | ~95 | ~92 | C094, C201/C204 + see §6 |
 | 🟡 Medium | 39 | ~27 | ~27 | — |
 | 🟢 Low | 0 | — | — | — |
-| **Total** | **218** | **~140** | **~137** | — |
+| **Total** | **218** | **~140** | **~133** | — |
 
 > Counts are approximate because the audit-coverage findings (missing
 > `audit::append`) collapse to one middleware fix, and the test-coverage
 > findings collapse to "stand up the suites." See §3.3 and §3.5.
+>
+> **2026-06-20 merge batch:** PRs #13–#18 landed on `main` (C026/C074, C092,
+> C094, C201/C204, C202/C203 + the LLM tool-calling cluster) and backend CI is
+> green again (fmt/audit). See §6.
 
 **Verification verdict distribution** (from `AUDIT_VERIFICATION.md`, 218 findings):
 115 CONFIRMED · 36 CONFIRMED-duplicate · 1 CONFIRMED-worse-than-stated (C402) ·
@@ -77,16 +81,16 @@ already true at directory level). **No finding was a hallucination.**
 This supersedes every earlier "next-sprint order". Ranked by blast-radius ×
 ease, reconciled with the verification report's "what I'd ship first":
 
-1. **C026 / C074 — tool-allowlist kill-switch** (`main.rs:1508`, ~5 lines). The
-   operator's "disable shell_exec project-wide" does nothing today. → §3.1
+1. ~~**C026 / C074 — tool-allowlist kill-switch**~~ ✅ **DONE (PR #15)**. The
+   operator's "disable shell_exec project-wide" now narrows per-agent loadouts. → §3.1
 2. **C312 cluster / C477 — `Modules.tsx` duplicate EventSource** (~30 lines, one
    file). One bug away from app-wide freeze. → §4.1
 3. **C169–C188 — `web_fetch` SSRF on hostname redirect / DNS rebinding**
    (`web.rs:129`). Source comment already admits the hole. → §3.2
-4. **C202 / C203 / C201 — Gemini provider** (key in URL, model-name injection,
-   null `generationConfig`). Three small rewrites. → §3.2 / §3.4
+4. ~~**C202 / C203 / C201 — Gemini provider**~~ ✅ **DONE (PR #16)** (key in URL,
+   model-name injection, null `generationConfig`). → §3.2 / §3.4
 5. **C247 / C256 — master-key hygiene** (no zeroize; Windows ACL). → §3.2
-6. **C092 — `DeleteAgent` `let _ =` executor swallow** (`agent_tools.rs:553`). → §3.4
+6. ~~**C092 — `DeleteAgent` `let _ =` executor swallow**~~ ✅ **DONE (PR #18)** (`agent_tools.rs:553`). → §3.4
 7. **C543 — bump `vitest` to ≥3.2.6** (CVE, one line). → §4.4
 8. **C402 — `useFormField` null-ref** (5 lines, real crash). → §4.1
 9. **Audit middleware** — collapses the entire C001–C056 + medium batch into one
@@ -102,11 +106,11 @@ ease, reconciled with the verification report's "what I'd ship first":
 
 | ID | Legacy | file:line | Defect | Status |
 |---|---|---|---|---|
-| **C026 / C074** | A.9, Z9 | `hive-api/src/main.rs:1508` | `effective_tool_names` returns `per_agent.to_vec()` directly when non-empty — **no intersection** with the global allowlist, so a per-agent loadout bypasses the operator kill-switch. Comment at 1528-1531 confirms it's intentional for the Coordinator. | **OPEN** |
+| **C026 / C074** | A.9, Z9 | `hive-api/src/main.rs:1508` | `effective_tool_names` returns `per_agent.to_vec()` directly when non-empty — **no intersection** with the global allowlist, so a per-agent loadout bypasses the operator kill-switch. Comment at 1528-1531 confirms it's intentional for the Coordinator. | **✅ RESOLVED** — PR #15 (merged): intersection + `is_authority_tool` carve-out so role-gated coordination tools still reach the Coordinator. |
 | **C087** | — | `hive-runtime/src/spawn/llm_deps.rs:114` | Research-API whitelist uses `picked.url.contains(d)` — raw substring. `http://api.github.com.evil.com` passes; the unapproved-MCP approval gate is bypassable. | **OPEN** |
-| **C092** | A.7, Z2 | `hive-runtime/src/agent_tools.rs:553` | `DeleteAgent` tool: `cancel_subtree` result dropped, `let _ = terminate`, `let _ = set_status`, returns `Ok`. A `NotFound` silently desyncs DB ↔ ExecutorRegistry while reporting success. | **OPEN** |
+| **C092** | A.7, Z2 | `hive-runtime/src/agent_tools.rs:553` | `DeleteAgent` tool: `cancel_subtree` result dropped, `let _ = terminate`, `let _ = set_status`, returns `Ok`. A `NotFound` silently desyncs DB ↔ ExecutorRegistry while reporting success. | **✅ RESOLVED** — PR #18 (merged): tolerate `NotFound` on terminate (warn otherwise), propagate `set_status` failure via `?`. |
 | **C186** | A.30 | `hive-tools/src/builtins/edit.rs:114` | `str_replace` binds the sandbox lock to `let _lock` then never references it. *Verification: the audit's "drops at end of map" mechanism is **wrong** (Rust extends the binding to end of block); the real issue is the unused `_`-style binding and lock-overlay visibility.* | **OPEN** (severity ↓; smell, not race) |
-| **C202** | — | `hive-llm/src/providers/gemini.rs:222,242,311` | Gemini API key embedded as `?key={}` in all three method URLs — leaks into proxy/access logs and history. | **OPEN** |
+| **C202 / C203** | — | `hive-llm/src/providers/gemini.rs:222,242,311` | Gemini API key embedded as `?key={}` in all three method URLs — leaks into proxy/access logs and history. (C203: model id interpolated unencoded into the path.) | **✅ RESOLVED** — PR #16 (merged): key moved to `x-goog-api-key` header; model id `urlencoding::encode`d. |
 | **C247** | ZZ18 | `hive-crypto/src/lib.rs:60` | Master key built as `Vec<u8>` across three paths and dropped without zeroize — the root secret lingers in heap, recoverable from a core dump / same-uid `/proc/pid/mem`. | **OPEN** |
 | **C191** | A.1 | `hive-tools/src/builtins/web.rs:129` | The SSRF redirect policy (5-hop cap, http(s)-only, private-IP-literal reject) is **completely untested**; source comment admits the DNS-rebinding window (ZZ8) is uncovered. | **OPEN** (test gap) |
 
@@ -160,9 +164,9 @@ Tracked historically as HANDOFF §4.5.
 
 | ID | Legacy | file:line | Defect | Status |
 |---|---|---|---|---|
-| **C094** | A.5, A.10, Z1, ZZ16 | `hive-runtime/src/drift_hook.rs:202` | Drift auto-pause: DB pause (203) and executor pause (217) are independent best-effort blocks — either can fail leaving DB ↔ executor split-brain. | **OPEN (fix unmerged)** — PR #13 adds `reg.ensure()` before pause + a chat-path pause gate; full atomicity (ZZ16) still open. |
+| **C094** | A.5, A.10, Z1, ZZ16 | `hive-runtime/src/drift_hook.rs:202` | Drift auto-pause: DB pause (203) and executor pause (217) are independent best-effort blocks — either can fail leaving DB ↔ executor split-brain. | **✅ MITIGATED** — PR #13 (merged): chat-path pause gate + drift-hook `ensure`-before-pause. Full two-write atomicity (ZZ16) still open. |
 | **C141** | HANDOFF 3.4 | `hive-db/src/seed.rs:15` | `json_value()` `.expect()`s on parse — corrupt seed JSON hard-crashes boot. | **OPEN** |
-| **C201/C204** | — | `hive-llm/src/providers/gemini.rs:122,150` | When temp+max_tokens both `None`, `generationConfig` is never created, then line 150 mutates `["generationConfig"]["candidateCount"]` on a `Null` → invalid streaming request. | **OPEN** |
+| **C201/C204** | — | `hive-llm/src/providers/gemini.rs:122,150` | When temp+max_tokens both `None`, `generationConfig` is never created, then line 150 mutates `["generationConfig"]["candidateCount"]` on a `Null` → invalid streaming request. | **✅ RESOLVED** — PR #16 (merged): `generationConfig` materialised as an object when streaming (`!generation.is_empty() \|\| stream`). |
 | **C211** | — | `hive-llm/src/lib.rs:284` | `client_for` `.expect("reqwest client builds")` and returns a non-`Result` — a build failure panics provider init. | **OPEN** |
 | **C218** | — | `hive-llm/src/providers/anthropic.rs:280` | Tool-blocks `HashMap` never cleared on a truncated stream (unmatched `content_block_start`). | **OPEN** |
 
@@ -293,9 +297,26 @@ array-merge bug (dead code). **Status: OPEN.**
 Reverse-chronological. These landed on `main`; the newer C-audit does **not**
 re-flag them as broken (where it cites the same file it only flags a *test* gap).
 
-**PR #13 (branch `fix/drift-autopause-split-brain`, unmerged 2026-06-16)** —
-C094 mitigation: `run_turn` pause gate on the direct chat path + drift-hook
-ensure-then-pause. *Not yet on `main`.*
+**PR-batch 2026-06-20 (PRs #13–#18, all merged to `main`)** — a triage +
+merge pass that cleared the open audit-fix branches:
+- **#15** — C026/C074 tool-allowlist kill-switch: `effective_tool_names`
+  intersects per-agent loadout with the global allowlist, with an
+  `is_authority_tool` carve-out so role-gated coordination tools still reach the
+  Coordinator.
+- **#16** — C202/C203/C201/C204 Gemini hardening: key → `x-goog-api-key` header,
+  model id `urlencoding::encode`d, `generationConfig` materialised when streaming.
+- **#13** — C094 mitigation: `run_turn` pause gate on the direct chat path +
+  drift-hook `ensure`-before-pause (full two-write atomicity ZZ16 still open).
+- **#18** — C092 `DeleteAgent`: tolerate `NotFound` on terminate, propagate the
+  `set_status("deprecated")` failure via `?` (no more silent DB↔executor desync).
+- **#17** — LLM tool-calling round-trip (legacy ZZ82–87, ZZ26): Ollama tool
+  results use `tool_name` not `name`; tool-calls-only turns omit empty `content`;
+  native tool defs gated on `supports_tools`; XML-fallback hint disambiguated;
+  expanded the Ollama tool-capable family list; default `LlmProvider::chat`
+  accumulates streamed tool calls instead of dropping them.
+- **#14** — docs unification (this register) + `docs/{README,SECURITY,TESTING}.md`.
+- **CI hygiene** — `cargo fmt --all`, lockfile `urlencoding` sync, and two
+  unmaintained-crate `cargo audit` ignores, so backend CI is green.
 
 **Batch 4 (`1c17673`)** — ZZ7 `shell_exec` HOME → `.hive/run-home/`; ZZ10
 `fs_read` size-cap TOCTOU (`File::take(cap+1)`); ZZ11 `fs_write` symlink TOCTOU
