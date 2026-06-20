@@ -28,7 +28,7 @@ Use this for normal local development and as the rollback path.
 ingress endpoint:
 
 ```text
-<HIVE_RESTATE_ENDPOINT>/SpawnPipelineWorkflow/<spawn_request_id>/run
+<HIVE_RESTATE_ENDPOINT>/restate/send/SpawnPipelineWorkflow/<spawn_request_id>/run
 ```
 
 The payload is:
@@ -57,8 +57,8 @@ HIVE_WORKFLOW_BACKEND=restate
 HIVE_RESTATE_ENDPOINT=http://localhost:8080
 ```
 
-Enables Restate submission. `HIVE_RESTATE_ENDPOINT` must be set and non-empty
-when the backend is `restate`.
+Enables Restate submission through the Restate HTTP ingress. `HIVE_RESTATE_ENDPOINT`
+must be set and non-empty when the backend is `restate`.
 
 ## Rollback
 
@@ -75,7 +75,8 @@ their DB state and can be resubmitted through the local backend.
 
 - Restate is optional and not required to run HIVE.
 - The local backend remains the production-safe path for now.
-- Restate submission failures are logged; they do not mutate the spawn request
-  row by themselves.
+- Restate submission failures mark the spawn request as `failed` and emit
+  `agent_spawn_request.failed`.
+- Restate `409 Conflict` responses are treated as idempotent "already accepted"
+  submissions.
 - Frontend routes and SSE event names are unchanged.
-

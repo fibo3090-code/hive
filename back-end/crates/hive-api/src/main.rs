@@ -297,22 +297,15 @@ struct RestateSpawnPipelineRequest<'a> {
 impl WorkflowBackend for RestateWorkflowBackend {
     async fn submit_spawn_pipeline(
         &self,
-        _state: AppState,
+        state: AppState,
         spawn_request_id: String,
         in_flight: Arc<Mutex<HashSet<String>>>,
     ) {
-        let url = format!(
-            "{}/SpawnPipelineWorkflow/{}/run",
-            self.endpoint, spawn_request_id
-        );
+        let url = restate_spawn_pipeline_url(&self.endpoint, &spawn_request_id);
         let http = self.http.clone();
         tokio::spawn(async move {
             let result = http
                 .post(url)
-                .header(
-                    "idempotency-key",
-                    format!("spawn-pipeline-{spawn_request_id}"),
-                )
                 .json(&RestateSpawnPipelineRequest {
                     spawn_request_id: &spawn_request_id,
                 })
@@ -327,23 +320,81 @@ impl WorkflowBackend for RestateWorkflowBackend {
                         "restate workflow: submitted spawn pipeline"
                     );
                 }
+                Ok(response) if response.status() == reqwest::StatusCode::CONFLICT => {
+                    tracing::info!(
+                        spawn_request_id,
+                        status = %response.status(),
+                        "restate workflow: spawn pipeline was already accepted"
+                    );
+                }
                 Ok(response) => {
+                    let message = format!(
+                        "restate workflow submission failed with status {}",
+                        response.status()
+                    );
                     tracing::error!(
                         spawn_request_id,
                         status = %response.status(),
                         "restate workflow: submission failed"
                     );
+                    mark_spawn_pipeline_submission_failed(&state, &spawn_request_id, message).await;
                 }
                 Err(err) => {
+                    let message = format!("restate workflow submission failed: {err}");
                     tracing::error!(
                         spawn_request_id, error = %err,
                         "restate workflow: submission failed"
                     );
+                    mark_spawn_pipeline_submission_failed(&state, &spawn_request_id, message).await;
                 }
             }
 
             in_flight.lock().await.remove(&spawn_request_id);
         });
+    }
+}
+
+fn restate_spawn_pipeline_url(endpoint: &str, spawn_request_id: &str) -> String {
+    format!(
+        "{}/restate/send/SpawnPipelineWorkflow/{}/run",
+        endpoint.trim_end_matches('/'),
+        spawn_request_id
+    )
+}
+
+async fn mark_spawn_pipeline_submission_failed(
+    state: &AppState,
+    spawn_request_id: &str,
+    error: String,
+) {
+    let database = db(state).await;
+    match agent_spawn_requests::update(
+        database.conn(),
+        spawn_request_id,
+        agent_spawn_requests::UpdateSpawnRequest {
+            status: Some("failed".to_owned()),
+            error: Some(error.clone()),
+            completed: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        Ok(row) => {
+            emit(
+                state,
+                "agent_spawn_request.failed",
+                json!({ "id": row.id, "status": row.status, "error": error }),
+            )
+            .await;
+        }
+        Err(err) => {
+            tracing::error!(
+                spawn_request_id,
+                error = %err,
+                "restate workflow: failed to persist submission failure"
+            );
+        }
     }
 }
 
@@ -8823,6 +8874,14 @@ mod workflow_tests {
         assert!(err
             .to_string()
             .contains("unsupported HIVE_WORKFLOW_BACKEND"));
+    }
+
+    #[test]
+    fn restate_spawn_pipeline_url_uses_current_http_ingress_shape() {
+        assert_eq!(
+            restate_spawn_pipeline_url("http://localhost:8080/", "spawn-1"),
+            "http://localhost:8080/restate/send/SpawnPipelineWorkflow/spawn-1/run"
+        );
     }
 
     #[tokio::test]
