@@ -118,18 +118,39 @@ pub fn supports_tools(kind: ProviderKind, model: &str) -> bool {
         ProviderKind::Openai => !m.starts_with("gpt-3.5") && !m.contains("instruct"),
         ProviderKind::Gemini => true,
         ProviderKind::Ollama => {
-            // Ollama tool support is per-model; this list mirrors the
-            // families that have tool tags upstream. Refine over time.
-            m.starts_with("llama3.1")
-                || m.starts_with("llama3.2")
-                || m.starts_with("llama3.3")
-                || m.starts_with("llama4")
-                || m.starts_with("qwen2.5")
-                || m.starts_with("qwen3")
-                || m.starts_with("mistral-nemo")
-                || m.starts_with("mistral-small")
-                || m.starts_with("command-r")
-                || m.starts_with("firefunction")
+            // Ollama tool support is per-model; this list mirrors the families
+            // carrying the `tools` capability tag upstream. Matching by prefix
+            // keeps tag variants (e.g. `qwen3-coder`, `command-r-plus`) covered.
+            // Erring slightly permissive is cheap (a non-tool model just
+            // ignores the defs); the costly failure is greying out a real
+            // tool model in the UI, so prefer inclusion when a family ships a
+            // tool tag. Refine over time.
+            const TOOL_FAMILIES: &[&str] = &[
+                "llama3.1",
+                "llama3.2",
+                "llama3.3",
+                "llama4",
+                "qwen2.5",
+                "qwen3",
+                "mistral-nemo",
+                "mistral-small",
+                "mistral-large",
+                "mixtral",
+                "command-r",
+                "command-a",
+                "firefunction",
+                "gpt-oss", // Harmony format — provider already normalises its tool names
+                "granite3",
+                "nemotron",
+                "hermes3",
+                "athene-v2",
+                "cogito",
+                "devstral",
+                "magistral",
+                "smollm2",
+                "deepseek-v3",
+            ];
+            TOOL_FAMILIES.iter().any(|fam| m.starts_with(fam))
         }
         ProviderKind::DeepSeek => {
             // `deepseek-chat` (V3) and `deepseek-coder` support tools.
@@ -230,6 +251,39 @@ mod tests {
         assert!(supports_tools(ProviderKind::Ollama, "llama3.1:8b"));
         assert!(supports_tools(ProviderKind::Ollama, "qwen2.5:14b"));
         assert!(!supports_tools(ProviderKind::Ollama, "llama2:7b"));
+    }
+
+    #[test]
+    fn ollama_tool_detection_covers_newly_added_families() {
+        // ZZ84: families that ship a `tools` tag upstream but were missing.
+        for model in [
+            "gpt-oss:20b",
+            "mixtral:8x7b",
+            "command-a:111b",
+            "nemotron:70b",
+            "granite3.3:8b",
+            "hermes3:8b",
+            "mistral-large:123b",
+            "qwen3-coder:30b", // prefix-covered by qwen3
+            "command-r-plus",  // prefix-covered by command-r
+        ] {
+            assert!(
+                supports_tools(ProviderKind::Ollama, model),
+                "{model} should be tool-capable"
+            );
+        }
+        // gpt-oss in particular: the Ollama provider already strips Harmony
+        // channel tokens from its tool calls, so metadata claiming it can't use
+        // tools was an internal contradiction.
+        assert!(supports_tools(ProviderKind::Ollama, "gpt-oss"));
+
+        // Still-correct negatives: base checkpoints without a tool tag.
+        for model in ["gemma3:12b", "phi3:14b", "llama3:8b", "qwen2:7b"] {
+            assert!(
+                !supports_tools(ProviderKind::Ollama, model),
+                "{model} should NOT be reported tool-capable"
+            );
+        }
     }
 
     #[test]

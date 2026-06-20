@@ -73,20 +73,49 @@ fn request_messages(request: &ChatRequest) -> Vec<Value> {
         .messages
         .iter()
         .map(|m| match m.role {
-            crate::chat::ChatRole::Assistant if !m.tool_calls.is_empty() => json!({
-                "role": m.role.as_str(),
-                "content": m.content,
-                "tool_calls": m.tool_calls.iter().map(|call| json!({
-                    "function": {
-                        "name": call.name,
-                        "arguments": call.arguments,
-                    }
-                })).collect::<Vec<_>>(),
-            }),
+            crate::chat::ChatRole::Assistant if !m.tool_calls.is_empty() => {
+                let tool_calls = m
+                    .tool_calls
+                    .iter()
+                    .map(|call| {
+                        json!({
+                            "function": {
+                                "name": call.name,
+                                "arguments": call.arguments,
+                            }
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                // ZZ83: several Ollama model templates (qwen3-coder, gemma)
+                // render an empty-string `content` differently from an absent
+                // one and flip to text-based tool markup on subsequent turns
+                // (ollama/ollama#14181). When the assistant turn is
+                // tool-calls-only, omit `content` entirely — this matches
+                // Ollama's own tool-calling docs, which carry no `content` key
+                // alongside `tool_calls`.
+                if m.content.is_empty() {
+                    json!({
+                        "role": m.role.as_str(),
+                        "tool_calls": tool_calls,
+                    })
+                } else {
+                    json!({
+                        "role": m.role.as_str(),
+                        "content": m.content,
+                        "tool_calls": tool_calls,
+                    })
+                }
+            }
+            // ZZ82: Ollama's `/api/chat` reads the tool name from `tool_name`
+            // (Go `api.Message.ToolName`, json:"tool_name"). A stray `name`
+            // field is silently dropped, so on the next round the model never
+            // sees that its tool call returned a result — it re-issues the same
+            // call until MAX_TOOL_ROUNDS, which surfaces as the "empty
+            // response" error.
             crate::chat::ChatRole::Tool => json!({
                 "role": "tool",
                 "content": m.content,
-                "name": m.tool_name,
+                "tool_name": m.tool_name,
             }),
             _ => json!({
                 "role": m.role.as_str(),
@@ -625,5 +654,68 @@ mod tests {
     #[test]
     fn parse_line_malformed_json_yields_no_events() {
         assert!(parse_line("not json").is_empty());
+    }
+
+    #[test]
+    fn tool_result_message_uses_tool_name_not_name() {
+        // ZZ82: Ollama reads the result's tool name from `tool_name`. Sending
+        // `name` drops it server-side and the model loops forever.
+        use crate::chat::{ChatMessage, ChatRequest};
+        let req = ChatRequest::new(
+            "qwen3",
+            vec![ChatMessage::tool_result("call_1", "web_search", "11 degrees")],
+        );
+        let msgs = request_messages(&req);
+        assert_eq!(msgs[0]["role"], "tool");
+        assert_eq!(msgs[0]["tool_name"], "web_search");
+        assert_eq!(msgs[0]["content"], "11 degrees");
+        assert!(
+            msgs[0].get("name").is_none(),
+            "must not send the unsupported `name` key"
+        );
+    }
+
+    #[test]
+    fn assistant_tool_calls_only_omits_empty_content() {
+        // ZZ83: tool-calls-only assistant turns must omit `content` entirely —
+        // an empty string trips some model templates into text-based markup.
+        use crate::chat::{ChatMessage, ChatRequest, ToolCall};
+        let call = ToolCall {
+            id: Some("call_1".into()),
+            name: "fs_read".into(),
+            arguments: json!({ "path": "README.md" }),
+        };
+        let req = ChatRequest::new(
+            "qwen3-coder",
+            vec![ChatMessage::assistant_with_tool_calls("", vec![call])],
+        );
+        let msgs = request_messages(&req);
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert!(
+            msgs[0].get("content").is_none(),
+            "empty content must be omitted, not sent as \"\""
+        );
+        assert_eq!(msgs[0]["tool_calls"][0]["function"]["name"], "fs_read");
+    }
+
+    #[test]
+    fn assistant_tool_calls_with_text_keeps_content() {
+        // When the model emits prose *and* a tool call, the text is preserved.
+        use crate::chat::{ChatMessage, ChatRequest, ToolCall};
+        let call = ToolCall {
+            id: Some("call_1".into()),
+            name: "fs_read".into(),
+            arguments: json!({ "path": "README.md" }),
+        };
+        let req = ChatRequest::new(
+            "qwen3-coder",
+            vec![ChatMessage::assistant_with_tool_calls(
+                "Let me check the readme.",
+                vec![call],
+            )],
+        );
+        let msgs = request_messages(&req);
+        assert_eq!(msgs[0]["content"], "Let me check the readme.");
+        assert_eq!(msgs[0]["tool_calls"][0]["function"]["name"], "fs_read");
     }
 }

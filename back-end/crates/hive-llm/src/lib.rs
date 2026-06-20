@@ -229,6 +229,25 @@ pub trait LlmProvider: Send + Sync {
         let mut tokens_in = 0;
         let mut tokens_out = 0;
         let mut finish_reason = None;
+        // ZZ26: accumulate streamed tool-call events. A provider that relies
+        // on this default `chat` (instead of overriding it) used to silently
+        // drop every native tool call — the bug would only surface once such
+        // a provider was deployed. Track each call by id in first-seen order;
+        // concatenate `args_chunk`s and parse them once when the stream ends.
+        let mut pending: Vec<(String, String, String)> = Vec::new();
+        fn slot<'a>(
+            pending: &'a mut Vec<(String, String, String)>,
+            id: &str,
+        ) -> &'a mut (String, String, String) {
+            let idx = match pending.iter().position(|(pid, _, _)| pid == id) {
+                Some(i) => i,
+                None => {
+                    pending.push((id.to_owned(), String::new(), String::new()));
+                    pending.len() - 1
+                }
+            };
+            &mut pending[idx]
+        }
 
         while let Some(item) = stream.next().await {
             match item? {
@@ -253,15 +272,32 @@ pub trait LlmProvider: Send + Sync {
                         finish_reason = finish;
                     }
                 }
-                StreamEvent::ToolCallStart { .. }
-                | StreamEvent::ToolCallDelta { .. }
-                | StreamEvent::ToolCallEnd { .. } => {}
+                StreamEvent::ToolCallStart { id, name } => {
+                    slot(&mut pending, &id).1 = name;
+                }
+                StreamEvent::ToolCallDelta { id, args_chunk } => {
+                    slot(&mut pending, &id).2.push_str(&args_chunk);
+                }
+                StreamEvent::ToolCallEnd { .. } => {}
             }
         }
 
+        let tool_calls = pending
+            .into_iter()
+            .map(|(id, name, args)| {
+                let arguments = serde_json::from_str(args.trim())
+                    .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+                crate::chat::ToolCall {
+                    id: Some(id),
+                    name,
+                    arguments,
+                }
+            })
+            .collect();
+
         Ok(ChatResponse {
             text,
-            tool_calls: Vec::new(),
+            tool_calls,
             tokens_in,
             tokens_out,
             finish_reason,
@@ -316,5 +352,67 @@ mod tests {
     fn ollama_needs_no_key() {
         assert!(!ProviderKind::Ollama.requires_key());
         assert!(ProviderKind::Anthropic.requires_key());
+    }
+
+    #[tokio::test]
+    async fn default_chat_accumulates_streamed_tool_calls() {
+        // ZZ26: a provider that uses the default `chat` (rather than overriding
+        // it) must still surface native tool calls from the stream. Args may
+        // arrive split across multiple deltas — they're concatenated and parsed
+        // once at the end.
+        use crate::chat::{ChatRequest, StreamChunk, StreamEvent};
+
+        struct ToolStreamProvider;
+
+        #[async_trait]
+        impl LlmProvider for ToolStreamProvider {
+            fn kind(&self) -> ProviderKind {
+                ProviderKind::Ollama
+            }
+            async fn list_models(&self) -> Result<Vec<ModelInfo>, LlmError> {
+                Ok(vec![])
+            }
+            async fn chat_stream(&self, _request: ChatRequest) -> Result<ChatStream, LlmError> {
+                let events = vec![
+                    Ok(StreamEvent::Delta(StreamChunk {
+                        delta: "working".into(),
+                    })),
+                    Ok(StreamEvent::ToolCallStart {
+                        id: "c1".into(),
+                        name: "fs_read".into(),
+                    }),
+                    Ok(StreamEvent::ToolCallDelta {
+                        id: "c1".into(),
+                        args_chunk: "{\"path\":".into(),
+                    }),
+                    Ok(StreamEvent::ToolCallDelta {
+                        id: "c1".into(),
+                        args_chunk: "\"README.md\"}".into(),
+                    }),
+                    Ok(StreamEvent::ToolCallEnd { id: "c1".into() }),
+                    Ok(StreamEvent::Complete {
+                        tokens_in: 3,
+                        tokens_out: 5,
+                        finish_reason: Some("tool_calls".into()),
+                    }),
+                ];
+                Ok(Box::pin(futures_util::stream::iter(events)))
+            }
+        }
+
+        let resp = ToolStreamProvider
+            .chat(ChatRequest::new("ollama-model", vec![]))
+            .await
+            .expect("default chat must not error");
+        assert_eq!(resp.text, "working");
+        assert_eq!(
+            resp.tool_calls.len(),
+            1,
+            "default chat must surface the streamed tool call, not drop it"
+        );
+        assert_eq!(resp.tool_calls[0].name, "fs_read");
+        assert_eq!(resp.tool_calls[0].id.as_deref(), Some("c1"));
+        assert_eq!(resp.tool_calls[0].arguments["path"], "README.md");
+        assert_eq!(resp.tokens_out, 5);
     }
 }
