@@ -115,40 +115,16 @@ impl WebFetchTool {
         let http = reqwest::Client::builder()
             .timeout(DEFAULT_FETCH_TIMEOUT)
             .user_agent("hive-agent/1.0 (+https://github.com/fibo3090-code/fresh-start)")
-            // Z3 / A9: `validate_url_destination` runs once on the
-            // user-supplied URL, but the default reqwest policy follows up
-            // to 10 redirects without re-validating. A public host that
-            // 30x's to `http://169.254.169.254/...` (AWS/GCP metadata) or
-            // `http://127.0.0.1:8787/...` (self-recursion into the no-auth
-            // local API) would otherwise exfiltrate creds or pivot into
-            // HIVE itself. Inspect each hop synchronously: reject
-            // non-http(s) schemes and IP literals that hit
-            // `is_private_or_internal`. Hostnames go through reqwest's
-            // own DNS, which the rebinding window (ZZ8) still covers
-            // imperfectly; that's a separate fix.
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() >= 5 {
-                    return attempt.error("too many redirects");
-                }
-                let url = attempt.url();
-                match url.scheme() {
-                    "http" | "https" => {}
-                    other => {
-                        let reason = format!("redirect to non-http(s) scheme {other:?} refused");
-                        return attempt.error(reason);
-                    }
-                }
-                if let Some(host) = url.host_str() {
-                    if let Ok(ip) = host.parse::<IpAddr>() {
-                        if is_private_or_internal(&ip) {
-                            let reason =
-                                format!("redirect to private/internal address {ip} refused");
-                            return attempt.error(reason);
-                        }
-                    }
-                }
-                attempt.follow()
-            }))
+            // C169-188 / Z3 / A9 / ZZ8: do NOT let reqwest auto-follow
+            // redirects. The redirect-policy closure is synchronous, so it can
+            // only inspect IP-literal hops — a *hostname* redirect (e.g.
+            // `evil.com` → `127.0.0.1` or `169.254.169.254` cloud metadata)
+            // slips straight through to reqwest's own DNS and exfiltrates creds
+            // or pivots into the no-auth local API. Instead we disable
+            // auto-follow and walk redirects manually in `invoke`, running the
+            // async SSRF guard (`validate_url_destination`, which *resolves
+            // hostnames*) on every hop.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client builds");
         Self::new(http)
@@ -224,16 +200,55 @@ impl Tool for WebFetchTool {
             _ => return Err(ToolError::InvalidArgs("url must be http or https".into())),
         }
 
-        // SSRF / metadata / self-recursion guard: refuse private IPs, loopback,
-        // link-local (incl. cloud metadata endpoints), unique-local IPv6, etc.
-        validate_url_destination(&url).await?;
-
-        let response = self
-            .http
-            .get(url.clone())
-            .send()
-            .await
-            .map_err(|e| ToolError::Other(format!("request: {e}")))?;
+        // Walk redirects manually so the SSRF guard runs on EVERY hop, not just
+        // the URL the agent supplied. `validate_url_destination` resolves
+        // hostnames (not only IP literals), which closes the
+        // redirect-to-internal bypass (C169-188). The client is built with
+        // `Policy::none()`, so each `.send()` returns the 3xx instead of
+        // following it.
+        const MAX_REDIRECTS: usize = 5;
+        let mut current = url.clone();
+        let mut hops = 0usize;
+        let response = loop {
+            // Refuse private IPs, loopback, link-local (cloud metadata), etc.
+            validate_url_destination(&current).await?;
+            let resp = self
+                .http
+                .get(current.clone())
+                .send()
+                .await
+                .map_err(|e| ToolError::Other(format!("request: {e}")))?;
+            if !resp.status().is_redirection() {
+                break resp;
+            }
+            // A 3xx without a usable Location is malformed — hand it back rather
+            // than loop forever.
+            let Some(location) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+            else {
+                break resp;
+            };
+            // `join` resolves relative ("/next") and absolute ("https://…")
+            // Location values against the URL we just fetched.
+            let next = current
+                .join(location)
+                .map_err(|e| ToolError::Other(format!("invalid redirect location: {e}")))?;
+            match next.scheme() {
+                "http" | "https" => {}
+                other => {
+                    return Err(ToolError::Other(format!(
+                        "redirect to non-http(s) scheme {other:?} refused"
+                    )));
+                }
+            }
+            hops += 1;
+            if hops > MAX_REDIRECTS {
+                return Err(ToolError::Other("too many redirects".into()));
+            }
+            current = next;
+        };
         let status = response.status();
         let content_type = response
             .headers()
@@ -606,5 +621,28 @@ mod tests {
         assert!(!is_private_or_internal(&IpAddr::V6(
             "2001:4860:4860::8888".parse().unwrap()
         )));
+    }
+
+    #[tokio::test]
+    async fn validate_rejects_hostname_resolving_to_loopback() {
+        // C169-188: the per-hop guard must resolve *hostnames*, not just IP
+        // literals. `localhost` is a hostname that resolves to loopback — the
+        // exact shape of the redirect-to-internal bypass. Rejecting it proves
+        // the manual redirect walk closes the hole.
+        let url = reqwest::Url::parse("http://localhost:8787/v1/events").unwrap();
+        assert!(validate_url_destination(&url).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_rejects_ip_literal_metadata_endpoint() {
+        let url = reqwest::Url::parse("http://169.254.169.254/latest/meta-data/").unwrap();
+        assert!(validate_url_destination(&url).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_allows_public_ip_literal() {
+        // 1.1.1.1 is a public IP literal — no DNS, must pass the guard.
+        let url = reqwest::Url::parse("http://1.1.1.1/").unwrap();
+        assert!(validate_url_destination(&url).await.is_ok());
     }
 }
