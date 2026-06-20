@@ -11,7 +11,7 @@ use hive_db::{
 };
 use hive_llm::{
     chat::{ChatMessage, ChatRequest, ChatRole, StreamEvent, ToolCall, ToolDefinition},
-    model_metadata::context_window_for,
+    model_metadata::{context_window_for, supports_tools},
     pricing::cost_cents,
     token_budget::trim_to_fit,
     LlmProvider, ProviderKind,
@@ -73,14 +73,29 @@ struct ToolInvocation {
     raw: Value,
 }
 
-fn tool_protocol_prompt(registry: &ToolRegistry, provider_kind: ProviderKind) -> String {
+fn tool_protocol_prompt(
+    registry: &ToolRegistry,
+    provider_kind: ProviderKind,
+    native_tools: bool,
+) -> String {
     let manifests = registry.manifests();
-    let local_hint = if matches!(provider_kind, ProviderKind::Ollama) {
-        "\nLocal/Ollama compatibility:\n\
-- If you are not certain your native tool call will be emitted correctly, use the XML fallback block instead.\n\
-- Small Ollama models often answer with prose while intending to use a tool; do not do that. Emit either a native tool call or exactly one XML fallback block.\n"
-    } else {
-        ""
+    // ZZ87: tie the Ollama hint to whether native tool defs are actually being
+    // sent for this model. The old unconditional "use the XML fallback if
+    // you're not certain" steer produced split behaviour on native-capable
+    // models (some turns native, some XML, some both), which the parser then
+    // failed to reconcile and surfaced as "empty response". Now native-capable
+    // models are steered firmly to native calls, and only models we can't hand
+    // native defs to are told to use the XML block.
+    let local_hint = match provider_kind {
+        ProviderKind::Ollama if native_tools => {
+            "\nLocal/Ollama compatibility:\n\
+- Emit tool calls through the native tool-calling interface. Do not describe the call in prose, and do not wrap it in the XML block when native calling is available.\n"
+        }
+        ProviderKind::Ollama => {
+            "\nLocal/Ollama compatibility:\n\
+- This model has no native tool-calling channel here. To call a tool, reply with ONLY one XML fallback block (shown above) and no surrounding prose. Never answer in prose when you intend to use a tool.\n"
+        }
+        _ => "",
     };
     format!(
         "Tool protocol:\n\
@@ -892,11 +907,12 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     // Must match `hive_api::workspace_dir`: the per-project sandbox/workspace
     // lives under `<data_dir>/workspaces/<project_id>`, not `projects/`.
     let project_root = data_dir.join("workspaces").join(&project_id);
+    let model_has_native_tools = supports_tools(provider_kind, &model);
     let tool_catalog_block = tool_registry.as_ref().and_then(|r| {
         if r.names().is_empty() {
             None
         } else {
-            Some(tool_protocol_prompt(r, provider_kind))
+            Some(tool_protocol_prompt(r, provider_kind, model_has_native_tools))
         }
     });
     // Skill index for this agent (slug + 1-line description). The full
@@ -1067,6 +1083,14 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         .as_ref()
         .is_some_and(|registry| !registry.names().is_empty())
         && tool_context.is_some();
+    // ZZ86: only hand the provider its *native* tool definitions when the model
+    // actually supports tool calling. Models like `gpt-3.5-*-instruct`,
+    // `deepseek-reasoner`, or a base (non-tool) Ollama checkpoint either 400 or
+    // silently garble when handed tool defs — the turn then dead-ends in the
+    // "model returned an empty response" error. The tool *loop* below stays
+    // active regardless, so these models can still drive tools through the XML
+    // fallback protocol (the reason that fallback exists).
+    let send_native_tools = can_use_tools && supports_tools(provider_kind, &model);
 
     for _ in 0..MAX_TOOL_ROUNDS {
         rounds_used += 1;
@@ -1094,7 +1118,7 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         }
 
         let request = ChatRequest::new(model.clone(), messages.clone());
-        let request = if can_use_tools {
+        let request = if send_native_tools {
             let registry = tool_registry.as_ref().expect("checked above");
             request.with_tools(tool_definitions(registry))
         } else {
@@ -1852,7 +1876,7 @@ mod tests {
     #[test]
     fn tool_protocol_prompt_prefers_native_tools_and_guards_output() {
         let registry = ToolRegistry::new();
-        let prompt = tool_protocol_prompt(&registry, ProviderKind::Openai);
+        let prompt = tool_protocol_prompt(&registry, ProviderKind::Openai, true);
 
         assert!(prompt.contains("native tool-calling"));
         assert!(prompt.contains("Follow each tool's JSON schema exactly"));
@@ -1861,11 +1885,28 @@ mod tests {
     }
 
     #[test]
+    fn ollama_hint_steers_native_when_supported_and_xml_when_not() {
+        // ZZ87: the Ollama hint must depend on whether the model gets native
+        // tool defs. A native-capable model should be steered firmly to native
+        // calls (no ambiguous "use XML if unsure"); a non-tool model should be
+        // told the XML block is its only channel.
+        let registry = ToolRegistry::new();
+
+        let native = tool_protocol_prompt(&registry, ProviderKind::Ollama, true);
+        assert!(native.contains("do not wrap it in the XML block"));
+        assert!(!native.contains("no native tool-calling channel"));
+
+        let fallback = tool_protocol_prompt(&registry, ProviderKind::Ollama, false);
+        assert!(fallback.contains("no native tool-calling channel"));
+        assert!(fallback.contains("ONLY one XML fallback block"));
+    }
+
+    #[test]
     fn composed_hive_prompt_contains_actual_catalog_and_native_tool_defs() {
         let mut registry = ToolRegistry::new();
         hive_tools::builtins::register_defaults(&mut registry);
 
-        let catalog = tool_protocol_prompt(&registry, ProviderKind::Openai);
+        let catalog = tool_protocol_prompt(&registry, ProviderKind::Openai, true);
         let composed = crate::prompt::PromptComposer::new()
             .with_agent_prompt(Some(
                 "You are HIVE. Use only the tools exposed in this session.".to_owned(),
