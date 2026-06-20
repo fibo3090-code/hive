@@ -4,17 +4,14 @@ The forward plan. For *current* status of every feature see
 [`FEATURE_STATUS.md`](FEATURE_STATUS.md); for how the built parts work see
 [`architecture.md`](architecture.md). Actionable technical debt and remaining bugs are tracked in [`BACKLOG.md`](BACKLOG.md).
 
-> **2026-05-27 → 2026-05-28 audit + remediation:** a six-track deep audit
-> (security, runtime concurrency, API layer, DB layer, LLM clients,
-> frontend) surfaced 81 findings (ZZ1–ZZ81 in [`BACKLOG.md`](BACKLOG.md)).
-> **Four batches of remediation** (`cea2fe9` · `bb5b4be` · `558f283` ·
-> `1c17673`) plus operator commit `9eb75a3` have **closed 30 of those
-> items**, including every 🔴 except `pause()`-interrupts-current-turn
-> (the pure-pause-vs-cancel signal, Z17 — `terminate` interrupts
-> correctly via ZZ2). See [`BACKLOG.md`](BACKLOG.md) §ZZ "Fixed in this
-> pass" for the canonical closure list. The items below describe the
-> *forward* roadmap; outstanding audit items remain the higher-priority
-> queue until burned down — see BACKLOG's "Revised next-sprint order".
+> **Audit status (updated 2026-06-16):** HIVE's audits are now unified in
+> [`BACKLOG.md`](BACKLOG.md). The newest, canonical pass is the **2026-06-15
+> multi-agent audit (C-IDs, ~140 unique defects, code-verified)**; the earlier
+> 2026-05-27 sweep (`ZZ1–ZZ81`) and its four remediation batches (`cea2fe9` ·
+> `bb5b4be` · `558f283` · `1c17673` + operator `9eb75a3`, ~30 closures) are
+> folded in as the fix log (BACKLOG §6) and Legacy ID columns. **Outstanding
+> audit items are the higher-priority queue until burned down — see BACKLOG §2
+> "Fix-first order".** The items below are the *forward feature* roadmap.
 
 Each item below is a multi-commit effort; rough descending priority.
 
@@ -24,8 +21,8 @@ These shipped since the last ROADMAP refresh; kept here so current open
 items don't drift into old plans. Confirm in
 [`FEATURE_STATUS.md`](FEATURE_STATUS.md) before acting on any of them.
 
-**Audit-driven (2026-05-27 → 2026-05-28)** — see BACKLOG §ZZ "Fixed in this
-pass" for the full chronological list (30 closures across four batches):
+**Audit-driven (2026-05-27 → 2026-05-28)** — see [`BACKLOG.md`](BACKLOG.md) §6
+"Resolved — fix log" for the full chronological list (30 closures across four batches):
 
 - **Drift hook on every exit path** (Z1) — moved from `run_turn_inner`
   (success-only) to outer `run_turn`; cancel/timeout/LLM-error/budget
@@ -138,8 +135,10 @@ timeout / LLM-error / budget-refusal) via the outer-`run_turn`
 hoist landed in batch 2 (Z1). Scoring lives in `drift.rs`; four bands
 with auto-pause at ≥0.9 (see
 [architecture §4.5](architecture.md#45-drift-hook-drift_hookrecord_after_turn)).
-What's left is UI-side polish on Planning → Drift; the runtime side
-is complete.
+What's left is UI-side polish on Planning → Drift. **One runtime bug remains:**
+the ≥0.9 auto-pause writes the DB row and the executor pause as two independent
+best-effort blocks, so they can desync (C094 in [`BACKLOG.md`](BACKLOG.md) §3.4 —
+a fix is on PR #13, unmerged).
 
 ## 6. Smaller / cleanup
 
