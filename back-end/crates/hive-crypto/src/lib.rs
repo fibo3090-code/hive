@@ -234,7 +234,12 @@ fn restrict_key_file_to_current_user(path: &std::path::Path) -> std::io::Result<
         .ok_or_else(|| Error::other("master-key path is not valid UTF-8"))?;
 
     let output = Command::new("icacls")
-        .args([path_str, "/inheritance:r", "/grant:r", &format!("{user}:(F)")])
+        .args([
+            path_str,
+            "/inheritance:r",
+            "/grant:r",
+            &format!("{user}:(F)"),
+        ])
         .output()
         .map_err(|e| Error::other(format!("failed to run icacls for master-key ACL: {e}")))?;
 
