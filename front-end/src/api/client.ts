@@ -72,6 +72,16 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return payload!;
 }
 
+/**
+ * Build an absolute URL for the SSE endpoint.
+ *
+ * ⚠️ Internal to the realtime layer. Do NOT call `new EventSource(eventStreamUrl(...))`
+ * from a page or component — browsers cap an origin at 6 concurrent SSE
+ * connections, and a page-local stream stacked with open chat threads exhausts
+ * that cap and freezes navigation (see C312). The app must hold exactly one
+ * `EventSource`, owned by `RealtimeProvider`. To react to backend events, use
+ * `useRealtime().subscribe(name, handler)` instead.
+ */
 export function eventStreamUrl(path: string) {
   return `${API_BASE_URL}${path}`;
 }
