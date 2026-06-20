@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type MouseEvent } from 'react';
+import { useRealtime } from '@/realtime/RealtimeProvider';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import {
@@ -20,7 +21,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useInstallModule, useModulesData } from '@/api/queries/useServerData';
 import { useStartSynthesis, useSynthesisJob } from '@/api/synthesis';
-import { eventStreamUrl } from '@/api/client';
 import { PublishModuleDialog } from '@/components/modals/PublishModuleDialog';
 import type { ModuleCatalogItem } from '@/types/domain';
 import { toast } from 'sonner';
@@ -54,6 +54,7 @@ export default function Modules() {
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishJobId, setPublishJobId] = useState<string | null>(null);
   const jobQuery = useSynthesisJob(jobId);
+  const { subscribe } = useRealtime();
 
   const modules = useMemo<ModuleCatalogItem[]>(() => modulesQuery.data ?? [], [modulesQuery.data]);
   const filtered = useMemo(() => {
@@ -68,15 +69,22 @@ export default function Modules() {
     });
   }, [category, modules, search]);
 
+  // C312: subscribe through the singleton `RealtimeProvider` instead of opening
+  // a second `EventSource`. A page-local stream bypasses the one-connection-per-
+  // origin design and, stacked with open chat threads, exhausts the browser's
+  // 6-SSE-per-origin cap and freezes navigation. Cap the progress log so a long
+  // synthesis run can't grow the array unbounded.
+  const MAX_PROGRESS_LINES = 200;
   useEffect(() => {
     if (!jobId) return;
-    const source = new EventSource(eventStreamUrl('/v1/events'));
 
     const onProgress = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data) as { jobId: string; step: number; total: number; logLine: string };
         if (data.jobId !== jobId) return;
-        setProgress((current) => [...current, { step: data.step, total: data.total, logLine: data.logLine }]);
+        setProgress((current) =>
+          [...current, { step: data.step, total: data.total, logLine: data.logLine }].slice(-MAX_PROGRESS_LINES),
+        );
       } catch {
         // ignore malformed events
       }
@@ -103,12 +111,14 @@ export default function Modules() {
       }
     };
 
-    source.addEventListener(`synthesis.${jobId}.progress`, onProgress as EventListener);
-    source.addEventListener(`synthesis.${jobId}.complete`, onComplete as EventListener);
-    source.addEventListener(`synthesis.${jobId}.error`, onError as EventListener);
+    const unsubscribers = [
+      subscribe(`synthesis.${jobId}.progress`, onProgress),
+      subscribe(`synthesis.${jobId}.complete`, onComplete),
+      subscribe(`synthesis.${jobId}.error`, onError),
+    ];
 
-    return () => source.close();
-  }, [jobId, navigate]);
+    return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
+  }, [jobId, navigate, subscribe]);
 
   useEffect(() => {
     if (jobQuery.data?.status === 'error' && jobQuery.data.error) {
