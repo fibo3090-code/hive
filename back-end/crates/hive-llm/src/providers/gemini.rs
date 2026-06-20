@@ -126,7 +126,12 @@ fn request_body(request: &ChatRequest, stream: bool) -> Value {
     if let Some(m) = request.max_tokens {
         generation.insert("maxOutputTokens".into(), json!(m));
     }
-    if !generation.is_empty() {
+    // C201/C204: for a streaming request we set `candidateCount` below, which
+    // requires `generationConfig` to be an object. Materialise it whenever it's
+    // needed (non-empty config OR streaming) so we never index-assign into a
+    // `Null`. (serde_json would auto-vivify, but being explicit is clearer and
+    // avoids a panic if the field type ever changes.)
+    if !generation.is_empty() || stream {
         body["generationConfig"] = Value::Object(generation);
     }
 
@@ -218,12 +223,13 @@ impl LlmProvider for GeminiProvider {
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, LlmError> {
         let key = self.config.api_key.as_deref().ok_or(LlmError::MissingKey)?;
+        // C202: pass the key via the `x-goog-api-key` header, never `?key=` in
+        // the URL — a query-param key leaks into proxy/access logs and history.
         let url = format!(
-            "{}/v1beta/models?key={}",
+            "{}/v1beta/models",
             self.config.base_url.trim_end_matches('/'),
-            key,
         );
-        let response = self.http.get(url).send().await?;
+        let response = self.http.get(url).header("x-goog-api-key", key).send().await?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
@@ -238,16 +244,19 @@ impl LlmProvider for GeminiProvider {
 
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, LlmError> {
         let key = self.config.api_key.as_deref().ok_or(LlmError::MissingKey)?;
+        // C203: percent-encode the model id so it can't inject extra path
+        // segments or query params into the URL.
         let url = format!(
-            "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
+            "{}/v1beta/models/{}:streamGenerateContent?alt=sse",
             self.config.base_url.trim_end_matches('/'),
-            request.model,
-            key,
+            urlencoding::encode(&request.model),
         );
 
         let response = self
             .http
             .post(url)
+            // C202: key in the header, not the query string.
+            .header("x-goog-api-key", key)
             .header("content-type", "application/json")
             .json(&request_body(&request, true))
             .send()
@@ -307,15 +316,16 @@ impl LlmProvider for GeminiProvider {
 
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
         let key = self.config.api_key.as_deref().ok_or(LlmError::MissingKey)?;
+        // C202 (key in header) + C203 (encode the model path segment).
         let url = format!(
-            "{}/v1beta/models/{}:generateContent?key={}",
+            "{}/v1beta/models/{}:generateContent",
             self.config.base_url.trim_end_matches('/'),
-            request.model,
-            key,
+            urlencoding::encode(&request.model),
         );
         let response = self
             .http
             .post(url)
+            .header("x-goog-api-key", key)
             .header("content-type", "application/json")
             .json(&request_body(&request, false))
             .send()
@@ -440,6 +450,28 @@ mod tests {
     #[test]
     fn missing_models_field_yields_empty() {
         assert!(parse_models(r#"{}"#).unwrap().is_empty());
+    }
+
+    #[test]
+    fn streaming_request_body_has_object_generation_config() {
+        // C201/C204: a streaming request with no temperature/max_tokens must
+        // still produce `generationConfig` as an OBJECT carrying
+        // `candidateCount`, never a value index-assigned onto a Null.
+        let request = ChatRequest::new("gemini-2.0-flash", vec![]);
+        assert!(request.temperature.is_none() && request.max_tokens.is_none());
+
+        let body = request_body(&request, true);
+        let gen = &body["generationConfig"];
+        assert!(gen.is_object(), "generationConfig must be an object, got {gen}");
+        assert_eq!(gen["candidateCount"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn non_streaming_request_body_omits_generation_config_when_unset() {
+        // Sanity: without temp/max_tokens and not streaming, no config block.
+        let request = ChatRequest::new("gemini-2.0-flash", vec![]);
+        let body = request_body(&request, false);
+        assert!(body.get("generationConfig").is_none());
     }
 
     #[test]

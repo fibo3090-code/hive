@@ -18,3 +18,4 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 ulid = { workspace = true }
+urlencoding = "2.1"
