@@ -18,6 +18,7 @@ use chacha20poly1305::{
 };
 use rand::RngCore;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
@@ -164,16 +165,20 @@ fn legacy_master_key_path() -> Result<PathBuf, CryptoError> {
     Ok(home.join(".hive").join("master.key"))
 }
 
-fn read_key_bytes(path: &Path) -> Result<Vec<u8>, CryptoError> {
-    let bytes = fs::read(path)?;
+/// Read the 32-byte master key. C247: the bytes are wrapped in `Zeroizing`
+/// so the heap allocation is wiped on drop instead of lingering recoverable
+/// (a core dump or same-uid `/proc/<pid>/mem` reader could otherwise lift the
+/// key that decrypts every stored secret).
+fn read_key_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+    let bytes = Zeroizing::new(fs::read(path)?);
     if bytes.len() != KEY_LEN {
         return Err(CryptoError::BadKeyLength(bytes.len()));
     }
     Ok(bytes)
 }
 
-fn generate_key_bytes() -> Vec<u8> {
-    let mut bytes = vec![0u8; KEY_LEN];
+fn generate_key_bytes() -> Zeroizing<Vec<u8>> {
+    let mut bytes = Zeroizing::new(vec![0u8; KEY_LEN]);
     OsRng.fill_bytes(&mut bytes);
     bytes
 }
@@ -190,18 +195,67 @@ fn write_key_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn write_key_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    // Non-Unix (Windows): we can't set 0o600 here. The right answer is
-    // a Windows-ACL helper that locks the ACL to the current user only;
-    // until that ships we surface a loud warning so operators know the
-    // master key file falls back to default ACLs.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    drop(file);
+    // C256: a freshly-created file inherits the directory's ACL, which on a
+    // shared host can be readable by other local users — and this file holds
+    // the symmetric key that decrypts every stored secret. Lock the DACL down
+    // to the current user before returning, and REFUSE to proceed if that
+    // fails (a generated-but-unprotected key is worse than a hard error the
+    // operator can act on).
+    restrict_key_file_to_current_user(path)?;
+    Ok(())
+}
+
+/// Restrict a file's DACL to the current user using the built-in `icacls`:
+/// `/inheritance:r` strips every inherited ACE, `/grant:r user:(F)` leaves
+/// exactly one ACE (current user, full control). Returns an error if `icacls`
+/// can't be run or reports failure.
+#[cfg(windows)]
+fn restrict_key_file_to_current_user(path: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Error;
+    use std::process::Command;
+
+    let user = std::env::var("USERNAME")
+        .map_err(|_| Error::other("cannot restrict master-key ACL: USERNAME env var is unset"))?;
+    if user.trim().is_empty() {
+        return Err(Error::other(
+            "cannot restrict master-key ACL: USERNAME is empty",
+        ));
+    }
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| Error::other("master-key path is not valid UTF-8"))?;
+
+    let output = Command::new("icacls")
+        .args([path_str, "/inheritance:r", "/grant:r", &format!("{user}:(F)")])
+        .output()
+        .map_err(|e| Error::other(format!("failed to run icacls for master-key ACL: {e}")))?;
+
+    if !output.status.success() {
+        return Err(Error::other(format!(
+            "icacls failed to restrict the master-key ACL (the key would be readable by \
+             other local users): {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn write_key_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    // Exotic non-Unix, non-Windows targets: no portable ACL primitive. Surface
+    // a loud warning so the operator restricts the file manually.
     tracing::warn!(
         path = %path.display(),
-        "writing master key with default platform permissions; \
-         on Windows this means the file ACL may be read-accessible to \
-         other users on the machine. For shared hosts, restrict the \
-         file ACL manually or run on a Unix host."
+        "writing master key with default platform permissions; restrict the file \
+         manually on a shared host."
     );
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -258,5 +312,30 @@ mod tests {
         assert_eq!(mask_key(""), "");
         assert_eq!(mask_key("short"), "•••••");
         assert_eq!(mask_key("sk-ant-abcdefghi"), "sk-a…fghi");
+    }
+
+    #[test]
+    fn generated_key_is_correct_length() {
+        // C247: still produces a usable 32-byte key through the Zeroizing wrapper.
+        assert_eq!(generate_key_bytes().len(), KEY_LEN);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_write_key_file_locks_acl_and_stays_owner_readable() {
+        // C256: writing the key must succeed AND the icacls DACL restriction
+        // must run cleanly on a real Windows host, leaving the owner able to
+        // read it back.
+        let path = std::env::temp_dir().join(format!(
+            "hive-master-key-test-{}-{}.key",
+            std::process::id(),
+            KEY_LEN
+        ));
+        let _ = fs::remove_file(&path);
+        let bytes = generate_key_bytes();
+        write_key_file(&path, &bytes).expect("write + icacls restrict should succeed");
+        let read_back = fs::read(&path).expect("owner can still read the key");
+        assert_eq!(read_back.len(), KEY_LEN);
+        let _ = fs::remove_file(&path);
     }
 }
