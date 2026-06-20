@@ -713,33 +713,31 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     // cleanup below regardless of how the inner exits, so a
     // completed turn doesn't leave a stray task pinned waiting on
     // a never-cancelled token.
-    let cancel_bridge: Option<tokio::task::JoinHandle<()>> = match (
-        agent_id.as_deref(),
-        executors.as_ref(),
-    ) {
-        (Some(agent_id_str), Some(reg)) => match reg.token_for(agent_id_str).await {
-            Some(token) => {
-                let flag = cancel.clone();
-                let bus_clone = bus.clone();
-                let thread_id_clone = thread_id.clone();
-                let message_id_clone = assistant_message_id.clone();
-                Some(tokio::spawn(async move {
-                    token.cancelled().await;
-                    *flag.lock().await = true;
-                    bus_clone.emit(
-                        format!("chat.{thread_id_clone}.cancelled"),
-                        serde_json::json!({
-                            "threadId": thread_id_clone,
-                            "messageId": message_id_clone,
-                            "reason": "executor_cancelled",
-                        }),
-                    );
-                }))
-            }
-            None => None,
-        },
-        _ => None,
-    };
+    let cancel_bridge: Option<tokio::task::JoinHandle<()>> =
+        match (agent_id.as_deref(), executors.as_ref()) {
+            (Some(agent_id_str), Some(reg)) => match reg.token_for(agent_id_str).await {
+                Some(token) => {
+                    let flag = cancel.clone();
+                    let bus_clone = bus.clone();
+                    let thread_id_clone = thread_id.clone();
+                    let message_id_clone = assistant_message_id.clone();
+                    Some(tokio::spawn(async move {
+                        token.cancelled().await;
+                        *flag.lock().await = true;
+                        bus_clone.emit(
+                            format!("chat.{thread_id_clone}.cancelled"),
+                            serde_json::json!({
+                                "threadId": thread_id_clone,
+                                "messageId": message_id_clone,
+                                "reason": "executor_cancelled",
+                            }),
+                        );
+                    }))
+                }
+                None => None,
+            },
+            _ => None,
+        };
 
     let result = match tokio::time::timeout(DEFAULT_TURN_TIMEOUT, run_turn_inner(params)).await {
         Ok(result) => result,
@@ -782,13 +780,14 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     // (`finalize` / `finalize_cancelled` both write them) and score
     // off that, so every exit path gets the same treatment.
     if let Some(agent_id) = agent_id.as_deref() {
-        let executed_calls: Vec<serde_json::Value> = chat_messages::get(db.conn(), &assistant_message_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|m| m.tool_calls)
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default();
+        let executed_calls: Vec<serde_json::Value> =
+            chat_messages::get(db.conn(), &assistant_message_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|m| m.tool_calls)
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default();
         if !executed_calls.is_empty() {
             crate::drift_hook::record_after_turn(
                 &db,
@@ -912,7 +911,11 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         if r.names().is_empty() {
             None
         } else {
-            Some(tool_protocol_prompt(r, provider_kind, model_has_native_tools))
+            Some(tool_protocol_prompt(
+                r,
+                provider_kind,
+                model_has_native_tools,
+            ))
         }
     });
     // Skill index for this agent (slug + 1-line description). The full

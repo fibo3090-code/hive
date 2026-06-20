@@ -133,11 +133,11 @@ pub async fn update_to_final<C: ConnectionTrait>(
     memo: Option<&str>,
 ) -> Result<Option<Model>, DbErr> {
     let res = Entity::update_many()
-        .col_expr(Column::Kind, sea_orm::sea_query::Expr::value(kind.to_owned()))
         .col_expr(
-            Column::TokensIn,
-            sea_orm::sea_query::Expr::value(tokens_in),
+            Column::Kind,
+            sea_orm::sea_query::Expr::value(kind.to_owned()),
         )
+        .col_expr(Column::TokensIn, sea_orm::sea_query::Expr::value(tokens_in))
         .col_expr(
             Column::TokensOut,
             sea_orm::sea_query::Expr::value(tokens_out),

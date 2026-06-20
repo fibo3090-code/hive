@@ -97,7 +97,11 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default("dependency"),
                     )
-                    .col(ColumnDef::new(SprintDependencies::CreatedAt).string().not_null())
+                    .col(
+                        ColumnDef::new(SprintDependencies::CreatedAt)
+                            .string()
+                            .not_null(),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .from(SprintDependencies::Table, SprintDependencies::ProjectId)
@@ -162,7 +166,11 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default("dependency"),
                     )
-                    .col(ColumnDef::new(TaskDependencies::CreatedAt).string().not_null())
+                    .col(
+                        ColumnDef::new(TaskDependencies::CreatedAt)
+                            .string()
+                            .not_null(),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .from(TaskDependencies::Table, TaskDependencies::ProjectId)

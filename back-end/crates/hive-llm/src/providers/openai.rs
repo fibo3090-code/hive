@@ -443,11 +443,7 @@ fn parse_event(msg: &crate::sse::SseMessage, state: &Mutex<StreamState>) -> Vec<
     // cache write below never ran for that chunk, emitting a `Complete`
     // with `finish_reason: None`. Now choices runs first (caches the
     // reason), and the usage block here reads the just-cached value.
-    if value
-        .get("usage")
-        .map(|u| u.is_object())
-        .unwrap_or(false)
-    {
+    if value.get("usage").map(|u| u.is_object()).unwrap_or(false) {
         let usage = value.get("usage").unwrap();
         let tokens_in = usage
             .get("prompt_tokens")

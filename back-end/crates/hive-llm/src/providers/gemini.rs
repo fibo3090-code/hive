@@ -229,7 +229,12 @@ impl LlmProvider for GeminiProvider {
             "{}/v1beta/models",
             self.config.base_url.trim_end_matches('/'),
         );
-        let response = self.http.get(url).header("x-goog-api-key", key).send().await?;
+        let response = self
+            .http
+            .get(url)
+            .header("x-goog-api-key", key)
+            .send()
+            .await?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
@@ -462,7 +467,10 @@ mod tests {
 
         let body = request_body(&request, true);
         let gen = &body["generationConfig"];
-        assert!(gen.is_object(), "generationConfig must be an object, got {gen}");
+        assert!(
+            gen.is_object(),
+            "generationConfig must be an object, got {gen}"
+        );
         assert_eq!(gen["candidateCount"], serde_json::json!(1));
     }
 

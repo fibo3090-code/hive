@@ -663,7 +663,11 @@ mod tests {
         use crate::chat::{ChatMessage, ChatRequest};
         let req = ChatRequest::new(
             "qwen3",
-            vec![ChatMessage::tool_result("call_1", "web_search", "11 degrees")],
+            vec![ChatMessage::tool_result(
+                "call_1",
+                "web_search",
+                "11 degrees",
+            )],
         );
         let msgs = request_messages(&req);
         assert_eq!(msgs[0]["role"], "tool");

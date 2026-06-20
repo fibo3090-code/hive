@@ -45,11 +45,11 @@ use hive_sandbox::LocalFsSandbox;
 use hive_search::providers::{
     duckduckgo::DuckDuckGoProvider, searxng::SearxNgProvider, tavily::TavilyProvider,
 };
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use hive_tools::{
     default_names as default_tool_names, register_defaults, register_web_search, ToolContext,
     ToolRegistry,
 };
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
@@ -2485,7 +2485,8 @@ async fn pause_agent(
         .pause(&agent_id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let updated = agents::set_status(database.conn(), &agent.project_id, &agent_id, "paused").await?;
+    let updated =
+        agents::set_status(database.conn(), &agent.project_id, &agent_id, "paused").await?;
     // Z8: lifecycle endpoints used to skip audit; only `set_agent_status`
     // wrote a row. Now every pause/resume/terminate is auditable.
     audit::append(
@@ -2521,7 +2522,8 @@ async fn resume_agent(
         .resume(&agent_id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let updated = agents::set_status(database.conn(), &agent.project_id, &agent_id, "working").await?;
+    let updated =
+        agents::set_status(database.conn(), &agent.project_id, &agent_id, "working").await?;
     audit::append(
         database.conn(),
         "local_operator",
@@ -2562,7 +2564,8 @@ async fn terminate_agent(
         .terminate(&agent_id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let updated = agents::set_status(database.conn(), &agent.project_id, &agent_id, "deprecated").await?;
+    let updated =
+        agents::set_status(database.conn(), &agent.project_id, &agent_id, "deprecated").await?;
     audit::append(
         database.conn(),
         "local_operator",
@@ -3989,7 +3992,9 @@ async fn post_project_genesis_preview(
                             .trim_end_matches("```")
                             .trim();
                         if let Ok(json) = serde_json::from_str::<Value>(cleaned_text) {
-                            if let Some(plan) = plan_graph_from_value(json, source_text, agent_count) {
+                            if let Some(plan) =
+                                plan_graph_from_value(json, source_text, agent_count)
+                            {
                                 return Ok(Json(serde_json::to_value(plan).unwrap_or(Value::Null)));
                             }
                         }
@@ -4026,7 +4031,11 @@ async fn post_project_genesis_preview(
     Ok(Json(serde_json::to_value(plan).unwrap_or(Value::Null)))
 }
 
-fn plan_graph_from_value(value: Value, _source_text: &str, agent_count: usize) -> Option<PlanGraphPayload> {
+fn plan_graph_from_value(
+    value: Value,
+    _source_text: &str,
+    agent_count: usize,
+) -> Option<PlanGraphPayload> {
     if value.get("sprintNodes").is_some() || value.get("sprint_nodes").is_some() {
         let mut plan: PlanGraphPayload = serde_json::from_value(value).ok()?;
         if plan.agents.is_empty() {
@@ -4124,7 +4133,14 @@ fn plan_graph_from_phases(
             id: sprint_id.clone(),
             title: phase.name.clone(),
             summary: None,
-            status: Some(if sprint_index == 0 { "active" } else { "planned" }.to_owned()),
+            status: Some(
+                if sprint_index == 0 {
+                    "active"
+                } else {
+                    "planned"
+                }
+                .to_owned(),
+            ),
             level: sprint_index as i32,
             order: 0,
             points: phase.tasks.len() as i32,
@@ -4210,7 +4226,8 @@ async fn get_project_plan_graph(
     let sprint_edges = sprint_dependencies::list_by_project(database.conn(), &project_id).await?;
     let task_edges = task_dependencies::list_by_project(database.conn(), &project_id).await?;
     let agents_rows = agents::list_by_project(database.conn(), &project_id).await?;
-    let assignments = agent_task_assignments::list_for_project_via_tasks(database.conn(), &project_id).await?;
+    let assignments =
+        agent_task_assignments::list_for_project_via_tasks(database.conn(), &project_id).await?;
 
     Ok(Json(json!({
         "agents": agents_rows,
@@ -4266,7 +4283,9 @@ async fn put_project_plan_graph(
         json!({ "projectId": project_id, "planGraph": true }),
     )
     .await;
-    Ok(Json(json!({ "sprintIds": sprint_ids, "taskIds": task_ids })))
+    Ok(Json(
+        json!({ "sprintIds": sprint_ids, "taskIds": task_ids }),
+    ))
 }
 
 /// `POST /v1/projects/:project_id/launch` — run the real launch sequence for a
@@ -4880,7 +4899,10 @@ fn validate_plan_graph(plan: &PlanGraphPayload) -> Result<(), String> {
     }
     for task in &plan.task_nodes {
         if !sprint_ids.contains(task.sprint_id.as_str()) {
-            return Err(format!("task {} references missing mini-sprint {}", task.id, task.sprint_id));
+            return Err(format!(
+                "task {} references missing mini-sprint {}",
+                task.id, task.sprint_id
+            ));
         }
     }
     validate_edges_acyclic("mini-sprint", &sprint_ids, &plan.sprint_edges)?;
@@ -4898,9 +4920,15 @@ fn validate_edges_acyclic(
     let mut outgoing: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     for edge in edges {
         if !ids.contains(edge.from.as_str()) || !ids.contains(edge.to.as_str()) {
-            return Err(format!("{label} edge {} references a missing node", edge.id));
+            return Err(format!(
+                "{label} edge {} references a missing node",
+                edge.id
+            ));
         }
-        outgoing.entry(edge.from.as_str()).or_default().push(edge.to.as_str());
+        outgoing
+            .entry(edge.from.as_str())
+            .or_default()
+            .push(edge.to.as_str());
         *incoming.entry(edge.to.as_str()).or_default() += 1;
     }
     let mut queue = incoming
@@ -5034,7 +5062,8 @@ async fn persist_plan_graph(
         role_to_agent.insert(role.to_lowercase(), created);
     }
 
-    let mut sprint_id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut sprint_id_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let mut sprint_ids = Vec::new();
     for (index, node) in plan.sprint_nodes.iter().enumerate() {
@@ -5043,7 +5072,13 @@ async fn persist_plan_graph(
             sprints::CreateSprint {
                 project_id: project_id.to_owned(),
                 name: node.title.trim().to_owned(),
-                status: node.status.clone().unwrap_or_else(|| if node.level == 0 { "active".into() } else { "planned".into() }),
+                status: node.status.clone().unwrap_or_else(|| {
+                    if node.level == 0 {
+                        "active".into()
+                    } else {
+                        "planned".into()
+                    }
+                }),
                 start_date: today.clone(),
                 end_date: today.clone(),
                 velocity: None,
@@ -5058,7 +5093,8 @@ async fn persist_plan_graph(
         sprint_ids.push(sprint.id);
     }
 
-    let mut task_id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut task_id_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut task_ids = Vec::new();
     for node in &plan.task_nodes {
         let agent_id = node
@@ -5116,8 +5152,12 @@ async fn persist_plan_graph(
     }
 
     for edge in &plan.sprint_edges {
-        let Some(from) = sprint_id_map.get(&edge.from).cloned() else { continue };
-        let Some(to) = sprint_id_map.get(&edge.to).cloned() else { continue };
+        let Some(from) = sprint_id_map.get(&edge.from).cloned() else {
+            continue;
+        };
+        let Some(to) = sprint_id_map.get(&edge.to).cloned() else {
+            continue;
+        };
         sprint_dependencies::create(
             &txn,
             sprint_dependencies::CreateSprintDependency {
@@ -5131,8 +5171,12 @@ async fn persist_plan_graph(
     }
 
     for edge in &plan.task_edges {
-        let Some(from) = task_id_map.get(&edge.from).cloned() else { continue };
-        let Some(to) = task_id_map.get(&edge.to).cloned() else { continue };
+        let Some(from) = task_id_map.get(&edge.from).cloned() else {
+            continue;
+        };
+        let Some(to) = task_id_map.get(&edge.to).cloned() else {
+            continue;
+        };
         task_dependencies::create(
             &txn,
             task_dependencies::CreateTaskDependency {
@@ -6145,10 +6189,9 @@ async fn build_provider_config(
                 .map_err(|e| AppError::Internal(format!("decrypt key: {e}")))?;
             // ZZ66: avoid leaking the decrypted plaintext through
             // `FromUtf8Error::Display`.
-            Some(
-                String::from_utf8(bytes)
-                    .map_err(|_| AppError::Internal("llm provider api key is not valid utf-8".into()))?,
-            )
+            Some(String::from_utf8(bytes).map_err(|_| {
+                AppError::Internal("llm provider api key is not valid utf-8".into())
+            })?)
         }
         None => None,
     };
@@ -8445,9 +8488,7 @@ async fn approve_spawn_request(
     // `awaiting-approval`, so exactly one approval call wins.
     let before = agent_spawn_requests::get(database.conn(), &spawn_request_id)
         .await?
-        .ok_or_else(|| {
-            AppError::NotFound(format!("spawn request {spawn_request_id} not found"))
-        })?;
+        .ok_or_else(|| AppError::NotFound(format!("spawn request {spawn_request_id} not found")))?;
     let row = match agent_spawn_requests::transition_status(
         database.conn(),
         &spawn_request_id,
