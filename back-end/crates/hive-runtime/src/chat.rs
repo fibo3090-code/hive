@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use futures_util::StreamExt;
 use hive_db::{
-    repos::{chat_messages, chat_threads, cost_events, projects},
+    repos::{agents, chat_messages, chat_threads, cost_events, projects},
     Db,
 };
 use hive_llm::{
@@ -609,6 +609,28 @@ async fn reserve_budget_atomic(
 /// `agents`.
 const DEFAULT_TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
+/// Agent statuses that forbid running a turn. The DB `agents.status`
+/// column is the **single source of truth** for "may this agent run a
+/// turn right now?" — the executor's in-process `Paused` state only
+/// gates the inbox/scheduler path, so the direct chat HTTP path (which
+/// spawns `run_turn` straight from a handler, bypassing the executor
+/// task-loop) must consult this itself or a drift-/operator-paused agent
+/// keeps answering chat. `deprecated` is included for the same reason:
+/// a retired agent shouldn't accept new turns.
+const NON_RUNNABLE_AGENT_STATUSES: [&str; 2] = ["paused", "deprecated"];
+
+/// True when the agent's persisted status forbids running a turn. Returns
+/// `Ok(false)` when the agent row is missing (the caller's `agent_id`
+/// might be stale; refusing here would be more surprising than letting
+/// the turn proceed and fail downstream) or on a clean `Running`-class
+/// status. Errors only on a real DB failure.
+async fn agent_turn_blocked(db: &Db, agent_id: &str) -> Result<bool, sea_orm::DbErr> {
+    let Some(agent) = agents::get(db.conn(), agent_id).await? else {
+        return Ok(false);
+    };
+    Ok(NON_RUNNABLE_AGENT_STATUSES.contains(&agent.status.as_str()))
+}
+
 /// Load thread history, call the LLM, stream tokens to the bus, persist.
 ///
 /// Wraps the inner work in a wall-clock timeout. On timeout we flip the
@@ -625,6 +647,46 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     let project_id = params.project_id.clone();
     let agent_id = params.agent_id.clone();
     let executors = params.executors.clone();
+
+    // Pause gate (A.10 fix). The direct chat HTTP path spawns this turn
+    // straight from the handler, never going through the executor
+    // task-loop that parks on `Paused`. Without this check a drift- or
+    // operator-paused agent keeps answering chat: the DB row + UI badge
+    // say "paused" while turns still run. The DB `agents.status` column
+    // is the single source of truth for runnability — consult it here so
+    // every caller of `run_turn` (interactive chat, `/process`,
+    // ApiTurnDriver) is gated uniformly. Best-effort: a DB read failure
+    // falls through and lets the turn proceed rather than wedging chat.
+    if let Some(agent_id) = agent_id.as_deref() {
+        match agent_turn_blocked(&db, agent_id).await {
+            Ok(true) => {
+                let _ =
+                    chat_messages::set_status(db.conn(), &assistant_message_id, "refused").await;
+                bus.emit(
+                    format!("chat.{thread_id}.error"),
+                    serde_json::json!({
+                        "threadId": thread_id,
+                        "messageId": assistant_message_id,
+                        "error": "agent is paused — resume it to continue this conversation",
+                        "reason": "agent_paused",
+                        "agentId": agent_id,
+                    }),
+                );
+                tracing::info!(
+                    %thread_id, agent_id,
+                    "chat turn refused: agent is paused/deprecated"
+                );
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(
+                    %thread_id, agent_id, error = %err,
+                    "pause gate DB read failed — allowing turn (best-effort)"
+                );
+            }
+        }
+    }
 
     // ZZ2: bridge the executor's `CancellationToken` to the chat
     // turn's `cancel` flag for the lifetime of this turn. The token
@@ -1516,6 +1578,96 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- agent pause gate (drift / operator pause must stop chat turns) ---
+
+    async fn seed_agent_with_status(status: &str) -> (Db, String) {
+        use hive_db::repos::{agents, projects};
+        let db = Db::connect("sqlite::memory:", true)
+            .await
+            .expect("connect + migrate");
+        let project = projects::create(
+            db.conn(),
+            projects::CreateProject {
+                name: "gate-test".into(),
+                description: None,
+                sovereignty_tier: "local".into(),
+                budget_total_cents: 0,
+                status: "active".into(),
+            },
+        )
+        .await
+        .expect("create project");
+        let agent = agents::create(
+            db.conn(),
+            agents::CreateAgent {
+                project_id: project.id.clone(),
+                slug: "worker".into(),
+                name: "Worker".into(),
+                role: "worker".into(),
+                model: "claude-haiku-4-5-20251001".into(),
+                status: status.into(),
+                parent_agent_id: None,
+                spawned_by_message_id: None,
+                enabled_tools: None,
+                system_prompt: None,
+                model_provider_id: None,
+                model_id: None,
+            },
+        )
+        .await
+        .expect("create agent");
+        (db, agent.id)
+    }
+
+    #[tokio::test]
+    async fn paused_agent_turn_is_blocked() {
+        let (db, agent_id) = seed_agent_with_status("paused").await;
+        assert!(
+            agent_turn_blocked(&db, &agent_id).await.expect("query"),
+            "a paused agent must be blocked from running a chat turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn deprecated_agent_turn_is_blocked() {
+        let (db, agent_id) = seed_agent_with_status("deprecated").await;
+        assert!(
+            agent_turn_blocked(&db, &agent_id).await.expect("query"),
+            "a deprecated agent must not accept new chat turns"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_agent_turn_is_allowed() {
+        let (db, agent_id) = seed_agent_with_status("idle").await;
+        assert!(
+            !agent_turn_blocked(&db, &agent_id).await.expect("query"),
+            "an idle agent must be free to run a turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn working_agent_turn_is_allowed() {
+        let (db, agent_id) = seed_agent_with_status("working").await;
+        assert!(
+            !agent_turn_blocked(&db, &agent_id).await.expect("query"),
+            "a working agent must be free to run a turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_agent_does_not_block() {
+        let (db, _agent_id) = seed_agent_with_status("idle").await;
+        // A stale/unknown agent_id should not hard-block the turn — the
+        // gate is for *known-paused* agents, not a general existence check.
+        assert!(
+            !agent_turn_blocked(&db, "agent-does-not-exist")
+                .await
+                .expect("query"),
+            "an unknown agent_id must not block (avoids surprising refusals)"
+        );
+    }
 
     #[test]
     fn schema_type_check() {
