@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     net::SocketAddr,
     path::{Path as StdPath, PathBuf},
@@ -93,10 +93,309 @@ struct AppState {
     sandbox_locks: Arc<hive_tools::SandboxLockRegistry>,
     /// B4: outbound channel for agent-initiated `request_capability` calls.
     /// The agent tool persists a spawn_request row + pushes its id here;
-    /// a dedicated consumer task in `serve` owns the LLM/search deps,
-    /// builds a `PipelineDeps`, and runs the synthesis pipeline. Keeps
+    /// WorkflowService owns the backend-specific submission path. Keeps
     /// hive-runtime free of hive-api dependencies (it would be a cycle).
+    workflows: Arc<WorkflowService>,
+}
+
+#[async_trait::async_trait]
+trait WorkflowBackend: Send + Sync {
+    async fn submit_spawn_pipeline(
+        &self,
+        state: AppState,
+        spawn_request_id: String,
+        in_flight: Arc<Mutex<HashSet<String>>>,
+    );
+}
+
+struct WorkflowService {
     spawn_pipeline_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    backend: Arc<dyn WorkflowBackend>,
+    in_flight: Arc<Mutex<HashSet<String>>>,
+}
+
+impl WorkflowService {
+    fn from_env(
+        http: reqwest::Client,
+    ) -> Result<(Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<String>), AppError> {
+        let backend = WorkflowBackendKind::from_env()?;
+        let (spawn_pipeline_tx, spawn_pipeline_rx) =
+            tokio::sync::mpsc::unbounded_channel::<String>();
+        let backend: Arc<dyn WorkflowBackend> = match backend {
+            WorkflowBackendKind::Local => Arc::new(LocalWorkflowBackend),
+            WorkflowBackendKind::Restate { endpoint } => {
+                Arc::new(RestateWorkflowBackend { endpoint, http })
+            }
+        };
+
+        Ok((
+            Arc::new(Self {
+                spawn_pipeline_tx,
+                backend,
+                in_flight: Arc::new(Mutex::new(HashSet::new())),
+            }),
+            spawn_pipeline_rx,
+        ))
+    }
+
+    fn spawn_pipeline_sender(&self) -> tokio::sync::mpsc::UnboundedSender<String> {
+        self.spawn_pipeline_tx.clone()
+    }
+
+    fn submit_spawn_pipeline(&self, spawn_request_id: impl Into<String>) -> Result<(), AppError> {
+        self.spawn_pipeline_tx
+            .send(spawn_request_id.into())
+            .map_err(|_| AppError::Internal("workflow service is not accepting work".into()))
+    }
+
+    fn start(
+        self: Arc<Self>,
+        state: AppState,
+        mut spawn_pipeline_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        tokio::spawn(async move {
+            while let Some(spawn_request_id) = spawn_pipeline_rx.recv().await {
+                if !self.try_claim(&spawn_request_id).await {
+                    tracing::debug!(
+                        spawn_request_id,
+                        "workflow service: skipping duplicate in-flight spawn pipeline"
+                    );
+                    continue;
+                }
+
+                self.backend
+                    .submit_spawn_pipeline(state.clone(), spawn_request_id, self.in_flight.clone())
+                    .await;
+            }
+        });
+    }
+
+    async fn try_claim(&self, spawn_request_id: &str) -> bool {
+        self.in_flight
+            .lock()
+            .await
+            .insert(spawn_request_id.to_owned())
+    }
+}
+
+#[derive(Debug)]
+enum WorkflowBackendKind {
+    Local,
+    Restate { endpoint: String },
+}
+
+impl WorkflowBackendKind {
+    fn from_env() -> Result<Self, AppError> {
+        Self::from_values(
+            std::env::var("HIVE_WORKFLOW_BACKEND").ok().as_deref(),
+            std::env::var("HIVE_RESTATE_ENDPOINT").ok().as_deref(),
+        )
+    }
+
+    fn from_values(
+        backend: Option<&str>,
+        restate_endpoint: Option<&str>,
+    ) -> Result<Self, AppError> {
+        let backend = backend.unwrap_or("local").trim().to_ascii_lowercase();
+
+        match backend.as_str() {
+            "" | "local" => Ok(Self::Local),
+            "restate" => {
+                let endpoint = restate_endpoint
+                    .ok_or_else(|| {
+                        AppError::Internal(
+                            "HIVE_RESTATE_ENDPOINT is required when HIVE_WORKFLOW_BACKEND=restate"
+                                .into(),
+                        )
+                    })?
+                    .trim()
+                    .trim_end_matches('/')
+                    .to_owned();
+                if endpoint.is_empty() {
+                    return Err(AppError::Internal(
+                        "HIVE_RESTATE_ENDPOINT must not be empty when HIVE_WORKFLOW_BACKEND=restate"
+                            .into(),
+                    ));
+                }
+                Ok(Self::Restate { endpoint })
+            }
+            other => Err(AppError::Internal(format!(
+                "unsupported HIVE_WORKFLOW_BACKEND '{other}' (expected 'local' or 'restate')"
+            ))),
+        }
+    }
+}
+
+struct LocalWorkflowBackend;
+
+#[async_trait::async_trait]
+impl WorkflowBackend for LocalWorkflowBackend {
+    async fn submit_spawn_pipeline(
+        &self,
+        state: AppState,
+        spawn_request_id: String,
+        in_flight: Arc<Mutex<HashSet<String>>>,
+    ) {
+        let row = match agent_spawn_requests::get(db(&state).await.conn(), &spawn_request_id).await
+        {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                in_flight.lock().await.remove(&spawn_request_id);
+                tracing::warn!(spawn_request_id, "local workflow: row vanished");
+                return;
+            }
+            Err(err) => {
+                in_flight.lock().await.remove(&spawn_request_id);
+                tracing::warn!(
+                    spawn_request_id, error = %err,
+                    "local workflow: lookup failed"
+                );
+                return;
+            }
+        };
+
+        let deps = match build_pipeline_deps(&state, &row.project_id).await {
+            Ok(d) => d,
+            Err(err) => {
+                in_flight.lock().await.remove(&spawn_request_id);
+                tracing::warn!(
+                    spawn_request_id, error = %err,
+                    "local workflow: build_pipeline_deps failed"
+                );
+                return;
+            }
+        };
+
+        let bus = EventBus::new(state.events.clone());
+        let conn = db(&state).await;
+        let id = spawn_request_id.clone();
+        tokio::spawn(async move {
+            let res = run_pipeline(conn.conn(), &bus, deps, &id).await;
+            in_flight.lock().await.remove(&id);
+            if let Err(e) = res {
+                tracing::error!(
+                    spawn_request_id = id, error = %e,
+                    "local workflow: spawn pipeline failed"
+                );
+            }
+        });
+    }
+}
+
+struct RestateWorkflowBackend {
+    endpoint: String,
+    http: reqwest::Client,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RestateSpawnPipelineRequest<'a> {
+    spawn_request_id: &'a str,
+}
+
+#[async_trait::async_trait]
+impl WorkflowBackend for RestateWorkflowBackend {
+    async fn submit_spawn_pipeline(
+        &self,
+        state: AppState,
+        spawn_request_id: String,
+        in_flight: Arc<Mutex<HashSet<String>>>,
+    ) {
+        let url = restate_spawn_pipeline_url(&self.endpoint, &spawn_request_id);
+        let http = self.http.clone();
+        tokio::spawn(async move {
+            let result = http
+                .post(url)
+                .json(&RestateSpawnPipelineRequest {
+                    spawn_request_id: &spawn_request_id,
+                })
+                .send()
+                .await;
+
+            match result {
+                Ok(response) if response.status().is_success() => {
+                    tracing::info!(
+                        spawn_request_id,
+                        status = %response.status(),
+                        "restate workflow: submitted spawn pipeline"
+                    );
+                }
+                Ok(response) if response.status() == reqwest::StatusCode::CONFLICT => {
+                    tracing::info!(
+                        spawn_request_id,
+                        status = %response.status(),
+                        "restate workflow: spawn pipeline was already accepted"
+                    );
+                }
+                Ok(response) => {
+                    let message = format!(
+                        "restate workflow submission failed with status {}",
+                        response.status()
+                    );
+                    tracing::error!(
+                        spawn_request_id,
+                        status = %response.status(),
+                        "restate workflow: submission failed"
+                    );
+                    mark_spawn_pipeline_submission_failed(&state, &spawn_request_id, message).await;
+                }
+                Err(err) => {
+                    let message = format!("restate workflow submission failed: {err}");
+                    tracing::error!(
+                        spawn_request_id, error = %err,
+                        "restate workflow: submission failed"
+                    );
+                    mark_spawn_pipeline_submission_failed(&state, &spawn_request_id, message).await;
+                }
+            }
+
+            in_flight.lock().await.remove(&spawn_request_id);
+        });
+    }
+}
+
+fn restate_spawn_pipeline_url(endpoint: &str, spawn_request_id: &str) -> String {
+    format!(
+        "{}/restate/send/SpawnPipelineWorkflow/{}/run",
+        endpoint.trim_end_matches('/'),
+        spawn_request_id
+    )
+}
+
+async fn mark_spawn_pipeline_submission_failed(
+    state: &AppState,
+    spawn_request_id: &str,
+    error: String,
+) {
+    let database = db(state).await;
+    match agent_spawn_requests::update(
+        database.conn(),
+        spawn_request_id,
+        agent_spawn_requests::UpdateSpawnRequest {
+            status: Some("failed".to_owned()),
+            error: Some(error.clone()),
+            completed: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        Ok(row) => {
+            emit(
+                state,
+                "agent_spawn_request.failed",
+                json!({ "id": row.id, "status": row.status, "error": error }),
+            )
+            .await;
+        }
+        Err(err) => {
+            tracing::error!(
+                spawn_request_id,
+                error = %err,
+                "restate workflow: failed to persist submission failure"
+            );
+        }
+    }
 }
 
 type ModelCache = Arc<RwLock<HashMap<String, (Instant, Vec<ModelInfo>)>>>;
@@ -224,6 +523,8 @@ impl std::fmt::Display for AppError {
         }
     }
 }
+
+impl std::error::Error for AppError {}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -497,12 +798,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     // `loop_detected` notifications the LoopDetectionModal renders.
     hive_runtime::loop_detector::spawn(runtime.db.clone(), EventBus::new(events.clone()));
 
-    // B4: channel for agent `request_capability` calls. Unbounded so a
-    // bursty agent can't deadlock waiting for backpressure; in practice
-    // the consumer drains immediately and synthesis itself is slow
-    // enough (LLM round-trips) that the queue stays tiny.
-    let (spawn_pipeline_tx, mut spawn_pipeline_rx) =
-        tokio::sync::mpsc::unbounded_channel::<String>();
+    let (workflows, spawn_pipeline_rx) = WorkflowService::from_env(http.clone())?;
 
     let state = AppState {
         inner: Arc::new(RwLock::new(runtime)),
@@ -514,87 +810,13 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         chat_jobs: ChatJobRegistry::default(),
         executors: executors.clone(),
         sandbox_locks: hive_tools::SandboxLockRegistry::new(),
-        spawn_pipeline_tx,
+        workflows,
     };
 
-    // B4: drain the spawn-pipeline channel — every `request_capability`
-    // call from an agent (and every `approve_spawn_request` from the
-    // operator) lands here. Build deps fresh per request so settings
-    // changes (provider keys, search URL) are picked up live.
-    //
-    // B4b: dedup in-flight ids. Two sends with the same
-    // `spawn_request_id` (duplicate native tool_call, retry after a
-    // timeout, race between agent-tool and approve handler) used to
-    // spawn two concurrent `run_pipeline` tasks on the same row,
-    // double-billing the LLM and risking duplicate `custom_mcp_servers`
-    // rows. The Mutex<HashSet> below holds every id whose pipeline is
-    // currently running; second arrivals skip silently.
-    {
-        use std::collections::HashSet;
-        let pipeline_state = state.clone();
-        let in_flight: Arc<tokio::sync::Mutex<HashSet<String>>> =
-            Arc::new(tokio::sync::Mutex::new(HashSet::new()));
-        tokio::spawn(async move {
-            while let Some(spawn_request_id) = spawn_pipeline_rx.recv().await {
-                {
-                    let mut guard = in_flight.lock().await;
-                    if !guard.insert(spawn_request_id.clone()) {
-                        tracing::debug!(
-                            spawn_request_id,
-                            "agent-initiated pipeline: skipping duplicate in-flight id (B4b)"
-                        );
-                        continue;
-                    }
-                }
-                let row = match agent_spawn_requests::get(
-                    db(&pipeline_state).await.conn(),
-                    &spawn_request_id,
-                )
-                .await
-                {
-                    Ok(Some(r)) => r,
-                    Ok(None) => {
-                        in_flight.lock().await.remove(&spawn_request_id);
-                        tracing::warn!(spawn_request_id, "agent-initiated pipeline: row vanished");
-                        continue;
-                    }
-                    Err(err) => {
-                        in_flight.lock().await.remove(&spawn_request_id);
-                        tracing::warn!(
-                            spawn_request_id, error = %err,
-                            "agent-initiated pipeline: lookup failed"
-                        );
-                        continue;
-                    }
-                };
-                let deps = match build_pipeline_deps(&pipeline_state, &row.project_id).await {
-                    Ok(d) => d,
-                    Err(err) => {
-                        in_flight.lock().await.remove(&spawn_request_id);
-                        tracing::warn!(
-                            spawn_request_id, error = %err,
-                            "agent-initiated pipeline: build_pipeline_deps failed"
-                        );
-                        continue;
-                    }
-                };
-                let bus = EventBus::new(pipeline_state.events.clone());
-                let conn = db(&pipeline_state).await;
-                let id = spawn_request_id.clone();
-                let in_flight_for_task = in_flight.clone();
-                tokio::spawn(async move {
-                    let res = run_pipeline(conn.conn(), &bus, deps, &id).await;
-                    in_flight_for_task.lock().await.remove(&id);
-                    if let Err(e) = res {
-                        tracing::error!(
-                            spawn_request_id = id, error = %e,
-                            "agent-initiated pipeline: run failed"
-                        );
-                    }
-                });
-            }
-        });
-    }
+    state
+        .workflows
+        .clone()
+        .start(state.clone(), spawn_pipeline_rx);
 
     // W1-A2: audit_log retention purge. Reads `audit.retention_days` (default
     // 90; 0 = keep forever) from settings and deletes rows older than that,
@@ -1632,7 +1854,7 @@ async fn build_tooling(
         db(state).await.clone(),
         state.executors.clone(),
         EventBus::new(state.events.clone()),
-        Some(state.spawn_pipeline_tx.clone()),
+        Some(state.workflows.spawn_pipeline_sender()),
     );
     hive_runtime::register_db_tools(&mut registry, db(state).await.clone());
     hive_runtime::register_git_tools(&mut registry, db(state).await.clone());
@@ -2909,7 +3131,7 @@ async fn list_tool_manifests(State(state): State<AppState>) -> Result<Json<Value
         database.clone(),
         state.executors.clone(),
         EventBus::new(state.events.clone()),
-        Some(state.spawn_pipeline_tx.clone()),
+        Some(state.workflows.spawn_pipeline_sender()),
     );
     hive_runtime::register_db_tools(&mut registry, database.clone());
     hive_runtime::register_git_tools(&mut registry, database.clone());
@@ -8461,17 +8683,7 @@ async fn create_spawn_request(
     )
     .await;
 
-    // Launch the pipeline in the background.
-    let deps = build_pipeline_deps(&state, &project_id).await?;
-    let bus = EventBus::new(state.events.clone());
-    let db_clone = database.clone();
-    let id = row.id.clone();
-
-    tokio::spawn(async move {
-        if let Err(e) = run_pipeline(db_clone.conn(), &bus, deps, &id).await {
-            tracing::error!("spawn pipeline failed: {}", e);
-        }
-    });
+    state.workflows.submit_spawn_pipeline(row.id.clone())?;
 
     Ok(Json(json!(row)))
 }
@@ -8522,7 +8734,7 @@ async fn approve_spawn_request(
     // handler bypassed the channel and `tokio::spawn`-ed `run_pipeline`
     // directly, so a duplicate from the channel could race with this
     // one.
-    let _ = state.spawn_pipeline_tx.send(spawn_request_id);
+    state.workflows.submit_spawn_pipeline(spawn_request_id)?;
 
     Ok(Json(json!({ "ok": true })))
 }
@@ -8614,4 +8826,89 @@ async fn delete_agent_skill_binding(
     let database = db(&state).await;
     let removed = agent_skill_bindings::unbind(database.conn(), &agent_id, &skill_id).await?;
     Ok(Json(json!({ "ok": true, "removed": removed })))
+}
+
+#[cfg(test)]
+mod workflow_tests {
+    use super::*;
+
+    #[test]
+    fn workflow_backend_defaults_to_local() {
+        assert!(matches!(
+            WorkflowBackendKind::from_values(None, None).unwrap(),
+            WorkflowBackendKind::Local
+        ));
+    }
+
+    #[test]
+    fn workflow_backend_accepts_explicit_local() {
+        assert!(matches!(
+            WorkflowBackendKind::from_values(Some(" local "), None).unwrap(),
+            WorkflowBackendKind::Local
+        ));
+    }
+
+    #[test]
+    fn workflow_backend_requires_restate_endpoint() {
+        let err = WorkflowBackendKind::from_values(Some("restate"), None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("HIVE_RESTATE_ENDPOINT is required"));
+    }
+
+    #[test]
+    fn workflow_backend_normalizes_restate_endpoint() {
+        match WorkflowBackendKind::from_values(Some("restate"), Some(" http://localhost:8080/ "))
+            .unwrap()
+        {
+            WorkflowBackendKind::Restate { endpoint } => {
+                assert_eq!(endpoint, "http://localhost:8080")
+            }
+            WorkflowBackendKind::Local => panic!("expected restate backend"),
+        }
+    }
+
+    #[test]
+    fn workflow_backend_rejects_unknown_backend() {
+        let err = WorkflowBackendKind::from_values(Some("bespoke"), None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unsupported HIVE_WORKFLOW_BACKEND"));
+    }
+
+    #[test]
+    fn restate_spawn_pipeline_url_uses_current_http_ingress_shape() {
+        assert_eq!(
+            restate_spawn_pipeline_url("http://localhost:8080/", "spawn-1"),
+            "http://localhost:8080/restate/send/SpawnPipelineWorkflow/spawn-1/run"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_service_deduplicates_in_flight_ids() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let service = WorkflowService {
+            spawn_pipeline_tx: tx,
+            backend: Arc::new(LocalWorkflowBackend),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
+        };
+
+        assert!(service.try_claim("spawn-1").await);
+        assert!(!service.try_claim("spawn-1").await);
+        assert!(service.try_claim("spawn-2").await);
+    }
+
+    #[tokio::test]
+    async fn workflow_service_submit_enqueues_spawn_request() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let service = WorkflowService {
+            spawn_pipeline_tx: tx,
+            backend: Arc::new(LocalWorkflowBackend),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
+        };
+
+        service.submit_spawn_pipeline("spawn-1").unwrap();
+
+        assert_eq!(rx.recv().await.as_deref(), Some("spawn-1"));
+    }
 }

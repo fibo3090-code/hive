@@ -177,3 +177,14 @@ publish-to-public-registry, cross-org metrics/leaderboard aggregation, hosted
 notification delivery. These stay visible-but-disabled with a "Requires Hive
 central server" tooltip until that server exists; don't invest in the
 integration hooks yet.
+
+## Commercial / enterprise strategy notes
+
+Business-model and enterprise-collaboration decisions live outside this feature
+roadmap to avoid mixing product strategy with build sequencing:
+
+- [`BUSINESS_MODEL.md`](BUSINESS_MODEL.md) — open-source monetization, paid/free
+  boundaries, and licensing posture.
+- [`ENTERPRISE_COLLABORATION.md`](ENTERPRISE_COLLABORATION.md) — evaluation of
+  multi-employee shared projects, agent operations, approvals, RBAC, and audit as
+  paid Team/Enterprise features.

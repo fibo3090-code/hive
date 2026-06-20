@@ -13,6 +13,9 @@ has **one job**; the table tells you which to open for which question.
 | **What's the security posture & known holes?** | [`SECURITY.md`](SECURITY.md) | security |
 | **What's tested, and how do I add tests?** | [`TESTING.md`](TESTING.md) | testing strategy |
 | **Tips for running the chat runner / small models?** | [`OPERATOR_NOTES.md`](OPERATOR_NOTES.md) | operations |
+| **How are durable workflow backends configured?** | [`WORKFLOW_BACKENDS.md`](WORKFLOW_BACKENDS.md) | operations |
+| **How can HIVE stay open-source and make money?** | [`BUSINESS_MODEL.md`](BUSINESS_MODEL.md) | strategy |
+| **Should shared enterprise projects be paid features?** | [`ENTERPRISE_COLLABORATION.md`](ENTERPRISE_COLLABORATION.md) | strategy |
 | **Backend crate map & conventions** | [`../back-end/README.md`](../back-end/README.md) | dev |
 | **Frontend app structure & conventions** | [`../front-end/README.md`](../front-end/README.md) | dev |
 | **How do I contribute?** | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | process |
@@ -45,6 +48,12 @@ drifted apart. They are now unified in [`BACKLOG.md`](BACKLOG.md).
 - **`TESTING.md`** — how testing works here and the coverage-gap subset of the
   backlog.
 - **`OPERATOR_NOTES.md`** — runtime/operations tips (chat runner, small models).
+- **`WORKFLOW_BACKENDS.md`** — local vs. Restate workflow backend selection,
+  environment variables, and rollback.
+- **`BUSINESS_MODEL.md`** — open-source monetization strategy, licensing posture,
+  paid/free boundaries, and early pricing sketch.
+- **`ENTERPRISE_COLLABORATION.md`** — product/business evaluation for
+  multi-employee shared projects, agent operations, approvals, RBAC, and audit.
 
 ## Archived / superseded
 
@@ -55,4 +64,4 @@ drifted apart. They are now unified in [`BACKLOG.md`](BACKLOG.md).
   `AUDIT_VERIFICATION.md`) are retained as the **evidence appendix** for
   `BACKLOG.md`, not as separate trackers.
 
-*Index last updated: 2026-06-16.*
+*Index last updated: 2026-06-20.*
