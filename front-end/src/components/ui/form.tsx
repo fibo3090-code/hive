@@ -37,12 +37,19 @@ const useFormField = () => {
   const itemContext = React.useContext(FormItemContext);
   const { getFieldState, formState } = useFormContext();
 
-  const fieldState = getFieldState(fieldContext.name, formState);
-
-  if (!fieldContext) {
+  // C402: both contexts default to `{}` (not null), so the old `!fieldContext`
+  // check never fired — and it ran *after* `getFieldState(fieldContext.name)`
+  // already read an undefined name. Outside <FormField>/<FormItem> that meant
+  // `getFieldState(undefined, …)` plus `${undefined}-form-item` ids — a real
+  // crash. Guard on the actual signals (`name`/`id`) BEFORE using them.
+  if (!fieldContext?.name) {
     throw new Error("useFormField should be used within <FormField>");
   }
+  if (!itemContext?.id) {
+    throw new Error("useFormField should be used within <FormItem>");
+  }
 
+  const fieldState = getFieldState(fieldContext.name, formState);
   const { id } = itemContext;
 
   return {
