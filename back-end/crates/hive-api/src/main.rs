@@ -1505,12 +1505,40 @@ async fn enabled_tools_for_turn(
         .unwrap_or_default())
 }
 
+/// Compute the tools an agent may actually use this turn.
+///
+/// The per-agent `enabled_tools` list **narrows** the operator's global
+/// allowlist — it can never re-enable a sandbox tool (`shell_exec`,
+/// `fs_write`, `web_fetch`, `git_push`, …) the operator disabled globally.
+/// That intersection is the kill-switch (C026/C074): a per-agent loadout must
+/// not be a privilege-escalation path around the operator's setting.
+///
+/// Coordination/authority tools (`spawn_agent`, `delegate_task`,
+/// `message_agent`, …) are the deliberate exception: they are role-gated (only
+/// the Coordinator's loadout carries them — see `coordinator_tools`) and are
+/// **not** part of the operator's tool-sandbox allowlist (`enabledTools`), so
+/// they pass through even when absent from `global_enabled`. Without this
+/// carve-out, a plain intersection would strip the Coordinator's ability to
+/// spawn or delegate and break multi-agent orchestration entirely.
 fn effective_tool_names(global_enabled: &[String], per_agent: &[String]) -> Vec<String> {
     if per_agent.is_empty() {
-        global_enabled.to_vec()
-    } else {
-        per_agent.to_vec()
+        return global_enabled.to_vec();
     }
+    per_agent
+        .iter()
+        .filter(|name| global_enabled.iter().any(|g| g == *name) || is_authority_tool(name))
+        .cloned()
+        .collect()
+}
+
+/// Coordination/authority tools are role-gated rather than governed by the
+/// operator's tool-sandbox allowlist, so they are exempt from the
+/// `effective_tool_names` intersection. They are exactly the runtime tools that
+/// are NOT in the safe-for-every-agent default set
+/// (`RUNTIME_TOOL_NAMES \ RUNTIME_DEFAULT_TOOL_NAMES`).
+fn is_authority_tool(name: &str) -> bool {
+    hive_runtime::RUNTIME_TOOL_NAMES.contains(&name)
+        && !hive_runtime::RUNTIME_DEFAULT_TOOL_NAMES.contains(&name)
 }
 
 async fn build_tooling(
@@ -7776,13 +7804,40 @@ mod prompt_tests {
     }
 
     #[test]
-    fn explicit_agent_tool_list_can_expose_coordination_tools() {
+    fn coordination_tools_pass_through_even_when_absent_from_global() {
+        // Authority tools (spawn_agent, message_agent, …) are role-gated, not
+        // part of the operator's tool-sandbox allowlist, so the Coordinator's
+        // loadout keeps them even though they're not in `global`. Without this
+        // carve-out the C026 intersection would break multi-agent orchestration.
         let global = vec!["fs_read".to_owned(), "fs_write".to_owned()];
         let coordinator = vec!["spawn_agent".to_owned(), "message_agent".to_owned()];
         let effective = effective_tool_names(&global, &coordinator);
 
-        assert_eq!(effective, coordinator);
         assert!(effective.contains(&"spawn_agent".to_owned()));
+        assert!(effective.contains(&"message_agent".to_owned()));
+    }
+
+    #[test]
+    fn per_agent_list_cannot_bypass_global_kill_switch() {
+        // C026/C074 regression: the operator globally disabled `shell_exec`
+        // (it's not in `global`). An agent carrying `shell_exec` in its
+        // per-agent loadout must NOT get it back — the per-agent list narrows,
+        // it never escalates. `fs_read` (in global) and `delegate_task`
+        // (authority) still come through.
+        let global = vec!["fs_read".to_owned(), "fs_write".to_owned()];
+        let rogue = vec![
+            "fs_read".to_owned(),
+            "shell_exec".to_owned(),
+            "delegate_task".to_owned(),
+        ];
+        let effective = effective_tool_names(&global, &rogue);
+
+        assert!(
+            !effective.contains(&"shell_exec".to_owned()),
+            "shell_exec disabled globally must not be re-enabled per-agent"
+        );
+        assert!(effective.contains(&"fs_read".to_owned()));
+        assert!(effective.contains(&"delegate_task".to_owned()));
     }
 
     #[test]
