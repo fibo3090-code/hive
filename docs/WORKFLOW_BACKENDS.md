@@ -92,12 +92,23 @@ browser-facing endpoint).
    `<HIVE_RESTATE_ENDPOINT>/restate/send/SpawnPipelineWorkflow/<id>/run`; Restate
    invokes the handler durably.
 
-> **Validation status (2026-06-20):** compile (default + `--features restate`),
-> `clippy -D warnings` (both), and wire-contract unit tests pass; the in-process
-> service listener was confirmed to start and serve h2c. The live Restate-server
-> discovery/registration round-trip (steps 2–5) is documented but was not run in
-> CI — validate it against a real `restate-server` before relying on it in
-> production.
+> **Validation status (2026-06-21): confirmed end-to-end.** Compile (default +
+> `--features restate`), `clippy -D warnings` (both), and wire-contract unit
+> tests pass. The live round-trip was validated against
+> `docker.restate.dev/restatedev/restate:latest`:
+> - **Discovery/registration** — `POST /deployments` registered the service;
+>   the Restate server reached the h2c endpoint on `:9080` and listed
+>   `SpawnPipelineWorkflow` (type `Workflow`) with handler `run`
+>   (`restate-sdk-rust/0.8.0`, protocol v5).
+> - **Invocation round-trip** — invoking
+>   `POST /SpawnPipelineWorkflow/<id>/run` routed through to the handler, which
+>   ran `execute_spawn_pipeline` and returned its terminal error
+>   (`spawn request <id> not found`) back through Restate — proving the full
+>   ingress → handler → pipeline-entry → error-propagation path.
+>
+> A *successful* pipeline run additionally requires a real spawn request and a
+> configured LLM provider; that part is exercised by the normal product flow,
+> not this wiring check.
 
 ## Rollback
 
