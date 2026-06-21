@@ -297,6 +297,21 @@ array-merge bug (dead code). **Status: OPEN.**
 Reverse-chronological. These landed on `main`; the newer C-audit does **not**
 re-flag them as broken (where it cites the same file it only flags a *test* gap).
 
+**Durable-execution migration (2026-06-21)** — extends the `WorkflowBackend`
+seam (built for the B4 spawn pipeline, PRs #26/#27) to a **second** job family,
+proving the abstraction generalizes:
+- Generalized `WorkflowService`/`WorkflowBackend` from a spawn-pipeline-specific
+  API to a typed `WorkflowJob` dispatcher (`SpawnPipeline` | `DriftRemediation`),
+  with namespaced dedup keys and a merged two-channel consumer loop.
+- **Drift auto-remediation** (W3-B5 ≥0.9 pause) now routes through the seam:
+  the drift hook submits the `drift_events` id instead of pausing inline, and
+  `execute_drift_remediation` performs the same two-layer pause (DB + executor)
+  exactly-once / crash-durably. Inline fallback preserved when no sender is
+  wired or the Restate submit fails (safety must not depend on Restate).
+- Feature-gated `DriftRemediationWorkflow` added alongside `SpawnPipelineWorkflow`
+  in `restate_service.rs`, served on the same endpoint. See
+  `docs/WORKFLOW_BACKENDS.md`.
+
 **PR-batch 2026-06-20 (PRs #13–#18, all merged to `main`)** — a triage +
 merge pass that cleared the open audit-fix branches:
 - **#15** — C026/C074 tool-allowlist kill-switch: `effective_tool_names`

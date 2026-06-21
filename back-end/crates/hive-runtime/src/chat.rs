@@ -55,6 +55,15 @@ pub struct RunTurn {
     /// don't drive agents through executors (test fixtures, the
     /// pre-runtime-init smoke test).
     pub executors: Option<Arc<crate::registry::ExecutorRegistry>>,
+    /// Outbound channel for durable drift auto-remediation. When an agent
+    /// drifts past the pause band, the drift hook submits the `drift_events`
+    /// row id here instead of pausing inline; hive-api owns the receiver and
+    /// runs the pause through the active `WorkflowBackend` (exactly-once,
+    /// crash-durable). `None` keeps the legacy inline best-effort pause — used
+    /// by test fixtures and any runtime embedding without the API consumer.
+    /// Mirrors the B4 spawn-pipeline decoupling: the runtime can't depend on
+    /// hive-api, so it ships an id through an mpsc rather than calling it.
+    pub drift_remediation_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     /// Mutable cancel flag — when set to true, the runner stops streaming and
     /// marks the message `cancelled`.
     pub cancel: Arc<Mutex<bool>>,
@@ -662,6 +671,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
     let project_id = params.project_id.clone();
     let agent_id = params.agent_id.clone();
     let executors = params.executors.clone();
+    let drift_remediation_tx = params.drift_remediation_tx.clone();
 
     // Pause gate (A.10 fix). The direct chat HTTP path spawns this turn
     // straight from the handler, never going through the executor
@@ -793,6 +803,7 @@ pub async fn run_turn(params: RunTurn) -> Result<(), ChatError> {
                 &db,
                 &bus,
                 executors.as_ref(),
+                drift_remediation_tx.as_ref(),
                 &project_id,
                 agent_id,
                 &executed_calls,
@@ -822,10 +833,12 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         tool_context,
         cancel,
         data_dir,
-        // The drift hook (the only inner consumer of `executors`) was
-        // hoisted to the outer `run_turn`; keep the field on `RunTurn`
-        // so the outer can pass it but discard it here.
+        // The drift hook (the only inner consumer of `executors` and the
+        // remediation channel) was hoisted to the outer `run_turn`; keep
+        // the fields on `RunTurn` so the outer can pass them but discard
+        // them here.
         executors: _,
+        drift_remediation_tx: _,
     } = params;
 
     let _thread = chat_threads::get(db.conn(), &thread_id)

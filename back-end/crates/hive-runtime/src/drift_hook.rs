@@ -56,11 +56,21 @@ pub async fn record_after_turn(
     db: &Db,
     bus: &EventBus,
     executors: Option<&Arc<ExecutorRegistry>>,
+    remediation_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
     project_id: &str,
     agent_id: &str,
     executed_calls: &[Value],
 ) {
-    let result = inner(db, bus, executors, project_id, agent_id, executed_calls).await;
+    let result = inner(
+        db,
+        bus,
+        executors,
+        remediation_tx,
+        project_id,
+        agent_id,
+        executed_calls,
+    )
+    .await;
     if let Err(err) = result {
         // Never poison the caller — the operator already saw the turn complete.
         tracing::warn!(
@@ -74,6 +84,7 @@ async fn inner(
     db: &Db,
     bus: &EventBus,
     executors: Option<&Arc<ExecutorRegistry>>,
+    remediation_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
     project_id: &str,
     agent_id: &str,
     executed_calls: &[Value],
@@ -192,14 +203,44 @@ async fn inner(
     }
 
     // Top band → also pause the agent so it stops piling up wrong work.
-    // Two layers of enforcement, both required:
-    //   1. DB row flip so the autonomous scheduler stops dispatching new
-    //      tasks (it filters on `agent.status == "idle"`).
-    //   2. In-process executor pause so any inbox item that's *already*
-    //      queued (A2A messages, /dispatch calls) parks until the
-    //      operator resumes. Without (2), an A2A message arriving while
-    //      the agent is DB-paused would still get processed.
     if score.score >= PAUSE_THRESHOLD {
+        // Preferred path: hand the pause to the durable remediation
+        // workflow. hive-api owns the `WorkflowBackend`; the runtime can't
+        // depend on it (cycle), so — exactly like the B4 spawn pipeline —
+        // we ship the `drift_events` row id through an mpsc the API
+        // consumes. The workflow performs the same two-layer pause
+        // (DB row + executor) but exactly-once and crash-durably: if the
+        // process dies between detecting drift and pausing, the journaled
+        // remediation still runs instead of leaving a runaway agent live.
+        // When the channel is wired we delegate and return; the inline
+        // fallback below only runs when it isn't (tests, runtime embeddings
+        // without the API consumer, or a closed receiver).
+        if let Some(tx) = remediation_tx {
+            match tx.send(event.id.clone()) {
+                Ok(()) => {
+                    tracing::info!(
+                        project_id, agent_id, drift_event_id = %event.id,
+                        "drift_hook: delegated auto-pause to durable remediation workflow"
+                    );
+                    return Ok(());
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        project_id, agent_id, error = %err,
+                        "drift_hook: remediation channel closed — falling back to inline pause"
+                    );
+                }
+            }
+        }
+
+        // Inline best-effort fallback. Two layers of enforcement, both
+        // required:
+        //   1. DB row flip so the autonomous scheduler stops dispatching new
+        //      tasks (it filters on `agent.status == "idle"`).
+        //   2. In-process executor pause so any inbox item that's *already*
+        //      queued (A2A messages, /dispatch calls) parks until the
+        //      operator resumes. Without (2), an A2A message arriving while
+        //      the agent is DB-paused would still get processed.
         if let Err(err) = agents::set_status(db.conn(), project_id, agent_id, "paused").await {
             tracing::warn!(project_id, agent_id, error = %err, "drift_hook: pause DB row failed");
         } else {
