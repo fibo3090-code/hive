@@ -39,10 +39,19 @@ The payload is:
 }
 ```
 
-The expected workflow handler is `SpawnPipelineWorkflow/run`. It should rebuild
-the same dependencies HIVE builds locally, call `run_pipeline`, and return the
-serialized pipeline outcome. Until that handler is deployed and registered with
-Restate, keep the backend set to `local`.
+The `SpawnPipelineWorkflow/run` handler is **implemented in-process** in
+`crates/hive-api/src/restate_service.rs`, compiled only with the optional
+`restate` Cargo feature (so `restate-sdk` is never a mandatory dependency). When
+the `restate` backend is selected, HIVE serves the workflow service on a second
+HTTP port; the handler decodes `{spawnRequestId}`, runs the **same**
+`execute_spawn_pipeline` core the local backend uses (wrapped in a durable
+`ctx.run` so a post-completion crash replays the journaled outcome instead of
+re-billing the LLM), and returns the pipeline outcome. Because it's a Restate
+**workflow** keyed by `spawn_request_id`, execution is exactly-once per request.
+
+To use it you still need a running Restate server with this service registered
+(see *Running the Restate backend* below). With a plain `cargo build` (feature
+off) the handler isn't compiled and the backend stays `local`.
 
 ## Environment
 
@@ -55,10 +64,40 @@ Default. No other variables required.
 ```sh
 HIVE_WORKFLOW_BACKEND=restate
 HIVE_RESTATE_ENDPOINT=http://localhost:8080
+HIVE_RESTATE_SERVICE_BIND=0.0.0.0:9080   # optional, default 0.0.0.0:9080
 ```
 
 Enables Restate submission through the Restate HTTP ingress. `HIVE_RESTATE_ENDPOINT`
-must be set and non-empty when the backend is `restate`.
+must be set and non-empty when the backend is `restate`. `HIVE_RESTATE_SERVICE_BIND`
+is where HIVE serves the in-process `SpawnPipelineWorkflow` service that Restate
+calls back into (it speaks HTTP/2 / h2c — that's the Restate↔SDK protocol, not a
+browser-facing endpoint).
+
+## Running the Restate backend (experimental)
+
+1. **Build with the feature:** `cargo build -p hive-api --features restate`
+   (a default build omits `restate-sdk` entirely).
+2. **Start a Restate server**, e.g. via Docker:
+   `docker run --name restate -p 8080:8080 -p 9070:9070 docker.restate.dev/restatedev/restate:latest`
+   (8080 = ingress, 9070 = admin).
+3. **Run HIVE** with the env above. On boot it serves the API and, additionally,
+   the `SpawnPipelineWorkflow` service on `HIVE_RESTATE_SERVICE_BIND`.
+4. **Register the service** so Restate can route to it. The Restate server (in
+   Docker) reaches the host service via `host.docker.internal`:
+   `curl localhost:9070/deployments -H 'content-type: application/json' -d '{"uri":"http://host.docker.internal:9080"}'`
+   The response lists `SpawnPipelineWorkflow` with handler `run` — that confirms
+   discovery/wiring.
+5. **Trigger** a spawn request as usual (agent `request_capability`, or the
+   approval path). HIVE one-way-sends to
+   `<HIVE_RESTATE_ENDPOINT>/restate/send/SpawnPipelineWorkflow/<id>/run`; Restate
+   invokes the handler durably.
+
+> **Validation status (2026-06-20):** compile (default + `--features restate`),
+> `clippy -D warnings` (both), and wire-contract unit tests pass; the in-process
+> service listener was confirmed to start and serve h2c. The live Restate-server
+> discovery/registration round-trip (steps 2–5) is documented but was not run in
+> CI — validate it against a real `restate-server` before relying on it in
+> production.
 
 ## Rollback
 

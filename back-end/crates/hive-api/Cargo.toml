@@ -3,7 +3,15 @@ name = "hive-api"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Optional, off by default: compiles the in-process Restate workflow service so
+# `HIVE_WORKFLOW_BACKEND=restate` can actually execute the spawn pipeline under
+# Restate's durable runtime. Kept behind a feature so `restate-sdk` is NOT a
+# mandatory dependency — a plain `cargo build` is unchanged. See docs/WORKFLOW_BACKENDS.md.
+restate = ["dep:restate-sdk"]
+
 [dependencies]
+restate-sdk = { version = "0.8", optional = true }
 anyhow = { workspace = true }
 async-stream = { workspace = true }
 async-trait = "0.1"
