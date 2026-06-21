@@ -37,7 +37,7 @@ use hive_git::{
 };
 use hive_llm::{client_for, ModelInfo, ProviderConfig, ProviderKind};
 use hive_runtime::{
-    spawn::{run_pipeline, BlueprintEntry, LlmPipelineDeps},
+    spawn::{run_pipeline, BlueprintEntry, LlmPipelineDeps, PipelineOutcome},
     spec_doc::{into_upserts, materialize_decomposition, parse_sections, DecomposeOutput},
     EventBus, RuntimeEvent, TurnDriver, TurnDriverError, TurnRequest,
 };
@@ -61,6 +61,11 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing::{info, warn};
+
+// In-process Restate workflow service. Compiled only with `--features restate`
+// so `restate-sdk` stays optional (see docs/WORKFLOW_BACKENDS.md).
+#[cfg(feature = "restate")]
+mod restate_service;
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -226,6 +231,25 @@ impl WorkflowBackendKind {
     }
 }
 
+/// Shared core for both workflow backends: load the spawn-request row, rebuild
+/// pipeline dependencies, and run the pipeline to completion. The in-process
+/// `LocalWorkflowBackend` and the (feature-gated) Restate workflow handler both
+/// call this so the actual work has exactly one definition.
+async fn execute_spawn_pipeline(
+    state: &AppState,
+    spawn_request_id: &str,
+) -> Result<PipelineOutcome, AppError> {
+    let database = db(state).await;
+    let row = agent_spawn_requests::get(database.conn(), spawn_request_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("spawn request {spawn_request_id} not found")))?;
+    let deps = build_pipeline_deps(state, &row.project_id).await?;
+    let bus = EventBus::new(state.events.clone());
+    run_pipeline(database.conn(), &bus, deps, spawn_request_id)
+        .await
+        .map_err(|e| AppError::Internal(format!("spawn pipeline {spawn_request_id}: {e}")))
+}
+
 struct LocalWorkflowBackend;
 
 #[async_trait::async_trait]
@@ -236,45 +260,12 @@ impl WorkflowBackend for LocalWorkflowBackend {
         spawn_request_id: String,
         in_flight: Arc<Mutex<HashSet<String>>>,
     ) {
-        let row = match agent_spawn_requests::get(db(&state).await.conn(), &spawn_request_id).await
-        {
-            Ok(Some(r)) => r,
-            Ok(None) => {
-                in_flight.lock().await.remove(&spawn_request_id);
-                tracing::warn!(spawn_request_id, "local workflow: row vanished");
-                return;
-            }
-            Err(err) => {
-                in_flight.lock().await.remove(&spawn_request_id);
-                tracing::warn!(
-                    spawn_request_id, error = %err,
-                    "local workflow: lookup failed"
-                );
-                return;
-            }
-        };
-
-        let deps = match build_pipeline_deps(&state, &row.project_id).await {
-            Ok(d) => d,
-            Err(err) => {
-                in_flight.lock().await.remove(&spawn_request_id);
-                tracing::warn!(
-                    spawn_request_id, error = %err,
-                    "local workflow: build_pipeline_deps failed"
-                );
-                return;
-            }
-        };
-
-        let bus = EventBus::new(state.events.clone());
-        let conn = db(&state).await;
-        let id = spawn_request_id.clone();
         tokio::spawn(async move {
-            let res = run_pipeline(conn.conn(), &bus, deps, &id).await;
-            in_flight.lock().await.remove(&id);
+            let res = execute_spawn_pipeline(&state, &spawn_request_id).await;
+            in_flight.lock().await.remove(&spawn_request_id);
             if let Err(e) = res {
                 tracing::error!(
-                    spawn_request_id = id, error = %e,
+                    spawn_request_id, error = %e,
                     "local workflow: spawn pipeline failed"
                 );
             }
@@ -817,6 +808,30 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
         .workflows
         .clone()
         .start(state.clone(), spawn_pipeline_rx);
+
+    // Feature-gated Restate workflow service. When the `restate` backend is
+    // selected, also serve the in-process `SpawnPipelineWorkflow` handler that
+    // the Restate runtime calls back into. Compiled only with `--features
+    // restate`; default builds skip this entirely.
+    #[cfg(feature = "restate")]
+    {
+        if std::env::var("HIVE_WORKFLOW_BACKEND")
+            .map(|v| v.trim().eq_ignore_ascii_case("restate"))
+            .unwrap_or(false)
+        {
+            let bind: std::net::SocketAddr = std::env::var("HIVE_RESTATE_SERVICE_BIND")
+                .ok()
+                .as_deref()
+                .unwrap_or("0.0.0.0:9080")
+                .parse()
+                .map_err(|e| {
+                    AppError::Internal(format!("invalid HIVE_RESTATE_SERVICE_BIND: {e}"))
+                })?;
+            let svc_state = state.clone();
+            info!(%bind, "starting Restate workflow service (SpawnPipelineWorkflow)");
+            tokio::spawn(async move { restate_service::serve(svc_state, bind).await });
+        }
+    }
 
     // W1-A2: audit_log retention purge. Reads `audit.retention_days` (default
     // 90; 0 = keep forever) from settings and deletes rows older than that,
