@@ -1,12 +1,41 @@
 # HIVE Workflow Backends
 
 > Runtime note for the workflow backend abstraction. Last reviewed:
-> 2026-06-20.
+> 2026-06-21.
 
-HIVE now routes Auto-MCP spawn pipeline submissions through a small workflow
-service instead of launching `run_pipeline` directly from each endpoint. The
-pipeline logic itself still lives in `hive-runtime::spawn::driver::run_pipeline`;
-the backend only decides how a spawn request is submitted and deduplicated.
+HIVE routes durable jobs through a small workflow service instead of launching
+the work directly from each endpoint. The job *logic* still lives in its home
+crate; the backend only decides how a job is submitted and deduplicated.
+
+Two job families flow through the seam today (`WorkflowJob` in
+`crates/hive-api/src/main.rs`):
+
+| Family | Key | Execution core | Submitted by |
+|--------|-----|----------------|--------------|
+| `SpawnPipeline` | `agent_spawn_requests` id | `execute_spawn_pipeline` → `hive-runtime::spawn::driver::run_pipeline` | B4 `request_capability` tool + the create/approve spawn endpoints |
+| `DriftRemediation` | `drift_events` id | `execute_drift_remediation` (pause the drifted agent) | the W3-B5 drift hook, when an agent crosses the pause band (score ≥ 0.9) |
+
+Both families share the same submission/dedup/backend machinery — adding a
+third is a new `WorkflowJob` variant plus its execution core, not a new
+service. The runtime never depends on hive-api: each family hands the runtime a
+bare-`String` mpsc sender (`spawn_pipeline_sender` / `drift_remediation_sender`)
+and the consumer loop wraps the id into the right `WorkflowJob`.
+
+## Drift auto-remediation
+
+When the drift hook detects an agent at score ≥ 0.9 it used to pause the agent
+inline (best-effort, lost on a crash between detection and pause). It now
+submits the `drift_events` row id through the workflow seam instead; the
+`DriftRemediation` job performs the same two-layer pause (DB `agents.status`
+flip + in-process executor park) but **exactly-once and crash-durably**. The
+core re-validates the event (agent subject, score still ≥ 0.9) before pausing,
+and the pause is idempotent, so a replay is safe.
+
+If the runtime has no workflow sender wired (test fixtures, a runtime embedding
+without the API consumer) the hook falls back to the legacy inline pause — no
+behavior change there. And if the **Restate** submission itself fails, the
+backend runs the pause inline as a safety net: "stop a runaway agent" must not
+depend on Restate being reachable.
 
 ## Backends
 
@@ -24,30 +53,27 @@ Use this for normal local development and as the rollback path.
 
 ### Restate
 
-`restate` is experimental. HIVE submits the spawn request to a Restate workflow
+`restate` is experimental. HIVE submits each job to its Restate workflow
 ingress endpoint:
 
 ```text
 <HIVE_RESTATE_ENDPOINT>/restate/send/SpawnPipelineWorkflow/<spawn_request_id>/run
+<HIVE_RESTATE_ENDPOINT>/restate/send/DriftRemediationWorkflow/<drift_event_id>/run
 ```
 
-The payload is:
+with payloads `{"spawnRequestId":"..."}` and `{"driftEventId":"..."}`
+respectively.
 
-```json
-{
-  "spawnRequestId": "..."
-}
-```
-
-The `SpawnPipelineWorkflow/run` handler is **implemented in-process** in
+Both handlers are **implemented in-process** in
 `crates/hive-api/src/restate_service.rs`, compiled only with the optional
 `restate` Cargo feature (so `restate-sdk` is never a mandatory dependency). When
-the `restate` backend is selected, HIVE serves the workflow service on a second
-HTTP port; the handler decodes `{spawnRequestId}`, runs the **same**
-`execute_spawn_pipeline` core the local backend uses (wrapped in a durable
-`ctx.run` so a post-completion crash replays the journaled outcome instead of
-re-billing the LLM), and returns the pipeline outcome. Because it's a Restate
-**workflow** keyed by `spawn_request_id`, execution is exactly-once per request.
+the `restate` backend is selected, HIVE serves both workflows on one second
+HTTP port. Each handler decodes its id and runs the **same** execution core the
+local backend uses (`execute_spawn_pipeline` / `execute_drift_remediation`),
+wrapped in a durable `ctx.run` so a post-completion crash replays the journaled
+outcome instead of re-doing the work (re-billing the LLM, re-pausing). Because
+they're Restate **workflows** keyed by the id, execution is exactly-once per
+key.
 
 To use it you still need a running Restate server with this service registered
 (see *Running the Restate backend* below). With a plain `cargo build` (feature
@@ -81,16 +107,17 @@ browser-facing endpoint).
    `docker run --name restate -p 8080:8080 -p 9070:9070 docker.restate.dev/restatedev/restate:latest`
    (8080 = ingress, 9070 = admin).
 3. **Run HIVE** with the env above. On boot it serves the API and, additionally,
-   the `SpawnPipelineWorkflow` service on `HIVE_RESTATE_SERVICE_BIND`.
-4. **Register the service** so Restate can route to it. The Restate server (in
+   the `SpawnPipelineWorkflow` + `DriftRemediationWorkflow` services on
+   `HIVE_RESTATE_SERVICE_BIND`.
+4. **Register the services** so Restate can route to them. The Restate server (in
    Docker) reaches the host service via `host.docker.internal`:
    `curl localhost:9070/deployments -H 'content-type: application/json' -d '{"uri":"http://host.docker.internal:9080"}'`
-   The response lists `SpawnPipelineWorkflow` with handler `run` — that confirms
-   discovery/wiring.
-5. **Trigger** a spawn request as usual (agent `request_capability`, or the
-   approval path). HIVE one-way-sends to
-   `<HIVE_RESTATE_ENDPOINT>/restate/send/SpawnPipelineWorkflow/<id>/run`; Restate
-   invokes the handler durably.
+   The response lists both `SpawnPipelineWorkflow` and `DriftRemediationWorkflow`
+   with handler `run` — that confirms discovery/wiring.
+5. **Trigger** a job as usual: a spawn request (agent `request_capability` or the
+   approval path), or a ≥0.9 drift breach. HIVE one-way-sends to the matching
+   `<HIVE_RESTATE_ENDPOINT>/restate/send/<Workflow>/<id>/run`; Restate invokes the
+   handler durably.
 
 > **Validation status (2026-06-21): confirmed end-to-end.** Compile (default +
 > `--features restate`), `clippy -D warnings` (both), and wire-contract unit
@@ -109,6 +136,15 @@ browser-facing endpoint).
 > A *successful* pipeline run additionally requires a real spawn request and a
 > configured LLM provider; that part is exercised by the normal product flow,
 > not this wiring check.
+>
+> **`DriftRemediationWorkflow` (2026-06-21):** wire contract + per-family
+> dispatch are unit-tested (`restate_service::tests::drift_*`,
+> `workflow_job_dedup_keys_are_namespaced`, `restate_workflow_url_*`), and it is
+> served/registered through the *same* `Endpoint` and durable `ctx.run` path as
+> `SpawnPipelineWorkflow` — so it inherits the confirmed live ingress → handler
+> → error-propagation behavior above. A drift-specific live round-trip
+> (registering, then invoking `DriftRemediationWorkflow/<id>/run`) has not been
+> run separately; the mechanism is identical.
 
 ## Rollback
 
@@ -125,8 +161,10 @@ their DB state and can be resubmitted through the local backend.
 
 - Restate is optional and not required to run HIVE.
 - The local backend remains the production-safe path for now.
-- Restate submission failures mark the spawn request as `failed` and emit
-  `agent_spawn_request.failed`.
+- Restate **spawn** submission failures mark the spawn request as `failed` and
+  emit `agent_spawn_request.failed`.
+- Restate **drift** submission failures fall back to an inline pause (the
+  safety property must not depend on Restate reachability).
 - Restate `409 Conflict` responses are treated as idempotent "already accepted"
-  submissions.
+  submissions (both families).
 - Frontend routes and SSE event names are unchanged.

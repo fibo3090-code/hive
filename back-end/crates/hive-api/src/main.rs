@@ -105,26 +105,67 @@ struct AppState {
 
 #[async_trait::async_trait]
 trait WorkflowBackend: Send + Sync {
-    async fn submit_spawn_pipeline(
+    /// Execute one durable job. The backend owns spawning the work and
+    /// releasing the job's [`WorkflowJob::dedup_key`] from `in_flight` when
+    /// it's done (or has handed off to Restate).
+    async fn submit(
         &self,
         state: AppState,
-        spawn_request_id: String,
+        job: WorkflowJob,
         in_flight: Arc<Mutex<HashSet<String>>>,
     );
 }
 
+/// A unit of durable work routed through the active [`WorkflowBackend`]. Each
+/// variant maps to one Restate workflow (when the `restate` backend is active)
+/// or one in-process Tokio task (local backend). The runtime can't depend on
+/// hive-api, so it submits a bare id through an mpsc and the consumer wraps it
+/// into the right variant here — same decoupling for both families.
+#[derive(Debug, Clone)]
+enum WorkflowJob {
+    /// B4 auto-MCP capability synthesis, keyed by `agent_spawn_requests` id.
+    SpawnPipeline { spawn_request_id: String },
+    /// W3-B5 drift auto-remediation: pause an agent that drifted past the
+    /// pause band. Keyed by `drift_events` id — one pause per detected breach.
+    DriftRemediation { drift_event_id: String },
+}
+
+impl WorkflowJob {
+    /// Stable key for both in-process in-flight dedup and the Restate workflow
+    /// key (exactly-once-per-key). Namespaced so a spawn id and a drift id can
+    /// never collide in the shared `in_flight` set.
+    fn dedup_key(&self) -> String {
+        match self {
+            Self::SpawnPipeline { spawn_request_id } => format!("spawn:{spawn_request_id}"),
+            Self::DriftRemediation { drift_event_id } => format!("drift:{drift_event_id}"),
+        }
+    }
+}
+
 struct WorkflowService {
+    /// Runtime-facing senders. The B4 spawn tool and the drift hook each hold
+    /// a clone and push bare ids; the consumer loop wraps them into
+    /// [`WorkflowJob`]s. Two channels (not one typed channel) keep the runtime
+    /// free of any hive-api type.
     spawn_pipeline_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    drift_remediation_tx: tokio::sync::mpsc::UnboundedSender<String>,
     backend: Arc<dyn WorkflowBackend>,
     in_flight: Arc<Mutex<HashSet<String>>>,
 }
 
+/// The receive halves handed to [`WorkflowService::start`]. Bundled so the
+/// service can grow new job families without churning `start`'s signature.
+struct WorkflowChannels {
+    spawn_pipeline_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    drift_remediation_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+}
+
 impl WorkflowService {
-    fn from_env(
-        http: reqwest::Client,
-    ) -> Result<(Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<String>), AppError> {
+    fn from_env(http: reqwest::Client) -> Result<(Arc<Self>, WorkflowChannels), AppError> {
         let backend = WorkflowBackendKind::from_env()?;
         let (spawn_pipeline_tx, spawn_pipeline_rx) =
+            tokio::sync::mpsc::unbounded_channel::<String>();
+        let (drift_remediation_tx, drift_remediation_rx) =
             tokio::sync::mpsc::unbounded_channel::<String>();
         let backend: Arc<dyn WorkflowBackend> = match backend {
             WorkflowBackendKind::Local => Arc::new(LocalWorkflowBackend),
@@ -136,15 +177,25 @@ impl WorkflowService {
         Ok((
             Arc::new(Self {
                 spawn_pipeline_tx,
+                drift_remediation_tx,
                 backend,
                 in_flight: Arc::new(Mutex::new(HashSet::new())),
             }),
-            spawn_pipeline_rx,
+            WorkflowChannels {
+                spawn_pipeline_rx,
+                drift_remediation_rx,
+            },
         ))
     }
 
     fn spawn_pipeline_sender(&self) -> tokio::sync::mpsc::UnboundedSender<String> {
         self.spawn_pipeline_tx.clone()
+    }
+
+    /// Handed to the runtime so the drift hook can submit `drift_events` ids
+    /// for durable auto-remediation (see `hive_runtime::drift_hook`).
+    fn drift_remediation_sender(&self) -> tokio::sync::mpsc::UnboundedSender<String> {
+        self.drift_remediation_tx.clone()
     }
 
     fn submit_spawn_pipeline(&self, spawn_request_id: impl Into<String>) -> Result<(), AppError> {
@@ -153,33 +204,41 @@ impl WorkflowService {
             .map_err(|_| AppError::Internal("workflow service is not accepting work".into()))
     }
 
-    fn start(
-        self: Arc<Self>,
-        state: AppState,
-        mut spawn_pipeline_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
-    ) {
+    fn start(self: Arc<Self>, state: AppState, channels: WorkflowChannels) {
+        let WorkflowChannels {
+            mut spawn_pipeline_rx,
+            mut drift_remediation_rx,
+        } = channels;
         tokio::spawn(async move {
-            while let Some(spawn_request_id) = spawn_pipeline_rx.recv().await {
-                if !self.try_claim(&spawn_request_id).await {
-                    tracing::debug!(
-                        spawn_request_id,
-                        "workflow service: skipping duplicate in-flight spawn pipeline"
-                    );
+            loop {
+                // Merge both runtime-facing channels into one dispatch loop.
+                // `else => break` ends the task only once *both* senders have
+                // dropped (every `AppState` clone gone) — i.e. at shutdown.
+                let job = tokio::select! {
+                    Some(id) = spawn_pipeline_rx.recv() => {
+                        WorkflowJob::SpawnPipeline { spawn_request_id: id }
+                    }
+                    Some(id) = drift_remediation_rx.recv() => {
+                        WorkflowJob::DriftRemediation { drift_event_id: id }
+                    }
+                    else => break,
+                };
+
+                let key = job.dedup_key();
+                if !self.try_claim(&key).await {
+                    tracing::debug!(key, "workflow service: skipping duplicate in-flight job");
                     continue;
                 }
 
                 self.backend
-                    .submit_spawn_pipeline(state.clone(), spawn_request_id, self.in_flight.clone())
+                    .submit(state.clone(), job, self.in_flight.clone())
                     .await;
             }
         });
     }
 
-    async fn try_claim(&self, spawn_request_id: &str) -> bool {
-        self.in_flight
-            .lock()
-            .await
-            .insert(spawn_request_id.to_owned())
+    async fn try_claim(&self, dedup_key: &str) -> bool {
+        self.in_flight.lock().await.insert(dedup_key.to_owned())
     }
 }
 
@@ -250,24 +309,120 @@ async fn execute_spawn_pipeline(
         .map_err(|e| AppError::Internal(format!("spawn pipeline {spawn_request_id}: {e}")))
 }
 
+/// Pause band, mirrored from `hive_runtime::drift_hook::PAUSE_THRESHOLD`. The
+/// drift hook only ever submits breaches at or above this, but the handler
+/// re-checks so a stale or replayed id can't pause an agent on a benign event.
+const DRIFT_PAUSE_THRESHOLD: f64 = 0.9;
+
+/// Shared core for drift auto-remediation across both workflow backends: the
+/// durable analog of the drift hook's old inline pause. Loads the
+/// `drift_events` row, re-checks the agent + pause-band guards, then performs
+/// the same two-layer pause as `set_agent_status` (park the executor, flip the
+/// DB row), audits it, and emits `agent.status`. Idempotent — re-pausing an
+/// already-paused agent is a no-op — so exactly-once execution is sufficient.
+async fn execute_drift_remediation(state: &AppState, drift_event_id: &str) -> Result<(), AppError> {
+    let database = db(state).await;
+    let event = drift_events::get(database.conn(), drift_event_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("drift event {drift_event_id} not found")))?;
+
+    if event.subject_kind != "agent" {
+        tracing::warn!(
+            drift_event_id, kind = %event.subject_kind,
+            "drift remediation: non-agent subject — skipping pause"
+        );
+        return Ok(());
+    }
+    let score = event
+        .evidence_json
+        .get("score")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    if score < DRIFT_PAUSE_THRESHOLD {
+        tracing::warn!(
+            drift_event_id,
+            score,
+            "drift remediation: below pause band — skipping pause"
+        );
+        return Ok(());
+    }
+
+    let project_id = event.project_id.clone();
+    let agent_id = event.subject_id.clone();
+    let before = agents::get(database.conn(), &agent_id).await?;
+
+    // Two-layer pause, same order as `set_agent_status`: park the in-process
+    // executor first (so already-queued inbox items stop), then flip the DB
+    // row the scheduler reads. `ensure` is infallible; a pause error is logged
+    // but never blocks the authoritative DB flip.
+    let _ = state.executors.ensure(&agent_id, &project_id).await;
+    if let Err(err) = state.executors.pause(&agent_id).await {
+        tracing::warn!(
+            project_id, agent_id, error = %err,
+            "drift remediation: executor pause failed (continuing to DB flip)"
+        );
+    }
+    let updated = agents::set_status(database.conn(), &project_id, &agent_id, "paused").await?;
+
+    audit::append(
+        database.conn(),
+        "drift_auto_remediation",
+        "agent.drift_pause",
+        "agent",
+        &agent_id,
+        before.as_ref().and_then(|b| serde_json::to_value(b).ok()),
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
+
+    emit(
+        state,
+        "agent.status",
+        json!({
+            "id": updated.id,
+            "status": updated.status,
+            "projectId": project_id,
+            "reason": "drift_auto_pause",
+            "driftEventId": drift_event_id,
+        }),
+    )
+    .await;
+
+    tracing::info!(
+        project_id,
+        agent_id,
+        drift_event_id,
+        score,
+        "drift remediation: agent auto-paused"
+    );
+    Ok(())
+}
+
 struct LocalWorkflowBackend;
 
 #[async_trait::async_trait]
 impl WorkflowBackend for LocalWorkflowBackend {
-    async fn submit_spawn_pipeline(
+    async fn submit(
         &self,
         state: AppState,
-        spawn_request_id: String,
+        job: WorkflowJob,
         in_flight: Arc<Mutex<HashSet<String>>>,
     ) {
+        let key = job.dedup_key();
         tokio::spawn(async move {
-            let res = execute_spawn_pipeline(&state, &spawn_request_id).await;
-            in_flight.lock().await.remove(&spawn_request_id);
+            let res = match &job {
+                WorkflowJob::SpawnPipeline { spawn_request_id } => {
+                    execute_spawn_pipeline(&state, spawn_request_id)
+                        .await
+                        .map(|_| ())
+                }
+                WorkflowJob::DriftRemediation { drift_event_id } => {
+                    execute_drift_remediation(&state, drift_event_id).await
+                }
+            };
+            in_flight.lock().await.remove(&key);
             if let Err(e) = res {
-                tracing::error!(
-                    spawn_request_id, error = %e,
-                    "local workflow: spawn pipeline failed"
-                );
+                tracing::error!(key, error = %e, "local workflow: job failed");
             }
         });
     }
@@ -278,44 +433,47 @@ struct RestateWorkflowBackend {
     http: reqwest::Client,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RestateSpawnPipelineRequest<'a> {
-    spawn_request_id: &'a str,
-}
-
 #[async_trait::async_trait]
 impl WorkflowBackend for RestateWorkflowBackend {
-    async fn submit_spawn_pipeline(
+    async fn submit(
         &self,
         state: AppState,
-        spawn_request_id: String,
+        job: WorkflowJob,
         in_flight: Arc<Mutex<HashSet<String>>>,
     ) {
-        let url = restate_spawn_pipeline_url(&self.endpoint, &spawn_request_id);
+        let key = job.dedup_key();
+        // Each job family maps to a distinct Restate workflow. The workflow
+        // key in the path is what gives exactly-once-per-id; the JSON body
+        // repeats the id because the in-process handler reads its typed input,
+        // not the path key.
+        let (workflow_name, workflow_key, body) = match &job {
+            WorkflowJob::SpawnPipeline { spawn_request_id } => (
+                "SpawnPipelineWorkflow",
+                spawn_request_id.clone(),
+                json!({ "spawnRequestId": spawn_request_id }),
+            ),
+            WorkflowJob::DriftRemediation { drift_event_id } => (
+                "DriftRemediationWorkflow",
+                drift_event_id.clone(),
+                json!({ "driftEventId": drift_event_id }),
+            ),
+        };
+        let url = restate_workflow_url(&self.endpoint, workflow_name, &workflow_key);
         let http = self.http.clone();
         tokio::spawn(async move {
-            let result = http
-                .post(url)
-                .json(&RestateSpawnPipelineRequest {
-                    spawn_request_id: &spawn_request_id,
-                })
-                .send()
-                .await;
+            let result = http.post(url).json(&body).send().await;
 
             match result {
                 Ok(response) if response.status().is_success() => {
                     tracing::info!(
-                        spawn_request_id,
-                        status = %response.status(),
-                        "restate workflow: submitted spawn pipeline"
+                        key, status = %response.status(),
+                        "restate workflow: submitted job"
                     );
                 }
                 Ok(response) if response.status() == reqwest::StatusCode::CONFLICT => {
                     tracing::info!(
-                        spawn_request_id,
-                        status = %response.status(),
-                        "restate workflow: spawn pipeline was already accepted"
+                        key, status = %response.status(),
+                        "restate workflow: job was already accepted"
                     );
                 }
                 Ok(response) => {
@@ -324,67 +482,82 @@ impl WorkflowBackend for RestateWorkflowBackend {
                         response.status()
                     );
                     tracing::error!(
-                        spawn_request_id,
-                        status = %response.status(),
+                        key, status = %response.status(),
                         "restate workflow: submission failed"
                     );
-                    mark_spawn_pipeline_submission_failed(&state, &spawn_request_id, message).await;
+                    mark_workflow_submission_failed(&state, &job, message).await;
                 }
                 Err(err) => {
                     let message = format!("restate workflow submission failed: {err}");
-                    tracing::error!(
-                        spawn_request_id, error = %err,
-                        "restate workflow: submission failed"
-                    );
-                    mark_spawn_pipeline_submission_failed(&state, &spawn_request_id, message).await;
+                    tracing::error!(key, error = %err, "restate workflow: submission failed");
+                    mark_workflow_submission_failed(&state, &job, message).await;
                 }
             }
 
-            in_flight.lock().await.remove(&spawn_request_id);
+            in_flight.lock().await.remove(&key);
         });
     }
 }
 
-fn restate_spawn_pipeline_url(endpoint: &str, spawn_request_id: &str) -> String {
+fn restate_workflow_url(endpoint: &str, workflow_name: &str, workflow_key: &str) -> String {
     format!(
-        "{}/restate/send/SpawnPipelineWorkflow/{}/run",
+        "{}/restate/send/{}/{}/run",
         endpoint.trim_end_matches('/'),
-        spawn_request_id
+        workflow_name,
+        workflow_key
     )
 }
 
-async fn mark_spawn_pipeline_submission_failed(
-    state: &AppState,
-    spawn_request_id: &str,
-    error: String,
-) {
-    let database = db(state).await;
-    match agent_spawn_requests::update(
-        database.conn(),
-        spawn_request_id,
-        agent_spawn_requests::UpdateSpawnRequest {
-            status: Some("failed".to_owned()),
-            error: Some(error.clone()),
-            completed: Some(true),
-            ..Default::default()
-        },
-    )
-    .await
-    {
-        Ok(row) => {
-            emit(
-                state,
-                "agent_spawn_request.failed",
-                json!({ "id": row.id, "status": row.status, "error": error }),
-            )
-            .await;
-        }
-        Err(err) => {
-            tracing::error!(
+/// React to a Restate *submission* failure (the one-way send never reached the
+/// ingress). Per job family:
+/// - **SpawnPipeline**: mark the request `failed` + emit so the UI stops
+///   waiting — the existing contract; nothing else can run the pipeline.
+/// - **DriftRemediation**: the safety property "stop a runaway agent" must not
+///   depend on Restate being reachable, so run the pause locally inline.
+async fn mark_workflow_submission_failed(state: &AppState, job: &WorkflowJob, error: String) {
+    match job {
+        WorkflowJob::SpawnPipeline { spawn_request_id } => {
+            let database = db(state).await;
+            match agent_spawn_requests::update(
+                database.conn(),
                 spawn_request_id,
-                error = %err,
-                "restate workflow: failed to persist submission failure"
+                agent_spawn_requests::UpdateSpawnRequest {
+                    status: Some("failed".to_owned()),
+                    error: Some(error.clone()),
+                    completed: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            {
+                Ok(row) => {
+                    emit(
+                        state,
+                        "agent_spawn_request.failed",
+                        json!({ "id": row.id, "status": row.status, "error": error }),
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    tracing::error!(
+                        spawn_request_id,
+                        error = %err,
+                        "restate workflow: failed to persist submission failure"
+                    );
+                }
+            }
+        }
+        WorkflowJob::DriftRemediation { drift_event_id } => {
+            tracing::warn!(
+                drift_event_id, %error,
+                "restate drift remediation submit failed — running inline pause fallback"
             );
+            if let Err(e) = execute_drift_remediation(state, drift_event_id).await {
+                tracing::error!(
+                    drift_event_id, error = %e,
+                    "inline drift remediation fallback failed — agent may still be running"
+                );
+            }
         }
     }
 }
@@ -789,7 +962,7 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     // `loop_detected` notifications the LoopDetectionModal renders.
     hive_runtime::loop_detector::spawn(runtime.db.clone(), EventBus::new(events.clone()));
 
-    let (workflows, spawn_pipeline_rx) = WorkflowService::from_env(http.clone())?;
+    let (workflows, workflow_channels) = WorkflowService::from_env(http.clone())?;
 
     let state = AppState {
         inner: Arc::new(RwLock::new(runtime)),
@@ -807,12 +980,13 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
     state
         .workflows
         .clone()
-        .start(state.clone(), spawn_pipeline_rx);
+        .start(state.clone(), workflow_channels);
 
     // Feature-gated Restate workflow service. When the `restate` backend is
-    // selected, also serve the in-process `SpawnPipelineWorkflow` handler that
-    // the Restate runtime calls back into. Compiled only with `--features
-    // restate`; default builds skip this entirely.
+    // selected, also serve the in-process workflow handlers
+    // (`SpawnPipelineWorkflow`, `DriftRemediationWorkflow`) that the Restate
+    // runtime calls back into. Compiled only with `--features restate`;
+    // default builds skip this entirely.
     #[cfg(feature = "restate")]
     {
         if std::env::var("HIVE_WORKFLOW_BACKEND")
@@ -828,7 +1002,10 @@ async fn serve(workspace_root: PathBuf) -> anyhow::Result<()> {
                     AppError::Internal(format!("invalid HIVE_RESTATE_SERVICE_BIND: {e}"))
                 })?;
             let svc_state = state.clone();
-            info!(%bind, "starting Restate workflow service (SpawnPipelineWorkflow)");
+            info!(
+                %bind,
+                "starting Restate workflow service (SpawnPipelineWorkflow, DriftRemediationWorkflow)"
+            );
             tokio::spawn(async move { restate_service::serve(svc_state, bind).await });
         }
     }
@@ -7055,6 +7232,7 @@ async fn send_chat_message(
         cancel: cancel_flag,
         data_dir: data_dir_clone,
         executors: Some(state.executors.clone()),
+        drift_remediation_tx: Some(state.workflows.drift_remediation_sender()),
     };
     let mut params = params;
     if let Some((registry, context)) = build_tooling(
@@ -7179,6 +7357,7 @@ async fn process_chat_message(
         cancel: cancel_flag,
         data_dir: data_dir_clone,
         executors: Some(state.executors.clone()),
+        drift_remediation_tx: Some(state.workflows.drift_remediation_sender()),
     };
     if let Some((registry, context)) = build_tooling(
         &state,
@@ -7725,6 +7904,7 @@ impl ApiTurnDriver {
             cancel: cancel_flag,
             data_dir: data_dir_clone,
             executors: Some(self.state.executors.clone()),
+            drift_remediation_tx: Some(self.state.workflows.drift_remediation_sender()),
         };
         if let Some((registry, context)) = build_tooling(
             &self.state,
@@ -8892,38 +9072,86 @@ mod workflow_tests {
     }
 
     #[test]
-    fn restate_spawn_pipeline_url_uses_current_http_ingress_shape() {
+    fn restate_workflow_url_uses_current_http_ingress_shape() {
         assert_eq!(
-            restate_spawn_pipeline_url("http://localhost:8080/", "spawn-1"),
+            restate_workflow_url("http://localhost:8080/", "SpawnPipelineWorkflow", "spawn-1"),
             "http://localhost:8080/restate/send/SpawnPipelineWorkflow/spawn-1/run"
         );
+        // The drift family routes to a distinct workflow keyed by the
+        // drift_events id — same ingress shape, different handler.
+        assert_eq!(
+            restate_workflow_url(
+                "http://localhost:8080",
+                "DriftRemediationWorkflow",
+                "drift-9"
+            ),
+            "http://localhost:8080/restate/send/DriftRemediationWorkflow/drift-9/run"
+        );
+    }
+
+    #[test]
+    fn workflow_job_dedup_keys_are_namespaced() {
+        // A spawn id and a drift id with the same raw string must not collide
+        // in the shared in-flight set.
+        let spawn = WorkflowJob::SpawnPipeline {
+            spawn_request_id: "x".into(),
+        };
+        let drift = WorkflowJob::DriftRemediation {
+            drift_event_id: "x".into(),
+        };
+        assert_eq!(spawn.dedup_key(), "spawn:x");
+        assert_eq!(drift.dedup_key(), "drift:x");
+        assert_ne!(spawn.dedup_key(), drift.dedup_key());
+    }
+
+    fn test_service(
+        spawn_tx: tokio::sync::mpsc::UnboundedSender<String>,
+        drift_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> WorkflowService {
+        WorkflowService {
+            spawn_pipeline_tx: spawn_tx,
+            drift_remediation_tx: drift_tx,
+            backend: Arc::new(LocalWorkflowBackend),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
+        }
     }
 
     #[tokio::test]
     async fn workflow_service_deduplicates_in_flight_ids() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let service = WorkflowService {
-            spawn_pipeline_tx: tx,
-            backend: Arc::new(LocalWorkflowBackend),
-            in_flight: Arc::new(Mutex::new(HashSet::new())),
-        };
+        let (spawn_tx, _s) = tokio::sync::mpsc::unbounded_channel();
+        let (drift_tx, _d) = tokio::sync::mpsc::unbounded_channel();
+        let service = test_service(spawn_tx, drift_tx);
 
-        assert!(service.try_claim("spawn-1").await);
-        assert!(!service.try_claim("spawn-1").await);
-        assert!(service.try_claim("spawn-2").await);
+        // try_claim keys on the namespaced dedup key, so a spawn and a drift
+        // id that share a raw string are independently claimable.
+        assert!(service.try_claim("spawn:1").await);
+        assert!(!service.try_claim("spawn:1").await);
+        assert!(service.try_claim("drift:1").await);
     }
 
     #[tokio::test]
     async fn workflow_service_submit_enqueues_spawn_request() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let service = WorkflowService {
-            spawn_pipeline_tx: tx,
-            backend: Arc::new(LocalWorkflowBackend),
-            in_flight: Arc::new(Mutex::new(HashSet::new())),
-        };
+        let (spawn_tx, mut spawn_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (drift_tx, _d) = tokio::sync::mpsc::unbounded_channel();
+        let service = test_service(spawn_tx, drift_tx);
 
         service.submit_spawn_pipeline("spawn-1").unwrap();
 
-        assert_eq!(rx.recv().await.as_deref(), Some("spawn-1"));
+        assert_eq!(spawn_rx.recv().await.as_deref(), Some("spawn-1"));
+    }
+
+    #[tokio::test]
+    async fn drift_remediation_sender_enqueues_event_id() {
+        let (spawn_tx, _s) = tokio::sync::mpsc::unbounded_channel();
+        let (drift_tx, mut drift_rx) = tokio::sync::mpsc::unbounded_channel();
+        let service = test_service(spawn_tx, drift_tx);
+
+        // The runtime's drift hook pushes through this sender clone.
+        service
+            .drift_remediation_sender()
+            .send("drift-7".into())
+            .unwrap();
+
+        assert_eq!(drift_rx.recv().await.as_deref(), Some("drift-7"));
     }
 }

@@ -43,6 +43,10 @@ pub async fn create(db: &DatabaseConnection, input: CreateDriftEvent) -> Result<
     .await
 }
 
+pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbErr> {
+    Entity::find_by_id(id.to_owned()).one(db).await
+}
+
 pub async fn list_for_project(
     db: &DatabaseConnection,
     project_id: &str,
