@@ -102,24 +102,38 @@ fn render_content_blocks(message: &crate::chat::ChatMessage) -> Vec<Value> {
 
 fn request_body(request: &ChatRequest) -> Value {
     let mut system = Vec::new();
-    let mut turns = Vec::new();
+    let mut turns: Vec<Value> = Vec::new();
 
     for message in &request.messages {
-        match message.role {
-            ChatRole::System => system.push(message.content.clone()),
-            ChatRole::User => turns.push(json!({
-                "role": "user",
-                "content": render_content_blocks(message),
-            })),
-            ChatRole::Assistant => turns.push(json!({
-                "role": "assistant",
-                "content": render_content_blocks(message),
-            })),
-            ChatRole::Tool => turns.push(json!({
-                "role": "user",
-                "content": render_content_blocks(message),
-            })),
+        if matches!(message.role, ChatRole::System) {
+            system.push(message.content.clone());
+            continue;
         }
+        // `Tool` maps to Anthropic's `user` role — tool_result blocks live in
+        // a user turn.
+        let role = match message.role {
+            ChatRole::Assistant => "assistant",
+            _ => "user",
+        };
+        let blocks = render_content_blocks(message);
+        // Anthropic requires strictly alternating user/assistant turns AND —
+        // critically — ALL `tool_result` blocks answering one assistant turn's
+        // `tool_use` blocks in a SINGLE user message. The runtime emits one
+        // `Tool` message per tool call, so a round with N parallel calls
+        // (e.g. two `fs_read`) would otherwise become N separate `user` turns:
+        // Anthropic rejects that with a 400 (non-alternating roles + a
+        // tool_use block without a matching tool_result in the next turn).
+        // Coalesce consecutive same-role turns by appending this message's
+        // content blocks onto the previous turn.
+        if let Some(last) = turns.last_mut() {
+            if last.get("role").and_then(Value::as_str) == Some(role) {
+                if let Some(arr) = last.get_mut("content").and_then(Value::as_array_mut) {
+                    arr.extend(blocks);
+                    continue;
+                }
+            }
+        }
+        turns.push(json!({ "role": role, "content": blocks }));
     }
 
     // ZZ32: Anthropic requires `max_tokens` on every request. The old
@@ -497,6 +511,94 @@ mod tests {
     #[test]
     fn empty_data_ok() {
         assert!(parse_models(r#"{"data":[]}"#).unwrap().is_empty());
+    }
+
+    #[test]
+    fn multi_tool_round_merges_tool_results_into_one_user_turn() {
+        use crate::chat::{ChatMessage, ChatRequest, ToolCall};
+
+        // A round where the assistant called TWO tools in parallel, followed
+        // by the two tool_result messages the runtime emits (one each).
+        let req = ChatRequest::new(
+            "claude-sonnet-4-6",
+            vec![
+                ChatMessage::user("read a.txt and b.txt"),
+                ChatMessage::assistant_with_tool_calls(
+                    "",
+                    vec![
+                        ToolCall {
+                            id: Some("call_a".into()),
+                            name: "fs_read".into(),
+                            arguments: json!({ "path": "a.txt" }),
+                        },
+                        ToolCall {
+                            id: Some("call_b".into()),
+                            name: "fs_read".into(),
+                            arguments: json!({ "path": "b.txt" }),
+                        },
+                    ],
+                ),
+                ChatMessage::tool_result("call_a", "fs_read", "contents of a"),
+                ChatMessage::tool_result("call_b", "fs_read", "contents of b"),
+            ],
+        );
+
+        let body = request_body(&req);
+        let turns = body["messages"].as_array().unwrap();
+
+        // Roles must strictly alternate: user, assistant, user — NOT
+        // user, assistant, user, user (which Anthropic 400s on).
+        let roles: Vec<&str> = turns.iter().map(|t| t["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "user"], "roles: {roles:?}");
+
+        // The final user turn must carry BOTH tool_result blocks, and their
+        // tool_use_ids must match the two tool_use blocks.
+        let last = turns.last().unwrap();
+        let blocks = last["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2, "expected both tool_results merged");
+        assert!(blocks.iter().all(|b| b["type"] == "tool_result"));
+        let ids: Vec<&str> = blocks
+            .iter()
+            .map(|b| b["tool_use_id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&"call_a") && ids.contains(&"call_b"),
+            "ids: {ids:?}"
+        );
+
+        // The assistant turn still has its two tool_use blocks.
+        let assistant = &turns[1];
+        let a_blocks = assistant["content"].as_array().unwrap();
+        let use_count = a_blocks.iter().filter(|b| b["type"] == "tool_use").count();
+        assert_eq!(use_count, 2);
+    }
+
+    #[test]
+    fn single_tool_round_is_unchanged() {
+        use crate::chat::{ChatMessage, ChatRequest, ToolCall};
+        let req = ChatRequest::new(
+            "claude-sonnet-4-6",
+            vec![
+                ChatMessage::user("read a.txt"),
+                ChatMessage::assistant_with_tool_calls(
+                    "",
+                    vec![ToolCall {
+                        id: Some("call_a".into()),
+                        name: "fs_read".into(),
+                        arguments: json!({ "path": "a.txt" }),
+                    }],
+                ),
+                ChatMessage::tool_result("call_a", "fs_read", "contents of a"),
+            ],
+        );
+        let body = request_body(&req);
+        let roles: Vec<&str> = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, vec!["user", "assistant", "user"]);
     }
 
     #[test]

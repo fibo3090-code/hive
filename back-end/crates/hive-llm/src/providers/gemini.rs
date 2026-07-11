@@ -101,15 +101,35 @@ fn request_body(request: &ChatRequest, stream: bool) -> Value {
             ChatRole::Tool => {
                 let response = serde_json::from_str::<Value>(&msg.content)
                     .unwrap_or_else(|_| json!({ "content": msg.content }));
-                contents.push(json!({
-                    "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": msg.tool_name.clone().unwrap_or_else(|| "tool".into()),
-                            "response": response,
-                        }
-                    }],
-                }));
+                let part = json!({
+                    "functionResponse": {
+                        "name": msg.tool_name.clone().unwrap_or_else(|| "tool".into()),
+                        "response": response,
+                    }
+                });
+                // Gemini expects all `functionResponse` parts answering one
+                // model turn's parallel `functionCall`s in a SINGLE `user`
+                // turn. The runtime emits one `Tool` message per call, so a
+                // round with N parallel calls would otherwise become N separate
+                // `user` turns — Gemini mis-pairs / rejects those. Append onto
+                // the previous turn when it is already a tool-response `user`
+                // turn instead of pushing another one.
+                let merged = contents.last_mut().and_then(|last| {
+                    let is_tool_turn = last.get("role").and_then(Value::as_str) == Some("user")
+                        && last
+                            .get("parts")
+                            .and_then(Value::as_array)
+                            .map(|p| p.iter().all(|x| x.get("functionResponse").is_some()))
+                            .unwrap_or(false);
+                    is_tool_turn
+                        .then(|| last.get_mut("parts").and_then(Value::as_array_mut))
+                        .flatten()
+                });
+                if let Some(arr) = merged {
+                    arr.push(part);
+                } else {
+                    contents.push(json!({ "role": "user", "parts": [part] }));
+                }
             }
         }
     }
@@ -569,5 +589,80 @@ mod tests {
             .collect();
         assert_eq!(ids.len(), 2);
         assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn multi_tool_round_merges_function_responses_into_one_user_turn() {
+        use crate::chat::{ChatMessage, ChatRequest, ToolCall};
+
+        // A round where the model called TWO tools in parallel, followed by the
+        // two tool_result messages the runtime emits one at a time. Gemini
+        // wants both `functionResponse` parts in a SINGLE `user` turn.
+        let req = ChatRequest::new(
+            "gemini-2.0-flash",
+            vec![
+                ChatMessage::user("read a.txt and b.txt"),
+                ChatMessage::assistant_with_tool_calls(
+                    "",
+                    vec![
+                        ToolCall {
+                            id: Some("call_a".into()),
+                            name: "fs_read".into(),
+                            arguments: json!({ "path": "a.txt" }),
+                        },
+                        ToolCall {
+                            id: Some("call_b".into()),
+                            name: "fs_read".into(),
+                            arguments: json!({ "path": "b.txt" }),
+                        },
+                    ],
+                ),
+                ChatMessage::tool_result("call_a", "fs_read", "contents of a"),
+                ChatMessage::tool_result("call_b", "fs_read", "contents of b"),
+            ],
+        );
+
+        let body = request_body(&req, false);
+        let contents = body["contents"].as_array().unwrap();
+
+        // Roles must be user, model, user — NOT user, model, user, user.
+        let roles: Vec<&str> = contents
+            .iter()
+            .map(|c| c["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, vec!["user", "model", "user"], "roles: {roles:?}");
+
+        // The final user turn carries BOTH functionResponse parts.
+        let parts = contents.last().unwrap()["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2, "expected both functionResponses merged");
+        assert!(parts.iter().all(|p| p.get("functionResponse").is_some()));
+    }
+
+    #[test]
+    fn single_tool_round_keeps_one_user_turn() {
+        use crate::chat::{ChatMessage, ChatRequest, ToolCall};
+        let req = ChatRequest::new(
+            "gemini-2.0-flash",
+            vec![
+                ChatMessage::user("read a.txt"),
+                ChatMessage::assistant_with_tool_calls(
+                    "",
+                    vec![ToolCall {
+                        id: Some("call_a".into()),
+                        name: "fs_read".into(),
+                        arguments: json!({ "path": "a.txt" }),
+                    }],
+                ),
+                ChatMessage::tool_result("call_a", "fs_read", "contents of a"),
+            ],
+        );
+        let body = request_body(&req, false);
+        let roles: Vec<&str> = body["contents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, vec!["user", "model", "user"]);
     }
 }
