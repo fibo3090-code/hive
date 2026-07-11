@@ -28,6 +28,25 @@ pub async fn list_by_thread(db: &DatabaseConnection, thread_id: &str) -> Result<
         .await
 }
 
+/// Batched [`list_by_thread`] for exporting a project: one `WHERE thread_id
+/// IN (…)` query for every thread instead of one per thread (C061). Rows are
+/// ordered by `(thread_id, created_at)`; the caller groups by `thread_id`.
+/// Returns empty for an empty input.
+pub async fn list_by_thread_ids(
+    db: &DatabaseConnection,
+    thread_ids: &[String],
+) -> Result<Vec<Model>, DbErr> {
+    if thread_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    Entity::find()
+        .filter(Column::ThreadId.is_in(thread_ids.iter().cloned()))
+        .order_by_asc(Column::ThreadId)
+        .order_by_asc(Column::CreatedAt)
+        .all(db)
+        .await
+}
+
 pub async fn get(db: &DatabaseConnection, id: &str) -> Result<Option<Model>, DbErr> {
     Entity::find_by_id(id.to_owned()).one(db).await
 }

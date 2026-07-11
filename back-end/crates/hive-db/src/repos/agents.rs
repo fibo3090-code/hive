@@ -197,6 +197,25 @@ pub async fn count_by_project(db: &DatabaseConnection, project_id: &str) -> Resu
         .await
 }
 
+/// Batched [`count_by_project`] across the whole DB: one
+/// `GROUP BY project_id` query returning `project_id → live agent count`.
+/// Lets `list_projects` avoid an N+1 (C060). Projects with no agents are
+/// absent from the map (callers default to 0).
+pub async fn count_by_project_all(
+    db: &DatabaseConnection,
+) -> Result<std::collections::HashMap<String, i64>, DbErr> {
+    let rows: Vec<(String, i64)> = Entity::find()
+        .select_only()
+        .column(Column::ProjectId)
+        .column_as(Column::Id.count(), "count")
+        .filter(Column::DeletedAt.is_null())
+        .group_by(Column::ProjectId)
+        .into_tuple()
+        .all(db)
+        .await?;
+    Ok(rows.into_iter().collect())
+}
+
 /// Get the agent's enabled-tools list as a `Vec<String>` (best-effort parse).
 pub fn parse_enabled_tools(value: &serde_json::Value) -> Vec<String> {
     value

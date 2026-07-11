@@ -2161,7 +2161,22 @@ async fn project_payload(
     let agent_count = agents::count_by_project(database.conn(), &project.id).await?;
     let used_cents =
         cost_events::total_cost_cents_for_project(database.conn(), &project.id).await?;
-    Ok(json!({
+    Ok(project_payload_from(
+        project,
+        agent_count as i64,
+        used_cents,
+    ))
+}
+
+/// Pure payload builder shared by [`project_payload`] (per-project, 2 queries)
+/// and [`list_projects`] (batched, 2 total). Takes the pre-fetched counts so
+/// the list path can avoid the per-project N+1 (C060).
+fn project_payload_from(
+    project: hive_db::entities::project::Model,
+    agent_count: i64,
+    used_cents: i64,
+) -> Value {
+    json!({
         "id": project.id,
         "name": project.name,
         "description": project.description,
@@ -2179,7 +2194,7 @@ async fn project_payload(
         },
         "createdAt": project.created_at,
         "updatedAt": project.updated_at
-    }))
+    })
 }
 
 async fn session_payload(database: &Db, project_id: &str) -> Result<Value, AppError> {
@@ -2413,10 +2428,19 @@ async fn openapi_json(
 
 async fn list_projects(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    let mut payload = Vec::new();
-    for project in projects::list(database.conn()).await? {
-        payload.push(project_payload(&database, project).await?);
-    }
+    // C060: two batched GROUP BY queries instead of 2 per project. Build the
+    // payloads from the pre-fetched maps.
+    let agent_counts = agents::count_by_project_all(database.conn()).await?;
+    let cost_by_project = cost_events::total_cost_cents_by_project(database.conn()).await?;
+    let payload: Vec<Value> = projects::list(database.conn())
+        .await?
+        .into_iter()
+        .map(|project| {
+            let agent_count = agent_counts.get(&project.id).copied().unwrap_or(0);
+            let used_cents = cost_by_project.get(&project.id).copied().unwrap_or(0);
+            project_payload_from(project, agent_count, used_cents)
+        })
+        .collect();
     Ok(Json(json!(payload)))
 }
 
@@ -2676,14 +2700,26 @@ async fn export_project_archive(
     // export; assemble a `{thread, messages: [...]}` shape so the
     // export is self-contained without requiring multiple files.
     let thread_rows = chat_threads::list_by_project(database.conn(), &project_id).await?;
-    let mut threads_with_messages = Vec::with_capacity(thread_rows.len());
-    for thread in &thread_rows {
-        let msgs = chat_messages::list_by_thread(database.conn(), &thread.id).await?;
-        threads_with_messages.push(json!({
-            "thread": thread,
-            "messages": msgs,
-        }));
+    // C061: fetch every thread's messages in one query, then group by
+    // thread_id — instead of one query per thread.
+    let thread_ids: Vec<String> = thread_rows.iter().map(|t| t.id.clone()).collect();
+    let mut messages_by_thread: std::collections::HashMap<String, Vec<_>> =
+        std::collections::HashMap::new();
+    for msg in chat_messages::list_by_thread_ids(database.conn(), &thread_ids).await? {
+        messages_by_thread
+            .entry(msg.thread_id.clone())
+            .or_default()
+            .push(msg);
     }
+    let threads_with_messages: Vec<Value> = thread_rows
+        .iter()
+        .map(|thread| {
+            json!({
+                "thread": thread,
+                "messages": messages_by_thread.remove(&thread.id).unwrap_or_default(),
+            })
+        })
+        .collect();
 
     // Recent audit entries scoped to this project (last 1000).
     let audit_rows = audit::list_for_entity(database.conn(), "project", &project_id).await?;

@@ -49,6 +49,30 @@ pub async fn total_cost_cents_for_project<C: ConnectionTrait>(
     Ok(result.flatten().unwrap_or(0))
 }
 
+/// Batched [`total_cost_cents_for_project`] for the whole DB: one
+/// `GROUP BY project_id` query returning `project_id → summed cost_cents`.
+/// Lets `list_projects` avoid an N+1 (C060). Projects with no cost rows are
+/// absent from the map (callers default to 0).
+pub async fn total_cost_cents_by_project(
+    db: &DatabaseConnection,
+) -> Result<std::collections::HashMap<String, i64>, DbErr> {
+    let rows: Vec<(String, Option<i64>)> = Entity::find()
+        .select_only()
+        .column(Column::ProjectId)
+        .column_as(
+            sea_orm::sea_query::Expr::col(Column::CostCents).sum(),
+            "sum",
+        )
+        .group_by(Column::ProjectId)
+        .into_tuple()
+        .all(db)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(pid, sum)| (pid, sum.unwrap_or(0)))
+        .collect())
+}
+
 pub async fn total_cost_cents_for_session(
     db: &DatabaseConnection,
     session_id: &str,

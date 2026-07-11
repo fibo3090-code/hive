@@ -102,9 +102,10 @@ ease, reconciled with the verification report's "what I'd ship first":
     the C087 whitelist now have their first tests; the frontend suite is still open. → §3.5 / §4.5
 
 **Remaining highest-value OPEN items (2026-07-11):** C134-C140 repo-layer
-audit/allowlist bypass (§3.2, partially mitigated — C137 fixed), C060/C061/C106
-backend perf (§3.5), and the remaining frontend test coverage (pages + the ~40
-UI components; the api/realtime/hooks foundation now has ~99 tests — §4.5).
+audit/allowlist bypass (§3.2, partially mitigated — C137 fixed), C106
+`run_turn_inner` monolith split (§3.5; C060/C061 N+1s now fixed), and the
+remaining frontend test coverage (pages + the ~40 UI components; the
+api/realtime/hooks foundation now has ~99 tests — §4.5).
 C261 sandbox `exec` **mitigated** (network-command denylist, §3.2); C544/C545
 esbuild/vite advisories **resolved** — vite bumped 5→7 (§4.4).
 
@@ -187,11 +188,14 @@ Tracked historically as HANDOFF §4.5.
 
 ### 3.5 🟠 High — performance & test coverage
 
-**Performance (N+1 & oversized):** C060 `list_projects` (1+2N), C061
-`export_project` (1+N), C106 `run_turn_inner` (~784 LOC monolith) — **OPEN**.
+**Performance (N+1 & oversized):** C106 `run_turn_inner` (~784 LOC monolith)
+— **OPEN**. ~~C060 `list_projects` (1+2N)~~, ~~C061 `export_project` (1+N)~~,
 ~~C102 chat-attachments history loop~~, ~~C143 `agents::ancestors`~~, ~~C144
-`agents::descendants`~~ — **✅ RESOLVED (2026-07-10 triage)**: batched
-`list_for_message_ids` + one-query in-memory tree walks (with first tests, C152).
+`agents::descendants`~~ — **✅ RESOLVED**: C060 batched into two `GROUP BY`
+queries (`agents::count_by_project_all` + `cost_events::total_cost_cents_by_project`);
+C061 batched via `chat_messages::list_by_thread_ids`; C102 `list_for_message_ids`;
+C143/C144 one-query in-memory tree walks. All with integration tests
+(`batch_aggregates.rs`, `agent_tree_walk.rs`, C152).
 
 **Concurrency:** C168 `todo.rs` `save_state` wrote without a sandbox lock.
 Legacy A.30. **Status: ✅ RESOLVED (2026-07-10 triage)** — RAII guard held across
