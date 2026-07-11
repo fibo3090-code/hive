@@ -102,9 +102,11 @@ ease, reconciled with the verification report's "what I'd ship first":
     the C087 whitelist now have their first tests; the frontend suite is still open. → §3.5 / §4.5
 
 **Remaining highest-value OPEN items (2026-07-11):** C134-C140 repo-layer
-audit/allowlist bypass (§3.2), C261 sandbox `exec` arbitrary binary (§3.2),
-C060/C061/C106 backend perf (§3.5), and the frontend test suite (§4.5).
-C544/C545 esbuild/vite advisories **resolved** — vite bumped 5→7 (§4.4).
+audit/allowlist bypass (§3.2, partially mitigated — C137 fixed), C060/C061/C106
+backend perf (§3.5), and the remaining frontend test coverage (pages + the ~40
+UI components; the api/realtime/hooks foundation now has ~99 tests — §4.5).
+C261 sandbox `exec` **mitigated** (network-command denylist, §3.2); C544/C545
+esbuild/vite advisories **resolved** — vite bumped 5→7 (§4.4).
 
 ---
 
@@ -135,10 +137,10 @@ C202: send `x-goog-api-key` header. C247: `zeroize::Zeroizing<Vec<u8>>`.
 | **C088** | — | `hive-runtime/src/chat.rs` | Chat-attachment **read** path joined `storage_path` with no canonicalize/bounds check. | **✅ RESOLVED** (2026-07-10 triage): same canonicalize + starts_with bounds check as the download endpoint. |
 | **C251** | — | `hive-git/src/lib.rs` | `Command::new("git")` blocked shell injection but not **git-option** injection. | **✅ RESOLVED** (2026-07-10 triage): `ensure_safe_ref` rejects option-like/control-char refs at every entry point; crate gained its first tests (C295-C298 partial). |
 | **C256** | ZZ20 | `hive-crypto/src/lib.rs` | Windows master-key file written with default ACL. | **✅ RESOLVED** — PR #24 (merged): icacls lockdown alongside the zeroize fix (C247). |
-| **C261** | — | `hive-sandbox/src/local.rs:424` | `exec()` runs **any** binary (`curl`, `nc`, `socat`); `check_path_allowed` filters file paths, not the command. | **OPEN** |
+| **C261** | — | `hive-sandbox/src/local.rs` / `hive-tools/src/context.rs` | `exec()` ran **any** binary (`curl`, `nc`, `socat`); `check_path_allowed` filters file paths, not the command. | **✅ MITIGATED** (2026-07-10 triage): `ToolContext::check_command_allowed` default-denies network/exfil binaries (basename + best-effort `sh -c` scan), operator-overridable. Airtight containment (`/dev/tcp`, encoded scripts, arbitrary binaries) still needs the Docker sandbox (ZZ6). |
 | **C151** | — | `hive-db/src/db.rs` | `repair_renamed_migrations` built SQL via `format!` + `execute_unprepared`. | **✅ RESOLVED** (2026-07-10 triage): parameterized `Statement::from_sql_and_values` with backend-specific placeholders. |
 | **C203** | — | `hive-llm/src/providers/gemini.rs` | `request.model` interpolated into the URL path unencoded. | **✅ RESOLVED** — PR #16 (merged): model id `urlencoding::encode`d (same fix as C202). |
-| **C134/C135/C136/C137/C140** | A.6 | `hive-db/src/repos/{agents,projects,connectors,llm_providers}.rs` | Repo-layer mutations (`update`/`set_status`/`set_connected`) change tools/status/credentials with **no audit** and **no allowlist validation**; direct callers (e.g. `seed.rs`) bypass handler-level checks. | **OPEN** |
+| **C134/C135/C136/C137/C140** | A.6 | `hive-db/src/repos/{agents,projects,connectors,llm_providers}.rs` | Repo-layer mutations (`update`/`set_status`/`set_connected`) change tools/status/credentials with **no audit** and **no allowlist validation**; direct callers (e.g. `seed.rs`) bypass handler-level checks. | **MITIGATED** (2026-07-10 triage): **C137** credential-blob leak fixed — the `llm_provider.update` audit no longer serialized the raw Model (which carried `api_key_ciphertext`); it now uses the redacted `provider_to_json` for `before` too. The agent-initiated `delete_agent` runtime tool now audits its lifecycle mutation. Full repo-layer *enforcement* (moving audit+allowlist into the repo mutators so `seed.rs`/runtime callers can't bypass) remains the tracked architectural item (the `ctx.mutation()` helper, §3.3). |
 
 ### 3.3 🟠 High + 🟡 Medium — audit-coverage gap (one root cause)
 
@@ -166,7 +168,9 @@ the "every mutation is auditable" guarantee. Verification grep found only **14**
 `set_agent_status` already audit, batch 2). **Status: ✅ RESOLVED (2026-07-10 triage)** —
 36 new `audit::append` sites (15 → 51) cover every handler in both batches;
 settings audits record the post-scrub blob, connector audits redact sealed
-credentials. The repo-layer findings (C134-C140, §3.2) remain open.
+credentials. The repo-layer findings (C134-C140, §3.2) are partially mitigated
+(C137 credential-blob leak fixed; agent-tool lifecycle now audits) — full
+repo-layer enforcement remains the tracked architectural item.
 **Single fix:** a `ctx.mutation(entity, id, op, before, after, |db| …)` helper (or
 tower middleware) that wraps audit + broadcast — collapses all ~40 findings.
 Tracked historically as HANDOFF §4.5.

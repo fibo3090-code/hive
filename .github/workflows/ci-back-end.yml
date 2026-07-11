@@ -154,9 +154,13 @@ jobs:
         #   RUSTSEC-2025-0057  fxhash         (unmaintained)
         #   RUSTSEC-2026-0173  proc-macro-error2 (unmaintained)
         #   RUSTSEC-2024-0436  paste  (unmaintained; via restate-sdk-macros, feature `restate`)
+        #   RUSTSEC-2026-0190  anyhow (unsound Error::downcast_mut; the API is not
+        #                      used anywhere in the workspace — `grep -r downcast_mut
+        #                      back-end` is empty. Drop when a patched anyhow lands.)
         run: >-
           cargo audit --deny warnings
           --ignore RUSTSEC-2023-0071
           --ignore RUSTSEC-2025-0057
           --ignore RUSTSEC-2026-0173
           --ignore RUSTSEC-2024-0436
+          --ignore RUSTSEC-2026-0190

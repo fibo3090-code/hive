@@ -27,6 +27,7 @@ service. See §5 before changing the bind address.
 | **Filesystem jail** | Per-project sandbox: `..` reject → component normalisation → canonicalise deepest existing ancestor → prefix re-check; `O_NOFOLLOW` on writes | `hive-sandbox`, `hive-tools` |
 | **File Protection Zones** | `.env*`, `.git/`, `.hive/`, user-protected paths denied per path-component (catches nested `apps/web/.env`) for `fs_read`/`fs_list`/`fs_write`/`str_replace` and path-like `shell_exec` argv | `ToolContext::check_path_allowed` |
 | **Credential isolation in shell** | `shell_exec` HOME → `<root>/.hive/run-home/` so npm/cargo/git cached creds don't leak into the next `fs_read` | `hive-sandbox` |
+| **Shell network-command denylist** | `shell_exec` refuses network/exfil binaries (`curl`/`wget`/`nc`/`socat`/`ssh`/…) by basename + a best-effort `sh -c` scan; operator-overridable. Sanctioned egress is `web_fetch`/`web_search` (SSRF-guarded) | `ToolContext::check_command_allowed` |
 | **Permission profiles** | `Plan` / `Build` / `Explore` enforced in `ToolRegistry::invoke` before dispatch | `hive-tools::permission` |
 | **SSRF baseline** | `web_fetch` rejects private/internal destinations; redirects are walked manually so the async **hostname-resolving** guard runs on every hop (not just IP literals) | `hive-tools/src/builtins/web.rs` |
 | **Sovereignty gate** | `local`-tier projects reject `git_pull`/`git_push` | `hive-runtime::git_tools` |
@@ -39,8 +40,6 @@ Confirmed open in the 2026-06-15 audit and **still open** on `main`. Full detail
 + fix in [`BACKLOG.md`](BACKLOG.md); IDs given for cross-reference.
 
 ### High 🟠
-- **C261 — `shell_exec` runs any binary** (`curl`/`nc`/`socat`); no command
-  allowlist.
 - **C134–C140 — repo-layer credential mutations** bypass audit + allowlist
   validation (the handler-level audit trail is now complete, but direct repo
   callers like `seed.rs` still bypass it).
@@ -48,6 +47,12 @@ Confirmed open in the 2026-06-15 audit and **still open** on `main`. Full detail
   no cleanup; C478/C482 plaintext key transmission.
 
 ### Recently resolved (do not re-report)
+- **C261** `shell_exec` unrestricted binaries — 2026-07-10 triage: default
+  network/exfil command denylist (`ToolContext::check_command_allowed`),
+  operator-overridable, with a best-effort `sh -c` scan. True containment
+  (arbitrary binaries, `/dev/tcp`, encoded scripts) still needs the Docker
+  sandbox (ZZ6), but the common exfil/pivot path and prompt-injection are now
+  blocked by default.
 - **C026 / C074** tool-allowlist kill-switch — PR #15 (intersect + authority carve-out).
 - **C202 / C203 / C201** Gemini key-in-URL / model-name injection / null `generationConfig` — PR #16.
 - **C169–C188** SSRF via hostname redirect / DNS rebinding — PR #23 (redirects

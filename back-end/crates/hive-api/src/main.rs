@@ -2082,6 +2082,24 @@ async fn build_tooling(
         .with_protected_files(protected_files)
         .with_sandbox_locks(state.sandbox_locks.clone());
 
+    // C261: shell_exec network/exfil command denylist. Defaults to the
+    // baked-in network-tool list; the operator can override (including with
+    // an empty list to allow everything) via
+    // `settings.toolsSandbox.blockedCommands`.
+    let tools_sandbox =
+        settings::get_value(db(state).await.conn(), "global", "toolsSandbox").await?;
+    if let Some(list) = tools_sandbox
+        .as_ref()
+        .and_then(|t| t.get("blockedCommands"))
+        .and_then(|c| c.as_array())
+    {
+        let blocked: Vec<String> = list
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect();
+        context = context.with_blocked_commands(blocked);
+    }
+
     Ok(Some((registry, context)))
 }
 
@@ -6833,7 +6851,11 @@ async fn update_llm_provider(
         "llm_provider.update",
         "llm_provider",
         &id,
-        Some(serde_json::to_value(&existing).unwrap_or(Value::Null)),
+        // C137: use the redacted view for `before` too — the raw Model
+        // carries `api_key_ciphertext` (the sealed key blob), which must
+        // never land in the audit log. `provider_to_json` exposes only
+        // `hasKey`/`masked`.
+        Some(provider_to_json(&existing)),
         Some(provider_to_json(&updated)),
     )
     .await?;

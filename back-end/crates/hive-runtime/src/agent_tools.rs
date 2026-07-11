@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use hive_db::{
-    repos::{agent_messages, agent_spawn_requests, agent_wires, agents, tasks},
+    repos::{agent_messages, agent_spawn_requests, agent_wires, agents, audit, tasks},
     Db,
 };
 use hive_tools::{Tool, ToolContext, ToolError, ToolManifest, ToolRegistry, ToolResult};
@@ -566,6 +566,18 @@ impl Tool for DeleteAgent {
         agents::set_status(self.db.conn(), &target.project_id, agent_id, "deprecated")
             .await
             .map_err(|e| ToolError::Other(format!("mark agent {agent_id} deprecated: {e}")))?;
+        // C134-C140: agent-initiated lifecycle mutations must be auditable
+        // too, not just the HTTP handlers. Actor is the calling agent.
+        let _ = audit::append(
+            self.db.conn(),
+            &format!("agent:{}", ctx.agent_id.as_deref().unwrap_or("unknown")),
+            "agent.delete",
+            "agent",
+            agent_id,
+            Some(json!({ "status": target.status, "role": target.role })),
+            Some(json!({ "status": "deprecated" })),
+        )
+        .await;
         Ok(json!({ "ok": true, "agentId": agent_id, "status": "deprecated" }))
     }
 }

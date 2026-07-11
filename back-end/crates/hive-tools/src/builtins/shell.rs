@@ -96,6 +96,12 @@ impl Tool for ShellExecTool {
             }
         }
 
+        // C261: refuse network/exfil binaries (curl, nc, socat…) so a
+        // prompt-injected agent can't exfiltrate secrets or pivot into the
+        // no-auth local API. Sanctioned network access is web_fetch /
+        // web_search (both run the SSRF guard).
+        ctx.check_command_allowed(&args.command, &args.args)?;
+
         let out = ctx.sandbox.exec(&args.command, &args.args, timeout).await?;
         Ok(json!({
             "command": args.command,

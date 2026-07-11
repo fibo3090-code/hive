@@ -266,7 +266,13 @@ The runtime / API decoupling matters: `hive-runtime` cannot depend on
   to 256 KiB / 64 KiB; `env_clear()` then a fixed allowlist
   (`PATH, LANG, LC_ALL, TZ, TERM, USER, LOGNAME`); HOME set to
   `<root>/.hive/run-home/` so cached credentials never leak into the
-  workspace tree (ZZ7).
+  workspace tree (ZZ7). A **network-command denylist**
+  (`ToolContext::check_command_allowed`, C261) default-denies
+  `curl`/`wget`/`nc`/`socat`/`ssh`/… by basename plus a best-effort
+  `sh -c` scan, so a prompt-injected agent can't exfiltrate secrets or
+  pivot into the no-auth local API; the sanctioned egress paths are
+  `web_fetch`/`web_search`. Operator-overridable via
+  `settings.toolsSandbox.blockedCommands` (empty list = allow all).
 - Sandbox creation pre-creates `<root>/.hive/run-home/` so the protected
   zone is ready before the first shell_exec lands.
 
