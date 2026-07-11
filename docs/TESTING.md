@@ -45,7 +45,7 @@ must pass; `cargo test --workspace` must be green.
 | **Backend — `hive-git`** | **First tests landed** (2026-07-10): `ensure_safe_ref` option-injection guards + an init/commit/checkout/log round-trip. The `log`/`tree`/`file`/`diff` *parsers* (C295–C298) are still largely uncovered — silent data-loss risk remains there. |
 | **Backend — repo layer** | Mixed: `agents.rs` has tests; ~34 repo files have none (C165, partially overstated). |
 | **Backend — critical state machines** | Executor/registry, agent tools, drift-hook *integration*, budget reservation, wire cycle detection, SSRF guard, domain `FromStr` — confirmed gaps (C118–C299). |
-| **Frontend** | **Effectively untested.** The only test file is `src/test/example.test.ts`, which asserts `expect(true).toBe(true)` (C538). 19 pages, ~47 UI components, `useHiveData`, `RealtimeProvider`, `useSse` — all uncovered (C361/C400/C531–C533). |
+| **Frontend** | **Foundation laid (2026-07-10):** ~99 real tests across `api/client` (error/`requestId` paths), `RealtimeProvider`+`useSse`+`useChatStream` (subscription lifecycle, event→invalidation, the SSE mount-race regression — see below), `useHiveData`, `CommandPalette`, `ErrorBoundary`, `use-toast`, and `form`. Writing these **found and fixed a production bug**: the SSE→query-invalidation bridge was silently dead on first load because `RealtimeProvider`'s mount effect never re-bound listeners created by same-commit descendant subscribers. Pages and the remaining ~40 UI components are still uncovered (C361/C400/C531–C533). |
 | **E2E** | Playwright is wired but there is no meaningful suite. |
 | **CI** | Workflows exist (added in the HANDOFF-era remediation); verify they still run on push. |
 

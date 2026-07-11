@@ -65,10 +65,26 @@ export function RealtimeProvider({ children }: { readonly children: ReactNode })
       }
     };
 
-    // Re-attach native listeners for any handlers that were registered before
-    // the EventSource opened.
+    // Attach native listeners for any handlers registered before this effect
+    // ran. React runs a descendant's mount effects BEFORE its ancestor's, so a
+    // consumer that calls `subscribe()` in the same commit (e.g. <RealtimeBridge>
+    // → useSse, mounted as a direct child of this provider) runs while
+    // `sourceRef.current` is still null — its `addEventListener` no-ops. The
+    // listener closure exists in `nativeListenersRef` but was never bound to a
+    // source. `ensureNativeListener` early-returns for an already-created
+    // listener, so re-calling it here does NOT rebind — we must attach the
+    // existing closures to the freshly-created source directly. Without this,
+    // the entire SSE→query-invalidation bridge is silently dead on first load.
     for (const [eventName] of handlersRef.current) {
-      ensureNativeListener(eventName);
+      const listener = nativeListenersRef.current.get(eventName);
+      if (!listener) {
+        // No closure yet (shouldn't normally happen for an exact subscribe,
+        // but keep the fallback): build + attach in one step now that the
+        // source exists.
+        ensureNativeListener(eventName);
+        continue;
+      }
+      source.addEventListener(eventName, listener);
     }
 
     // Capture the maps this effect run owns; the cleanup must clear what was
