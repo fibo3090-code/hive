@@ -107,7 +107,8 @@ export function ModelPicker({ value, onChange, className, disabled }: ModelPicke
       {modelsQuery.isLoading && <div className="text-xs text-muted-foreground">Fetching models…</div>}
       {modelsQuery.isError && (
         <div className="text-xs text-destructive">
-          Failed to list models: {(modelsQuery.error as Error).message}
+          Failed to list models:{" "}
+          {modelsQuery.error instanceof Error ? modelsQuery.error.message : String(modelsQuery.error)}
           <button
             type="button"
             className="ml-2 inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"

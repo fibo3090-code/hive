@@ -456,6 +456,10 @@ export default function ChatCentral() {
       setChatTargetAgentId(null);
       return;
     }
+    // C316: the mutation object's identity changes as its state transitions,
+    // re-running this effect while the create is still in flight — without
+    // this guard a second (duplicate) thread was created for the same agent.
+    if (createThreadMutation.isPending) return;
     const agent = state.agents.find((a) => a.id === chatTargetAgentId);
     createThreadMutation.mutate(
       {
@@ -771,7 +775,7 @@ export default function ChatCentral() {
                         deleteThreadMutation.mutate(thread.id);
                         if (activeThreadId === thread.id) setActiveThreadId(null);
                       }}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-destructive rounded hover:bg-surface-2 absolute right-1 bg-surface-3"
+                      aria-label="Delete thread" className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-1 text-muted-foreground hover:text-destructive rounded hover:bg-surface-2 absolute right-1 bg-surface-3"
                     >
                       <Trash2 className="h-3 w-3" />
                     </button>

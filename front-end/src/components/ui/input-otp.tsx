@@ -26,7 +26,14 @@ const InputOTPSlot = React.forwardRef<
   React.ComponentPropsWithoutRef<"div"> & { index: number }
 >(({ index, className, ...props }, ref) => {
   const inputOTPContext = React.useContext(OTPInputContext);
-  const { char, hasFakeCaret, isActive } = inputOTPContext.slots[index];
+  // C394: outside an <InputOTP> provider the context is null and slots is
+  // undefined — destructuring crashed the whole tree instead of rendering
+  // an empty slot.
+  const { char, hasFakeCaret, isActive } = inputOTPContext?.slots?.[index] ?? {
+    char: null,
+    hasFakeCaret: false,
+    isActive: false,
+  };
 
   return (
     <div

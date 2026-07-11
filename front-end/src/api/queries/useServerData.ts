@@ -39,7 +39,9 @@ export function useSettingsData() {
 function useProjectResourceQuery<T>(projectId: string | null | undefined, key: string, path: string) {
   return useQuery({
     queryKey: [key, projectId],
-    queryFn: () => api<T>(`/v1/projects/${projectId}/${path}`),
+    // `path` is a trusted multi-segment route constant (e.g. "insights/spend"),
+    // so it must NOT be encoded — only the caller-supplied projectId is.
+    queryFn: () => api<T>(`/v1/projects/${encodeURIComponent(String(projectId))}/${path}`),
     enabled: Boolean(projectId),
   });
 }
@@ -85,7 +87,7 @@ export interface SandboxLock {
 export function useSandboxLocks(projectId?: string | null) {
   return useQuery({
     queryKey: ['sandbox-locks', projectId],
-    queryFn: () => api<SandboxLock[]>(`/v1/projects/${projectId}/sandbox-locks`),
+    queryFn: () => api<SandboxLock[]>(`/v1/projects/${encodeURIComponent(String(projectId))}/sandbox-locks`),
     enabled: Boolean(projectId),
     refetchInterval: 2000,
   });
@@ -125,7 +127,7 @@ export const useCostTimelineData = (
     queryKey: ['insights', 'cost-timeline', projectId, range, bucket],
     queryFn: () =>
       api<CostTimelinePoint[]>(
-        `/v1/projects/${projectId}/insights/cost-timeline?range=${range}&bucket=${bucket}`,
+        `/v1/projects/${encodeURIComponent(String(projectId))}/insights/cost-timeline?range=${range}&bucket=${bucket}`,
       ),
     enabled: Boolean(projectId),
     staleTime: 30_000,
@@ -139,7 +141,7 @@ export const useAgentTokenUsageData = (
     queryKey: ['insights', 'agent-token-usage', projectId, range],
     queryFn: () =>
       api<AgentTokenUsageRow[]>(
-        `/v1/projects/${projectId}/insights/agent-token-usage?range=${range}`,
+        `/v1/projects/${encodeURIComponent(String(projectId))}/insights/agent-token-usage?range=${range}`,
       ),
     enabled: Boolean(projectId),
     staleTime: 30_000,
@@ -150,7 +152,7 @@ export const useTaskDistributionData = (projectId?: string | null) =>
     queryKey: ['insights', 'task-distribution', projectId],
     queryFn: () =>
       api<TaskDistributionRow[]>(
-        `/v1/projects/${projectId}/insights/task-distribution`,
+        `/v1/projects/${encodeURIComponent(String(projectId))}/insights/task-distribution`,
       ),
     enabled: Boolean(projectId),
     staleTime: 30_000,
@@ -161,7 +163,7 @@ export const useModulesData = (projectId?: string | null) =>
 export function useModuleData(moduleId?: string | null) {
   return useQuery({
     queryKey: ['module', moduleId],
-    queryFn: () => api<ModuleCatalogItem>(`/v1/modules/${moduleId}`),
+    queryFn: () => api<ModuleCatalogItem>(`/v1/modules/${encodeURIComponent(String(moduleId))}`),
     enabled: Boolean(moduleId),
   });
 }
@@ -170,7 +172,7 @@ export function useInstallModule(projectId?: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (moduleId: string) =>
-      api<ModuleCatalogItem>(`/v1/projects/${projectId}/modules/${moduleId}/install`, { method: 'POST' }),
+      api<ModuleCatalogItem>(`/v1/projects/${encodeURIComponent(String(projectId))}/modules/${encodeURIComponent(String(moduleId))}/install`, { method: 'POST' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['modules', projectId] });
       queryClient.invalidateQueries({ queryKey: ['module'] });
@@ -182,7 +184,7 @@ export function useCreateNote(projectId?: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: { category: string; title: string; content: string; auto?: boolean; author?: string }) =>
-      api<NoteItem>(`/v1/projects/${projectId}/notes`, {
+      api<NoteItem>(`/v1/projects/${encodeURIComponent(String(projectId))}/notes`, {
         method: 'POST',
         body: JSON.stringify(body),
       }),
@@ -194,7 +196,7 @@ export function useMoveTechDebt(projectId?: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ itemId, severity }: { itemId: string; severity: string }) =>
-      api<TechDebtItem>(`/v1/tech-debt/${itemId}/move`, {
+      api<TechDebtItem>(`/v1/tech-debt/${encodeURIComponent(String(itemId))}/move`, {
         method: 'POST',
         body: JSON.stringify({ severity }),
       }),
@@ -212,7 +214,7 @@ export function useUpdateNote(projectId?: string | null) {
       noteId: string;
       patch: { category?: string; title?: string; content?: string };
     }) =>
-      api<NoteItem>(`/v1/notes/${noteId}`, {
+      api<NoteItem>(`/v1/notes/${encodeURIComponent(String(noteId))}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
       }),
@@ -224,7 +226,7 @@ export function useDeleteNote(projectId?: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (noteId: string) =>
-      api<{ ok: boolean }>(`/v1/notes/${noteId}`, { method: 'DELETE' }),
+      api<{ ok: boolean }>(`/v1/notes/${encodeURIComponent(String(noteId))}`, { method: 'DELETE' }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notes', projectId] }),
   });
 }
@@ -246,7 +248,7 @@ export function useUpdateTechDebt(projectId?: string | null) {
         lines?: number;
       };
     }) =>
-      api<TechDebtItem>(`/v1/tech-debt/${itemId}`, {
+      api<TechDebtItem>(`/v1/tech-debt/${encodeURIComponent(String(itemId))}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
       }),
@@ -258,7 +260,7 @@ export function useDeleteTechDebt(projectId?: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (itemId: string) =>
-      api<{ ok: boolean }>(`/v1/tech-debt/${itemId}`, { method: 'DELETE' }),
+      api<{ ok: boolean }>(`/v1/tech-debt/${encodeURIComponent(String(itemId))}`, { method: 'DELETE' }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tech-debt', projectId] }),
   });
 }
@@ -267,7 +269,7 @@ export function useReorderSprints(projectId?: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ fromId, toId }: { fromId: string; toId: string }) =>
-      api<SprintPlanItem[]>(`/v1/projects/${projectId}/sprints/reorder`, {
+      api<SprintPlanItem[]>(`/v1/projects/${encodeURIComponent(String(projectId))}/sprints/reorder`, {
         method: 'POST',
         body: JSON.stringify({ fromId, toId }),
       }),
@@ -281,10 +283,3 @@ export const useAgentBlueprintsData = () =>
     queryFn: () => api<AgentBlueprint[]>('/v1/agent-blueprints'),
   });
 
-export function useAgentMessagesData(agentId?: string | null) {
-  return useQuery({
-    queryKey: ['agent-messages', agentId],
-    queryFn: () => api<unknown[]>(`/v1/agents/${agentId}/messages`),
-    enabled: Boolean(agentId),
-  });
-}

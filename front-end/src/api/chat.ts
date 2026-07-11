@@ -55,7 +55,7 @@ export interface SendMessageResponse {
 export function useChatThreads(projectId: string | null | undefined) {
   return useQuery({
     queryKey: ['chat-threads', projectId],
-    queryFn: () => api<ChatThread[]>(`/v1/projects/${projectId}/chat-threads`),
+    queryFn: () => api<ChatThread[]>(`/v1/projects/${encodeURIComponent(String(projectId))}/chat-threads`),
     enabled: Boolean(projectId),
   });
 }
@@ -63,7 +63,7 @@ export function useChatThreads(projectId: string | null | undefined) {
 export function useChatMessages(threadId: string | null | undefined) {
   return useQuery({
     queryKey: ['chat-messages', threadId],
-    queryFn: () => api<ChatMessage[]>(`/v1/chat-threads/${threadId}/messages`),
+    queryFn: () => api<ChatMessage[]>(`/v1/chat-threads/${encodeURIComponent(String(threadId))}/messages`),
     enabled: Boolean(threadId),
     staleTime: 0,
   });
@@ -97,7 +97,7 @@ export function useSendChatMessage(threadId: string | null | undefined) {
       systemPrompt?: string;
       defer?: boolean;
     }) =>
-      api<SendMessageResponse>(`/v1/chat-threads/${input.threadId ?? threadId}/messages`, {
+      api<SendMessageResponse>(`/v1/chat-threads/${encodeURIComponent(String(input.threadId ?? threadId))}/messages`, {
         method: 'POST',
         body: JSON.stringify({
           content: input.content,
@@ -116,7 +116,7 @@ export function useProcessChatMessage() {
   return useMutation({
     mutationFn: (assistantMessageId: string) =>
       api<{ ok: boolean; assistantMessageId?: string; reason?: string }>(
-        `/v1/chat-messages/${assistantMessageId}/process`,
+        `/v1/chat-messages/${encodeURIComponent(String(assistantMessageId))}/process`,
         { method: 'POST' },
       ),
   });
@@ -126,7 +126,7 @@ export function useCancelChatMessage() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (messageId: string) =>
-      api<{ ok: boolean }>(`/v1/chat-messages/${messageId}/cancel`, { method: 'POST' }),
+      api<{ ok: boolean }>(`/v1/chat-messages/${encodeURIComponent(String(messageId))}/cancel`, { method: 'POST' }),
     onSuccess: (_data, messageId) => {
       qc.invalidateQueries({ queryKey: ['chat-messages'] });
       void messageId;
@@ -146,7 +146,7 @@ export function useCompactChatThread() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (threadId: string) =>
-      api<CompactResult>(`/v1/chat-threads/${threadId}/compact`, { method: 'POST' }),
+      api<CompactResult>(`/v1/chat-threads/${encodeURIComponent(String(threadId))}/compact`, { method: 'POST' }),
     onSuccess: (_data, threadId) => {
       qc.invalidateQueries({ queryKey: ['chat-messages', threadId] });
       qc.invalidateQueries({ queryKey: ['chat-threads'] });
@@ -460,7 +460,7 @@ export interface ChatAttachment {
 export function useChatAttachments(messageId: string | null | undefined) {
   return useQuery({
     queryKey: ['chat-attachments', messageId],
-    queryFn: () => api<ChatAttachment[]>(`/v1/chat-messages/${messageId}/attachments`),
+    queryFn: () => api<ChatAttachment[]>(`/v1/chat-messages/${encodeURIComponent(String(messageId))}/attachments`),
     enabled: Boolean(messageId),
     staleTime: 60_000,
   });
@@ -474,7 +474,7 @@ export function useUploadChatAttachments() {
       for (const file of input.files) {
         form.append('file', file, file.name);
       }
-      const response = await fetch(`${API_BASE_URL}/v1/chat-messages/${input.messageId}/attachments`, {
+      const response = await fetch(`${API_BASE_URL}/v1/chat-messages/${encodeURIComponent(String(input.messageId))}/attachments`, {
         method: 'POST',
         body: form,
       });
@@ -501,7 +501,7 @@ export function useDeleteChatAttachment() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { messageId: string; attachmentId: string }) =>
-      api<{ ok: boolean }>(`/v1/chat-messages/${input.messageId}/attachments/${input.attachmentId}`, { method: 'DELETE' }),
+      api<{ ok: boolean }>(`/v1/chat-messages/${encodeURIComponent(String(input.messageId))}/attachments/${encodeURIComponent(String(input.attachmentId))}`, { method: 'DELETE' }),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ['chat-attachments', vars.messageId] });
     },
@@ -509,7 +509,7 @@ export function useDeleteChatAttachment() {
 }
 
 export function attachmentDownloadUrl(messageId: string, attachmentId: string): string {
-  return `${API_BASE_URL}/v1/chat-messages/${messageId}/attachments/${attachmentId}`;
+  return `${API_BASE_URL}/v1/chat-messages/${encodeURIComponent(String(messageId))}/attachments/${encodeURIComponent(String(attachmentId))}`;
 }
 
 export { API_BASE_URL };
@@ -519,7 +519,7 @@ export function useDeleteChatThread() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (threadId: string) =>
-      api<void>(`/v1/chat-threads/${threadId}`, { method: 'DELETE' }),
+      api<void>(`/v1/chat-threads/${encodeURIComponent(String(threadId))}`, { method: 'DELETE' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['chat-threads'] });
     },

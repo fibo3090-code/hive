@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useSandboxLocks } from '@/api/queries/useServerData';
 import { useAgentLineage, useAgentMessages, useDispatchAgentTask, usePauseAgent, useResumeAgent, useTerminateAgent, useWires, useCreateWire, useDeleteWire, type AgentWire } from '@/api/agents';
@@ -19,7 +19,11 @@ import { AgentConfigDialog } from '@/components/modals/AgentConfigDialog';
 import { ConfirmDeleteModal } from '@/components/modals/ConfirmDeleteModal';
 import { toast } from 'sonner';
 
-const nodeTypes = { agentNode: AgentNode };
+// C347: memoize the node renderer — ReactFlow re-renders every node on any
+// graph state change (drag, hover, selection) unless the node type is
+// referentially stable AND memo'd. `AgentNode` hoists (function declaration),
+// so wrapping here keeps `nodeTypes` a stable module-level singleton.
+const nodeTypes = { agentNode: memo(AgentNode) };
 
 type AgentNodeData = {
   agent: Agent;
@@ -394,10 +398,14 @@ export default function HiveGraph() {
     }
   }, [terminateMutation]);
 
-  const nodes = useMemo<Node[]>(() => graph.nodes.map((node) => {
-    const agent = state.agents.find((candidate) => candidate.id === node.id)!;
+  const nodes = useMemo<Node[]>(() => graph.nodes.flatMap((node) => {
+    // C356: the graph layout and the agents list update independently —
+    // right after a delete, a node can outlive its agent for one render.
+    // Skip it instead of crashing on the old non-null assertion.
+    const agent = state.agents.find((candidate) => candidate.id === node.id);
+    if (!agent) return [];
     const matchesSearch = searchLower === '' || agent.name.toLowerCase().includes(searchLower) || agent.role.toLowerCase().includes(searchLower);
-    return {
+    return [{
       ...node,
       data: {
         ...node.data,
@@ -409,7 +417,7 @@ export default function HiveGraph() {
         onOpen: (agentId: string) => setSelectedAgentId(agentId),
         onTogglePause: (agentValue: Agent) => { void togglePause(agentValue); },
       },
-    };
+    }];
   }), [filteredIds, graph.nodes, lockedAgents, navigate, searchLower, setChatTargetAgentId, showLocks, state.agents, togglePause]);
 
   const selectedAgent = selectedAgentId ? state.agents.find((agent) => agent.id === selectedAgentId) ?? null : null;

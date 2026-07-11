@@ -680,6 +680,12 @@ impl From<sea_orm::DbErr> for AppError {
     }
 }
 
+impl From<hive_llm::LlmError> for AppError {
+    fn from(value: hive_llm::LlmError) -> Self {
+        Self::Internal(value.to_string())
+    }
+}
+
 impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -2495,6 +2501,16 @@ async fn ensure_coordinator_inline(
         },
     )
     .await?;
+    audit::append(
+        database.conn(),
+        "system",
+        "agent.create",
+        "agent",
+        &created.id,
+        None,
+        Some(json!({ "role": "Coordinator", "projectId": project_id, "slug": created.slug })),
+    )
+    .await?;
     let _ = state.executors.ensure(&created.id, project_id).await;
     Ok(created)
 }
@@ -2882,6 +2898,16 @@ async fn dispatch_to_agent(
         )
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.dispatch",
+        "agent",
+        &agent.id,
+        None,
+        Some(json!({ "messageId": msg.id, "threadId": msg.thread_id, "fromAgentId": msg.from_agent_id })),
+    )
+    .await?;
     Ok(Json(json!({ "messageId": msg.id })))
 }
 
@@ -3008,6 +3034,17 @@ async fn cancel_agent_subtree(
     Path(agent_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     state.executors.cancel_subtree(&agent_id).await;
+    let database = db(&state).await;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent.cancel_subtree",
+        "agent",
+        &agent_id,
+        None,
+        Some(json!({ "status": "cancelled", "subtree": true })),
+    )
+    .await?;
     Ok(Json(
         json!({ "id": agent_id, "status": "cancelled", "subtree": true }),
     ))
@@ -3049,6 +3086,16 @@ async fn create_agent_wire(
         agent_wires::WireError::Db(db_err) => AppError::from(db_err),
         other => AppError::BadRequest(other.to_string()),
     })?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "wire.create",
+        "agent_wire",
+        &wire.id,
+        None,
+        Some(serde_json::to_value(&wire).unwrap_or(Value::Null)),
+    )
+    .await?;
     emit(
         &state,
         "wire.changed",
@@ -3063,13 +3110,22 @@ async fn delete_agent_wire(
     Path(wire_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
-    let project_id = agent_wires::get(database.conn(), &wire_id)
-        .await?
-        .map(|w| w.project_id);
+    let before = agent_wires::get(database.conn(), &wire_id).await?;
+    let project_id = before.as_ref().map(|w| w.project_id.clone());
     let removed = agent_wires::delete(database.conn(), &wire_id).await?;
     if !removed {
         return Err(AppError::NotFound(format!("wire {wire_id}")));
     }
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "wire.delete",
+        "agent_wire",
+        &wire_id,
+        before.and_then(|w| serde_json::to_value(&w).ok()),
+        None,
+    )
+    .await?;
     if let Some(pid) = project_id {
         emit(
             &state,
@@ -3827,6 +3883,16 @@ async fn create_note(
         },
     )
     .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "note.create",
+        "note",
+        &note.id,
+        None,
+        Some(serde_json::to_value(&note).unwrap_or(Value::Null)),
+    )
+    .await?;
     Ok(Json(json!(note)))
 }
 
@@ -3847,6 +3913,16 @@ async fn move_tech_debt_item(
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
     let updated = tech_debt::move_item(database.conn(), &item_id, &body.severity).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "tech_debt.move",
+        "tech_debt",
+        &item_id,
+        None,
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
     Ok(Json(json!(updated)))
 }
 
@@ -3870,6 +3946,16 @@ async fn update_tech_debt_item(
         },
     )
     .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "tech_debt.update",
+        "tech_debt",
+        &item_id,
+        None,
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
     Ok(Json(json!(updated)))
 }
 
@@ -3879,6 +3965,16 @@ async fn delete_tech_debt_item(
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
     tech_debt::delete(database.conn(), &item_id).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "tech_debt.delete",
+        "tech_debt",
+        &item_id,
+        None,
+        None,
+    )
+    .await?;
     Ok(Json(json!({ "ok": true, "id": item_id })))
 }
 
@@ -3900,6 +3996,16 @@ async fn update_note(
         },
     )
     .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "note.update",
+        "note",
+        &note_id,
+        None,
+        Some(serde_json::to_value(&updated).unwrap_or(Value::Null)),
+    )
+    .await?;
     Ok(Json(json!(updated)))
 }
 
@@ -3909,6 +4015,16 @@ async fn delete_note(
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
     notes::delete(database.conn(), &note_id).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "note.delete",
+        "note",
+        &note_id,
+        None,
+        None,
+    )
+    .await?;
     Ok(Json(json!({ "ok": true, "id": note_id })))
 }
 
@@ -3986,6 +4102,16 @@ async fn toggle_project_session(
         }
     }
 
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "session.toggle",
+        "session",
+        &toggled.id,
+        None,
+        Some(json!({ "projectId": project_id, "isActive": toggled.is_active })),
+    )
+    .await?;
     let payload = session_payload(&database, &project_id).await?;
     emit(
         &state,
@@ -4370,8 +4496,13 @@ async fn post_project_genesis_preview(
         if let Ok((provider_id, model_id)) = resolve_chat_target(&state, None).await {
             if let Ok(Some(provider_row)) = llm_providers::get(database.conn(), &provider_id).await
             {
-                if let Ok(config) = build_provider_config(&state, &provider_row).await {
-                    let client = hive_llm::client_for(config);
+                // Best-effort LLM planning: any failure here (config or
+                // client build) falls through to the heuristic plan below.
+                if let Ok(client) = build_provider_config(&state, &provider_row)
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|config| hive_llm::client_for(config).map_err(|e| e.to_string()))
+                {
                     let prompt = format!(
                     "You are the Hive Project Genesis Planner.\n\
                      You are given a description of a project to build and an agent count ({} agents).\n\
@@ -4931,7 +5062,7 @@ async fn planner_phases_from_llm(
     let config = build_provider_config(state, &provider_row)
         .await
         .map_err(|e| format!("provider config: {e}"))?;
-    let client = client_for(config);
+    let client = client_for(config).map_err(|e| format!("llm client: {e}"))?;
 
     let roles_hint = if agents_list.is_empty() {
         "There are no agents yet — leave \"assignee\" empty.".to_owned()
@@ -5819,6 +5950,17 @@ async fn create_git_branch(
 ) -> Result<Json<Value>, AppError> {
     let repo = git_repo_for_project(&state, &project_id).await?;
     repo.create_branch(&body.name).map_err(git_error)?;
+    let database = db(&state).await;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "git.branch_create",
+        "project",
+        &project_id,
+        None,
+        Some(json!({ "branch": body.name })),
+    )
+    .await?;
     emit(&state, "git.changed", json!({ "projectId": project_id })).await;
     Ok(Json(json!({ "ok": true, "name": body.name })))
 }
@@ -5830,6 +5972,17 @@ async fn checkout_git_branch(
 ) -> Result<Json<Value>, AppError> {
     let repo = git_repo_for_project(&state, &project_id).await?;
     repo.checkout(&body.name, body.create).map_err(git_error)?;
+    let database = db(&state).await;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "git.checkout",
+        "project",
+        &project_id,
+        None,
+        Some(json!({ "branch": body.name, "create": body.create })),
+    )
+    .await?;
     emit(&state, "git.changed", json!({ "projectId": project_id })).await;
     Ok(Json(json!({ "ok": true, "name": body.name })))
 }
@@ -6560,6 +6713,18 @@ async fn update_settings(
         next_settings.clone(),
     )
     .await?;
+    // The audited payload is `next_settings` AFTER secret scrubbing above
+    // (tavilyApiKey is blanked before persistence), never the raw body.
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "settings.update",
+        "settings",
+        "global",
+        None,
+        Some(next_settings.clone()),
+    )
+    .await?;
     emit(&state, "project.updated", json!({ "kind": "settings" })).await;
     Ok(Json(next_settings))
 }
@@ -6686,7 +6851,7 @@ async fn test_llm_provider(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("llm provider {id} not found")))?;
     let config = build_provider_config(&state, &provider).await?;
-    let client = client_for(config);
+    let client = client_for(config)?;
     let outcome = client.test_connection().await;
     let _ = llm_providers::set_connected(database.conn(), &id, outcome.ok).await?;
     if outcome.ok {
@@ -6739,7 +6904,7 @@ async fn fetch_and_cache_models(state: &AppState, id: &str) -> Result<Json<Value
         .await?
         .ok_or_else(|| AppError::NotFound(format!("llm provider {id} not found")))?;
     let config = build_provider_config(state, &provider).await?;
-    let client = client_for(config);
+    let client = client_for(config)?;
     let models = client
         .list_models()
         .await
@@ -6886,6 +7051,16 @@ async fn create_chat_thread(
         },
     )
     .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "chat_thread.create",
+        "chat_thread",
+        &thread.id,
+        None,
+        Some(chat_thread_json(&thread)),
+    )
+    .await?;
     emit(&state, "chat.thread.created", chat_thread_json(&thread)).await;
     Ok(Json(chat_thread_json(&thread)))
 }
@@ -6937,9 +7112,20 @@ async fn delete_chat_thread(
     Path(thread_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    let before = chat_threads::get(database.conn(), &thread_id).await?;
     let data_dir = state.inner.read().await.data_dir.clone();
     purge_attachments_for_threads(&database, &data_dir, std::slice::from_ref(&thread_id)).await;
     chat_threads::delete(database.conn(), &thread_id).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "chat_thread.delete",
+        "chat_thread",
+        &thread_id,
+        before.map(|t| chat_thread_json(&t)),
+        None,
+    )
+    .await?;
     Ok(Json(json!({ "success": true })))
 }
 
@@ -6987,9 +7173,12 @@ async fn compact_chat_thread(
     let summary = match resolve_chat_target(&state, None).await {
         Ok((provider_id, model_id)) => {
             match llm_providers::get(database.conn(), &provider_id).await? {
-                Some(provider_row) => match build_provider_config(&state, &provider_row).await {
-                    Ok(config) => {
-                        let client = client_for(config);
+                Some(provider_row) => match build_provider_config(&state, &provider_row)
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|config| client_for(config).map_err(|e| e.to_string()))
+                {
+                    Ok(client) => {
                         let req = hive_llm::chat::ChatRequest::new(
                             model_id,
                             vec![
@@ -7107,7 +7296,7 @@ async fn send_chat_message(
         .ok_or_else(|| AppError::NotFound(format!("llm provider {provider_id} not found")))?;
     let config = build_provider_config(&state, &provider_row).await?;
     let kind = config.kind;
-    let provider = Arc::from(client_for(config));
+    let provider = Arc::from(client_for(config)?);
 
     // Persist the user turn.
     let user_msg = chat_messages::insert(
@@ -7125,6 +7314,16 @@ async fn send_chat_message(
             parent_message_id: None,
             status: "done".into(),
         },
+    )
+    .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "chat_message.send",
+        "chat_message",
+        &user_msg.id,
+        None,
+        Some(chat_message_json(&user_msg)),
     )
     .await?;
     emit(
@@ -7283,6 +7482,19 @@ async fn cancel_chat_message(
     Path(message_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let cancelled = state.chat_jobs.cancel(&message_id).await;
+    if cancelled {
+        let database = db(&state).await;
+        audit::append(
+            database.conn(),
+            "local_operator",
+            "chat_message.cancel",
+            "chat_message",
+            &message_id,
+            None,
+            Some(json!({ "cancelled": true })),
+        )
+        .await?;
+    }
     Ok(Json(json!({ "ok": cancelled })))
 }
 
@@ -7328,7 +7540,7 @@ async fn process_chat_message(
         .ok_or_else(|| AppError::NotFound(format!("llm provider {provider_id} not found")))?;
     let config = build_provider_config(&state, &provider_row).await?;
     let kind = config.kind;
-    let provider = Arc::from(client_for(config));
+    let provider = Arc::from(client_for(config)?);
 
     let cancel_flag = Arc::new(Mutex::new(false));
     let bus = EventBus::new(state.events.clone());
@@ -7642,6 +7854,16 @@ async fn upload_chat_attachment(
             "no `file` fields found in upload".into(),
         ));
     }
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "chat_attachment.upload",
+        "chat_message",
+        &message_id,
+        None,
+        Some(json!({ "attachments": inserted })),
+    )
+    .await?;
     Ok(Json(json!(inserted)))
 }
 
@@ -7713,6 +7935,16 @@ async fn delete_chat_attachment(
     let absolute_path = data_dir.join("attachments").join(&row.storage_path);
     let _ = tokio::fs::remove_file(&absolute_path).await;
     chat_attachments::delete(database.conn(), &attachment_id).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "chat_attachment.delete",
+        "chat_attachment",
+        &attachment_id,
+        Some(attachment_to_json(&row)),
+        None,
+    )
+    .await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -7738,7 +7970,9 @@ async fn resolve_chat_target(
     let providers = llm_providers::list(database.conn()).await?;
     for p in providers.iter().filter(|p| p.connected) {
         let config = build_provider_config(state, p).await?;
-        let client = client_for(config);
+        let Ok(client) = client_for(config) else {
+            continue;
+        };
         if let Ok(models) = client.list_models().await {
             if let Some(first) = models.first() {
                 return Ok((p.id.clone(), first.id.clone()));
@@ -7801,7 +8035,7 @@ impl ApiTurnDriver {
             .ok_or_else(|| AppError::NotFound(format!("llm provider {provider_id} not found")))?;
         let config = build_provider_config(&self.state, &provider_row).await?;
         let kind = config.kind;
-        let provider = Arc::from(client_for(config));
+        let provider = Arc::from(client_for(config)?);
 
         // Ensure a chat thread for this agent exists (one per agent within
         // its project). The thread carries the agent's history so multi-turn
@@ -8357,6 +8591,16 @@ async fn create_skill(
     }
     let database = db(&state).await;
     let row = skills::create(database.conn(), payload).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "skill.create",
+        "skill",
+        &row.id,
+        None,
+        Some(serde_json::to_value(&row).unwrap_or(Value::Null)),
+    )
+    .await?;
     Ok(Json(json!(row)))
 }
 
@@ -8366,7 +8610,18 @@ async fn update_skill(
     Json(body): Json<skills::UpdateSkill>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    let before = skills::get(database.conn(), &skill_id).await?;
     let row = skills::update(database.conn(), &skill_id, body).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "skill.update",
+        "skill",
+        &skill_id,
+        before.and_then(|s| serde_json::to_value(&s).ok()),
+        Some(serde_json::to_value(&row).unwrap_or(Value::Null)),
+    )
+    .await?;
     Ok(Json(json!(row)))
 }
 
@@ -8375,7 +8630,18 @@ async fn delete_skill(
     Path(skill_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    let before = skills::get(database.conn(), &skill_id).await?;
     skills::delete(database.conn(), &skill_id).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "skill.delete",
+        "skill",
+        &skill_id,
+        before.and_then(|s| serde_json::to_value(&s).ok()),
+        None,
+    )
+    .await?;
     Ok(Json(json!({ "ok": true, "id": skill_id })))
 }
 
@@ -8447,6 +8713,18 @@ async fn create_connector(
         },
     )
     .await?;
+    // Redacted on purpose: connector rows carry sealed credentials; the
+    // audit log records identity + status, never credential material.
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "connector.create",
+        "connector",
+        &row.id,
+        None,
+        Some(json!({ "slug": row.slug, "kind": row.kind, "name": row.name, "status": row.status })),
+    )
+    .await?;
     Ok(Json(json!(row)))
 }
 
@@ -8464,8 +8742,19 @@ async fn update_connector_status(
     Json(body): Json<ConnectorStatusBody>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    let before = connectors::get(database.conn(), &connector_id).await?;
     let row = connectors::set_status(database.conn(), &connector_id, &body.status, body.handshake)
         .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "connector.set_status",
+        "connector",
+        &connector_id,
+        before.map(|c| json!({ "status": c.status })),
+        Some(json!({ "slug": row.slug, "status": row.status })),
+    )
+    .await?;
     Ok(Json(json!(row)))
 }
 
@@ -8474,7 +8763,19 @@ async fn delete_connector(
     Path(connector_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
+    let before = connectors::get(database.conn(), &connector_id).await?;
     connectors::delete(database.conn(), &connector_id).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "connector.delete",
+        "connector",
+        &connector_id,
+        before
+            .map(|c| json!({ "slug": c.slug, "kind": c.kind, "name": c.name, "status": c.status })),
+        None,
+    )
+    .await?;
     Ok(Json(json!({ "ok": true, "id": connector_id })))
 }
 
@@ -8506,6 +8807,16 @@ async fn create_spec_document(
         spec_document_sections::sync_for_document(database.conn(), &doc.id, into_upserts(sections))
             .await?;
     }
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "spec_document.create",
+        "spec_document",
+        &doc.id,
+        None,
+        Some(json!({ "title": doc.title, "projectId": doc.project_id, "version": doc.version })),
+    )
+    .await?;
     Ok(Json(json!(doc)))
 }
 
@@ -8549,6 +8860,16 @@ async fn update_spec_document_markdown(
         database.conn(),
         &spec_document_id,
         into_upserts(sections),
+    )
+    .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "spec_document.update_markdown",
+        "spec_document",
+        &spec_document_id,
+        None,
+        Some(json!({ "title": row.title, "version": row.version, "markdownChars": body.markdown.chars().count() })),
     )
     .await?;
     Ok(Json(json!(row)))
@@ -8656,6 +8977,16 @@ async fn create_assignment(
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
     let row = agent_task_assignments::create(database.conn(), body).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "assignment.create",
+        "agent_task_assignment",
+        &row.id,
+        None,
+        Some(serde_json::to_value(&row).unwrap_or(Value::Null)),
+    )
+    .await?;
     emit(
         &state,
         "agent_task_assignment.created",
@@ -8672,6 +9003,16 @@ async fn update_assignment(
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
     let row = agent_task_assignments::update(database.conn(), &assignment_id, body).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "assignment.update",
+        "agent_task_assignment",
+        &assignment_id,
+        None,
+        Some(serde_json::to_value(&row).unwrap_or(Value::Null)),
+    )
+    .await?;
     emit(
         &state,
         "agent_task_assignment.updated",
@@ -8738,6 +9079,16 @@ async fn update_drift_event_status(
     }
     let database = db(&state).await;
     let row = drift_events::set_status(database.conn(), &event_id, &body.status).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "drift_event.set_status",
+        "drift_event",
+        &event_id,
+        None,
+        Some(json!({ "status": row.status, "kind": row.kind })),
+    )
+    .await?;
     emit(
         &state,
         "drift_event.updated",
@@ -8783,7 +9134,7 @@ async fn build_pipeline_deps(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("llm provider {provider_id} not found")))?;
     let config = build_provider_config(state, &provider_row).await?;
-    let provider = Arc::from(client_for(config));
+    let provider = Arc::from(client_for(config)?);
 
     // Build search provider
     let search_settings = current_tools_sandbox_settings(state, Some(project_id)).await?;
@@ -8870,6 +9221,16 @@ async fn create_spawn_request(
     payload.project_id = project_id.clone();
     let database = db(&state).await;
     let row = agent_spawn_requests::create(database.conn(), payload).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent_spawn_request.create",
+        "agent_spawn_request",
+        &row.id,
+        None,
+        Some(serde_json::to_value(&row).unwrap_or(Value::Null)),
+    )
+    .await?;
 
     emit(
         &state,
@@ -8952,6 +9313,16 @@ async fn update_spawn_request(
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
     let row = agent_spawn_requests::update(database.conn(), &spawn_request_id, body).await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "agent_spawn_request.update",
+        "agent_spawn_request",
+        &spawn_request_id,
+        None,
+        Some(serde_json::to_value(&row).unwrap_or(Value::Null)),
+    )
+    .await?;
     emit(
         &state,
         "agent_spawn_request.updated",
@@ -9011,6 +9382,16 @@ async fn create_agent_skill_binding(
         },
     )
     .await?;
+    audit::append(
+        database.conn(),
+        "local_operator",
+        "skill_binding.create",
+        "agent_skill_binding",
+        &row.id,
+        None,
+        Some(serde_json::to_value(&row).unwrap_or(Value::Null)),
+    )
+    .await?;
     Ok(Json(json!(row)))
 }
 
@@ -9020,6 +9401,18 @@ async fn delete_agent_skill_binding(
 ) -> Result<Json<Value>, AppError> {
     let database = db(&state).await;
     let removed = agent_skill_bindings::unbind(database.conn(), &agent_id, &skill_id).await?;
+    if removed > 0 {
+        audit::append(
+            database.conn(),
+            "local_operator",
+            "skill_binding.delete",
+            "agent_skill_binding",
+            &format!("{agent_id}:{skill_id}"),
+            Some(json!({ "agentId": agent_id, "skillId": skill_id })),
+            None,
+        )
+        .await?;
+    }
     Ok(Json(json!({ "ok": true, "removed": removed })))
 }
 

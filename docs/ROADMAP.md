@@ -135,10 +135,12 @@ timeout / LLM-error / budget-refusal) via the outer-`run_turn`
 hoist landed in batch 2 (Z1). Scoring lives in `drift.rs`; four bands
 with auto-pause at ≥0.9 (see
 [architecture §4.5](architecture.md#45-drift-hook-drift_hookrecord_after_turn)).
-What's left is UI-side polish on Planning → Drift. **One runtime bug remains:**
-the ≥0.9 auto-pause writes the DB row and the executor pause as two independent
-best-effort blocks, so they can desync (C094 in [`BACKLOG.md`](BACKLOG.md) §3.4 —
-a fix is on PR #13, unmerged).
+What's left is UI-side polish on Planning → Drift. The ≥0.9 auto-pause
+split-brain (C094) was mitigated by PR #13 (chat-path pause gate +
+drift-hook `ensure`-before-pause) and the drift remediation now routes through
+the `WorkflowBackend` seam for exactly-once/crash-durable pausing (see
+[`WORKFLOW_BACKENDS.md`](WORKFLOW_BACKENDS.md)); full two-write atomicity (ZZ16)
+is the only remaining sliver.
 
 ## 6. Smaller / cleanup
 

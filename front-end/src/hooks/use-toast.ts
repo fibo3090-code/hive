@@ -164,6 +164,9 @@ function toast({ ...props }: Toast) {
 function useToast() {
   const [state, setState] = React.useState<State>(memoryState);
 
+  // C508: `setState` is referentially stable, so subscribe once on mount.
+  // Depending on `state` re-ran this effect on every toast update,
+  // unsubscribing and re-subscribing the listener each time.
   React.useEffect(() => {
     listeners.push(setState);
     return () => {
@@ -172,7 +175,7 @@ function useToast() {
         listeners.splice(index, 1);
       }
     };
-  }, [state]);
+  }, []);
 
   return {
     ...state,

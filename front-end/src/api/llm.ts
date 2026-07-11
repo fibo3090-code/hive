@@ -47,7 +47,7 @@ export function useLlmProviders() {
 export function useProviderModels(providerId: string | null | undefined) {
   return useQuery({
     queryKey: ['llm-providers', providerId, 'models'],
-    queryFn: () => api<LlmModel[]>(`/v1/llm-providers/${providerId}/models`),
+    queryFn: () => api<LlmModel[]>(`/v1/llm-providers/${encodeURIComponent(String(providerId))}/models`),
     enabled: Boolean(providerId),
     staleTime: 5 * 60 * 1000,
   });
@@ -57,7 +57,7 @@ export function useTestProvider() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (providerId: string) =>
-      api<LlmTestOutcome>(`/v1/llm-providers/${providerId}/test`, { method: 'POST' }),
+      api<LlmTestOutcome>(`/v1/llm-providers/${encodeURIComponent(String(providerId))}/test`, { method: 'POST' }),
     onSuccess: (_data, providerId) => {
       qc.invalidateQueries({ queryKey: ['llm-providers'] });
       qc.invalidateQueries({ queryKey: ['llm-providers', providerId, 'models'] });
@@ -69,7 +69,7 @@ export function useSetProviderKey() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { providerId: string; apiKey?: string; baseUrl?: string }) =>
-      api<LlmProvider>(`/v1/llm-providers/${input.providerId}`, {
+      api<LlmProvider>(`/v1/llm-providers/${encodeURIComponent(String(input.providerId))}`, {
         method: 'PATCH',
         body: JSON.stringify({ apiKey: input.apiKey, baseUrl: input.baseUrl }),
       }),
@@ -90,7 +90,7 @@ export function useRefreshProviderModels() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (providerId: string) =>
-      api<LlmModel[]>(`/v1/llm-providers/${providerId}/refresh-models`, { method: 'POST' }),
+      api<LlmModel[]>(`/v1/llm-providers/${encodeURIComponent(String(providerId))}/refresh-models`, { method: 'POST' }),
     onSuccess: (_data, providerId) => {
       qc.invalidateQueries({ queryKey: ['llm-providers', providerId, 'models'] });
     },

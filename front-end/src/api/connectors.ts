@@ -57,7 +57,7 @@ const connectorsKey = (projectId: string | null | undefined) =>
 export function useConnectors(projectId: string | null | undefined) {
   return useQuery({
     queryKey: connectorsKey(projectId),
-    queryFn: () => api<Connector[]>(`/v1/projects/${projectId}/connectors`),
+    queryFn: () => api<Connector[]>(`/v1/projects/${encodeURIComponent(String(projectId))}/connectors`),
     enabled: Boolean(projectId),
   });
 }
@@ -66,7 +66,7 @@ export function useCreateConnector(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateConnectorInput) =>
-      api<Connector>(`/v1/projects/${projectId}/connectors`, {
+      api<Connector>(`/v1/projects/${encodeURIComponent(String(projectId))}/connectors`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
@@ -78,7 +78,7 @@ export function useUpdateConnectorStatus(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: UpdateConnectorStatusInput }) =>
-      api<Connector>(`/v1/connectors/${id}`, {
+      api<Connector>(`/v1/connectors/${encodeURIComponent(String(id))}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
       }),
@@ -90,7 +90,7 @@ export function useDeleteConnector(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      api<{ ok: true; id: string }>(`/v1/connectors/${id}`, { method: 'DELETE' }),
+      api<{ ok: true; id: string }>(`/v1/connectors/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: connectorsKey(projectId) }),
   });
 }

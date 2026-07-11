@@ -44,7 +44,13 @@ export function BackendDownBanner() {
         type="button"
         onClick={() => {
           setRecentFailures(0);
-          qc.invalidateQueries();
+          // C486: a keyless invalidateQueries() marks every cached query
+          // stale — after the backend comes back that meant a full refetch
+          // storm and losing still-good cached data. Only the queries that
+          // actually failed need a retry.
+          qc.invalidateQueries({
+            predicate: (query) => query.state.status === "error",
+          });
         }}
         className="ml-auto inline-flex items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] font-medium hover:bg-destructive/20"
       >

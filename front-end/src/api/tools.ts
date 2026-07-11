@@ -11,7 +11,7 @@ export interface WorkspaceInfo {
 export function useWorkspaceInfo(projectId: string | null | undefined) {
   return useQuery({
     queryKey: ['workspace-info', projectId],
-    queryFn: () => api<WorkspaceInfo>(`/v1/projects/${projectId}/workspace/info`),
+    queryFn: () => api<WorkspaceInfo>(`/v1/projects/${encodeURIComponent(String(projectId))}/workspace/info`),
     enabled: Boolean(projectId),
   });
 }
@@ -19,7 +19,7 @@ export function useWorkspaceInfo(projectId: string | null | undefined) {
 export function useInitWorkspace(projectId: string | null | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => api<WorkspaceInfo>(`/v1/projects/${projectId}/workspace/init`, { method: 'POST' }),
+    mutationFn: () => api<WorkspaceInfo>(`/v1/projects/${encodeURIComponent(String(projectId))}/workspace/init`, { method: 'POST' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['workspace-info', projectId] });
     },

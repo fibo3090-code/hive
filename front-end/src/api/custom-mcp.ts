@@ -36,7 +36,7 @@ export function useCustomMcpServers(projectId: string | null | undefined) {
   return useQuery({
     queryKey: ['custom-mcp-servers', projectId ?? '_none'],
     queryFn: () =>
-      api<CustomMcpServer[]>(`/v1/projects/${projectId}/custom-mcp-servers`),
+      api<CustomMcpServer[]>(`/v1/projects/${encodeURIComponent(String(projectId))}/custom-mcp-servers`),
     enabled: Boolean(projectId),
   });
 }
@@ -44,7 +44,7 @@ export function useCustomMcpServers(projectId: string | null | undefined) {
 export function useAgentMcpBindings(agentId: string | null | undefined) {
   return useQuery({
     queryKey: ['agent-mcp-bindings', agentId ?? '_none'],
-    queryFn: () => api<AgentMcpBinding[]>(`/v1/agents/${agentId}/mcp-bindings`),
+    queryFn: () => api<AgentMcpBinding[]>(`/v1/agents/${encodeURIComponent(String(agentId))}/mcp-bindings`),
     enabled: Boolean(agentId),
   });
 }

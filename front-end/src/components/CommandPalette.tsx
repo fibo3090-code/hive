@@ -106,6 +106,9 @@ export function CommandPalette() {
 
   const current = filtered[selectedIndex] ?? filtered[0] ?? null;
   const groups = [...new Set(filtered.map((item) => item.group))];
+  // C423: the per-item findIndex inside the render loop was O(n²) per
+  // keystroke; one pass builds the id → flat-index map instead.
+  const indexById = useMemo(() => new Map(filtered.map((item, i) => [item.id, i])), [filtered]);
 
   useEffect(() => {
     if (!open) {
@@ -181,7 +184,7 @@ export function CommandPalette() {
                 {groups.map((group) => (
                   <CommandGroup key={group} heading={group}>
                     {filtered.filter((item) => item.group === group).map((item) => {
-                      const index = filtered.findIndex((entry) => entry.id === item.id);
+                      const index = indexById.get(item.id) ?? -1;
                       const Icon = item.icon;
                       return (
                         <CommandItem

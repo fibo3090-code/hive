@@ -56,7 +56,7 @@ const skillsKey = (projectId: string | null | undefined) =>
 export function useSkills(projectId: string | null | undefined) {
   return useQuery({
     queryKey: skillsKey(projectId),
-    queryFn: () => api<Skill[]>(`/v1/projects/${projectId}/skills`),
+    queryFn: () => api<Skill[]>(`/v1/projects/${encodeURIComponent(String(projectId))}/skills`),
     enabled: Boolean(projectId),
   });
 }
@@ -65,7 +65,7 @@ export function useCreateSkill(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateSkillInput) =>
-      api<Skill>(`/v1/projects/${projectId}/skills`, {
+      api<Skill>(`/v1/projects/${encodeURIComponent(String(projectId))}/skills`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
@@ -77,7 +77,7 @@ export function useUpdateSkill(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: UpdateSkillInput }) =>
-      api<Skill>(`/v1/skills/${id}`, {
+      api<Skill>(`/v1/skills/${encodeURIComponent(String(id))}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
       }),
@@ -89,7 +89,7 @@ export function useDeleteSkill(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      api<{ ok: true; id: string }>(`/v1/skills/${id}`, { method: 'DELETE' }),
+      api<{ ok: true; id: string }>(`/v1/skills/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: skillsKey(projectId) }),
   });
 }

@@ -43,7 +43,7 @@ export function useActiveProject() {
 export function useProject(projectId?: string | null) {
   return useQuery({
     queryKey: keys.project(projectId),
-    queryFn: () => api<Project>(`/v1/projects/${projectId}`),
+    queryFn: () => api<Project>(`/v1/projects/${encodeURIComponent(String(projectId))}`),
     enabled: !!projectId,
   });
 }
@@ -51,7 +51,7 @@ export function useProject(projectId?: string | null) {
 export function useAgents(projectId?: string | null) {
   return useQuery({
     queryKey: keys.agents(projectId),
-    queryFn: () => api<Agent[]>(`/v1/projects/${projectId}/agents`),
+    queryFn: () => api<Agent[]>(`/v1/projects/${encodeURIComponent(String(projectId))}/agents`),
     enabled: !!projectId,
   });
 }
@@ -60,7 +60,7 @@ export function useTasks(projectId?: string | null, agentsById?: Record<string, 
   return useQuery({
     queryKey: keys.tasks(projectId),
     queryFn: async () => {
-      const rows = await api<Array<Omit<TaskItem, 'assignee'> & { agentId?: string | null }>>(`/v1/projects/${projectId}/tasks`);
+      const rows = await api<Array<Omit<TaskItem, 'assignee'> & { agentId?: string | null }>>(`/v1/projects/${encodeURIComponent(String(projectId))}/tasks`);
       return rows.map((task) => ({
         ...task,
         assignee: task.agentId ? agentsById?.[task.agentId]?.name ?? 'Unassigned' : 'Unassigned',
@@ -73,7 +73,7 @@ export function useTasks(projectId?: string | null, agentsById?: Record<string, 
 export function useAlerts(projectId?: string | null) {
   return useQuery({
     queryKey: keys.alerts(projectId),
-    queryFn: () => api<AlertItem[]>(`/v1/projects/${projectId}/alerts`),
+    queryFn: () => api<AlertItem[]>(`/v1/projects/${encodeURIComponent(String(projectId))}/alerts`),
     enabled: !!projectId,
   });
 }
@@ -81,7 +81,7 @@ export function useAlerts(projectId?: string | null) {
 export function useSession(projectId?: string | null) {
   return useQuery({
     queryKey: keys.session(projectId),
-    queryFn: () => api<SessionInfo>(`/v1/projects/${projectId}/session`),
+    queryFn: () => api<SessionInfo>(`/v1/projects/${encodeURIComponent(String(projectId))}/session`),
     enabled: !!projectId,
   });
 }
@@ -125,7 +125,7 @@ export function useHiveData() {
   };
 
   const activateMutation = useMutation({
-    mutationFn: (nextProjectId: string) => api<{ ok: true }>(`/v1/projects/${nextProjectId}/activate`, { method: 'POST' }),
+    mutationFn: (nextProjectId: string) => api<{ ok: true }>(`/v1/projects/${encodeURIComponent(String(nextProjectId))}/activate`, { method: 'POST' }),
     onSuccess: invalidateProject,
   });
 
@@ -146,7 +146,7 @@ export function useHiveData() {
 
   const updateProjectMutation = useMutation({
     mutationFn: ({ projectId: nextProjectId, changes }: { projectId: string; changes: Partial<Project> }) =>
-      api<Project>(`/v1/projects/${nextProjectId}`, {
+      api<Project>(`/v1/projects/${encodeURIComponent(String(nextProjectId))}`, {
         method: 'PATCH',
         body: JSON.stringify({
           name: changes.name,
@@ -164,20 +164,20 @@ export function useHiveData() {
 
   const deleteProjectMutation = useMutation({
     mutationFn: (projectIdToDelete: string) =>
-      api<{ ok: true }>(`/v1/projects/${projectIdToDelete}`, {
+      api<{ ok: true }>(`/v1/projects/${encodeURIComponent(String(projectIdToDelete))}`, {
         method: 'DELETE',
       }),
     onSuccess: invalidateProject,
   });
 
   const toggleSessionMutation = useMutation({
-    mutationFn: () => api<SessionInfo>(`/v1/projects/${projectId}/session/toggle`, { method: 'POST' }),
+    mutationFn: () => api<SessionInfo>(`/v1/projects/${encodeURIComponent(String(projectId))}/session/toggle`, { method: 'POST' }),
     onSuccess: invalidateProject,
   });
 
   const extendBudgetMutation = useMutation({
     mutationFn: (newTotal: number) =>
-      api<Project>(`/v1/projects/${projectId}/budget/extend`, {
+      api<Project>(`/v1/projects/${encodeURIComponent(String(projectId))}/budget/extend`, {
         method: 'POST',
         body: JSON.stringify({ newTotalCents: newTotal * 100 }),
       }),
@@ -185,13 +185,13 @@ export function useHiveData() {
   });
 
   const dismissAlertMutation = useMutation({
-    mutationFn: (alertId: string) => api<{ ok: true }>(`/v1/alerts/${alertId}/dismiss`, { method: 'POST' }),
+    mutationFn: (alertId: string) => api<{ ok: true }>(`/v1/alerts/${encodeURIComponent(String(alertId))}/dismiss`, { method: 'POST' }),
     onSuccess: invalidateProject,
   });
 
   const updateTaskMutation = useMutation({
     mutationFn: ({ taskId, status }: { taskId: string; status: TaskItem['status'] }) =>
-      api<TaskItem>(`/v1/tasks/${taskId}/set-status`, {
+      api<TaskItem>(`/v1/tasks/${encodeURIComponent(String(taskId))}/set-status`, {
         method: 'POST',
         body: JSON.stringify({ status }),
       }),
@@ -200,7 +200,7 @@ export function useHiveData() {
 
   const createTaskMutation = useMutation({
     mutationFn: (input: { title: string; agentId?: string; phase?: string; priority?: string }) =>
-      api<TaskItem>(`/v1/projects/${projectId}/tasks`, {
+      api<TaskItem>(`/v1/projects/${encodeURIComponent(String(projectId))}/tasks`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
@@ -209,7 +209,7 @@ export function useHiveData() {
 
   const setAgentStatusMutation = useMutation({
     mutationFn: ({ agentId, status }: { agentId: string; status: AgentStatus }) =>
-      api<Agent>(`/v1/agents/${agentId}/set-status`, {
+      api<Agent>(`/v1/agents/${encodeURIComponent(String(agentId))}/set-status`, {
         method: 'POST',
         body: JSON.stringify({ status }),
       }),
@@ -217,7 +217,7 @@ export function useHiveData() {
   });
 
   const markNotificationReadMutation = useMutation({
-    mutationFn: (notificationId: string) => api<{ ok: true }>(`/v1/notifications/${notificationId}/read`, { method: 'POST' }),
+    mutationFn: (notificationId: string) => api<{ ok: true }>(`/v1/notifications/${encodeURIComponent(String(notificationId))}/read`, { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.notifications }),
   });
 
@@ -227,7 +227,7 @@ export function useHiveData() {
   });
 
   const dismissNotificationMutation = useMutation({
-    mutationFn: (notificationId: string) => api<{ ok: true }>(`/v1/notifications/${notificationId}/dismiss`, { method: 'POST' }),
+    mutationFn: (notificationId: string) => api<{ ok: true }>(`/v1/notifications/${encodeURIComponent(String(notificationId))}/dismiss`, { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.notifications }),
   });
 

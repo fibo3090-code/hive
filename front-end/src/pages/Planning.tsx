@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { api } from '@/api/client';
 import { useHiveData } from '@/api/queries/useHiveData';
 import { useSpecDocument, useSpecDocuments, useSpecDocumentSections } from '@/api/spec-documents';
@@ -420,7 +420,7 @@ function TechDebtTab() {
                       >
                         <div className="flex items-start justify-between gap-2">
                           <h5 className="text-sm font-medium mb-1">{item.title}</h5>
-                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity shrink-0">
                             <button
                               type="button"
                               aria-label="Edit item"
@@ -656,7 +656,7 @@ function HiveMindTab() {
                   {note.auto && <span className="text-micro bg-primary/10 text-primary px-1.5 py-0.5 rounded">auto</span>}
                   <span className="text-micro bg-surface-2 px-1.5 py-0.5 rounded text-muted-foreground">{note.category}</span>
                   <span className="text-micro text-muted-foreground ml-auto">{note.time}</span>
-                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                     <button
                       type="button"
                       aria-label="Edit note"

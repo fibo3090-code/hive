@@ -134,7 +134,7 @@ export function NotificationDropdown() {
                             <p className={cn('text-xs font-medium leading-tight', n.read ? 'text-muted-foreground' : 'text-foreground')}>{n.title}</p>
                             <div className="flex items-center gap-1 shrink-0">
                               {!n.read && <span className={cn('h-1.5 w-1.5 rounded-full', config.dot)} />}
-                              <button onClick={() => dismissNotification(n.id)} className="text-muted-foreground/50 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button onClick={() => dismissNotification(n.id)} aria-label="Dismiss notification" className="text-muted-foreground/50 hover:text-foreground opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity">
                                 <X className="h-3 w-3" />
                               </button>
                             </div>

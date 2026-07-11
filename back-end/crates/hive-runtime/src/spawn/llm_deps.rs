@@ -111,10 +111,7 @@ The spec should be a minimal OpenAPI-like fragment describing the core functiona
 
             let picked: DiscoveredApiResponse = self.chat_json(system, &user).await?;
 
-            let requires_approval = !self
-                .api_domain_whitelist
-                .iter()
-                .any(|d| picked.url.contains(d));
+            let requires_approval = !host_in_whitelist(&picked.url, &self.api_domain_whitelist);
 
             out.push(DiscoveredApi {
                 capability: cap.clone(),
@@ -233,6 +230,28 @@ Do not mention tools or capabilities that are not listed in the context.";
 
         Ok(agent.id)
     }
+}
+
+/// C087: check the discovered API's URL against the operator-approved domain
+/// whitelist by *host*, not by raw substring. `picked.url.contains(d)` would
+/// let `http://api.github.com.evil.com` (or `http://evil.com/?x=api.github.com`)
+/// pass as if it were `api.github.com` — the whitelist exists specifically to
+/// gate auto-approval of research-discovered APIs, so a substring bypass
+/// defeats the whole check. A URL matches an allowed domain only if its host
+/// equals the domain or is a subdomain of it (`api.github.com` matches
+/// `github.com`, `evil-api.github.com.attacker.net` does not).
+fn host_in_whitelist(url: &str, whitelist: &[String]) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    whitelist.iter().any(|d| {
+        let d = d.to_ascii_lowercase();
+        host == d || host.ends_with(&format!(".{d}"))
+    })
 }
 
 fn json_payload(text: &str) -> &str {
@@ -500,6 +519,30 @@ mod tests {
         assert!(!apis[0].requires_approval);
         assert_eq!(apis[1].url, "https://sketchy-api.com");
         assert!(apis[1].requires_approval);
+    }
+
+    #[test]
+    fn test_host_in_whitelist_rejects_substring_lookalikes() {
+        let whitelist = vec!["api.github.com".to_owned()];
+        // C087: exact host and legitimate subdomains match.
+        assert!(host_in_whitelist(
+            "https://api.github.com/repos",
+            &whitelist
+        ));
+        assert!(host_in_whitelist(
+            "https://foo.api.github.com/x",
+            &whitelist
+        ));
+        // A raw substring match would wrongly approve these.
+        assert!(!host_in_whitelist(
+            "https://api.github.com.evil.com/",
+            &whitelist
+        ));
+        assert!(!host_in_whitelist(
+            "https://evil.com/?x=api.github.com",
+            &whitelist
+        ));
+        assert!(!host_in_whitelist("not a url", &whitelist));
     }
 
     #[tokio::test]

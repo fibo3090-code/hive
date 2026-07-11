@@ -5,7 +5,7 @@
 > [`BACKLOG.md`](BACKLOG.md) (§3.1–§3.2, §4.2); this doc is the posture summary,
 > not a second tracker.
 
-**Last reviewed:** 2026-06-16 against the 2026-06-15 audit.
+**Last reviewed:** 2026-07-10 (triage batch + PR #16/#23/#24 reconciliation) against the 2026-06-15 audit.
 
 ---
 
@@ -28,55 +28,47 @@ service. See §5 before changing the bind address.
 | **File Protection Zones** | `.env*`, `.git/`, `.hive/`, user-protected paths denied per path-component (catches nested `apps/web/.env`) for `fs_read`/`fs_list`/`fs_write`/`str_replace` and path-like `shell_exec` argv | `ToolContext::check_path_allowed` |
 | **Credential isolation in shell** | `shell_exec` HOME → `<root>/.hive/run-home/` so npm/cargo/git cached creds don't leak into the next `fs_read` | `hive-sandbox` |
 | **Permission profiles** | `Plan` / `Build` / `Explore` enforced in `ToolRegistry::invoke` before dispatch | `hive-tools::permission` |
-| **SSRF baseline** | `web_fetch` rejects private/internal **IP-literal** destinations and IP-literal redirect hops | `hive-tools/src/builtins/web.rs` |
+| **SSRF baseline** | `web_fetch` rejects private/internal destinations; redirects are walked manually so the async **hostname-resolving** guard runs on every hop (not just IP literals) | `hive-tools/src/builtins/web.rs` |
 | **Sovereignty gate** | `local`-tier projects reject `git_pull`/`git_push` | `hive-runtime::git_tools` |
-| **Tool audit trail** | `audit::append` on lifecycle endpoints (pause/resume/terminate/set-status) | `hive-api` |
+| **Git argument safety** | branch names / refs are rejected if they look like options (leading `-`) or carry control chars, closing git-option injection | `hive-git::ensure_safe_ref` |
+| **Tool audit trail** | `audit::append` on **every** state-changing endpoint (lifecycle + notes/tech-debt/session/wires/settings/chat/skills/connectors/spec/assignments/drift/spawn/bindings); 51 call sites | `hive-api` |
 
 ## 3. Known open security issues (must-read)
 
-These are confirmed open in the 2026-06-15 audit. Full detail + fix in
-[`BACKLOG.md`](BACKLOG.md); IDs given for cross-reference.
-
-### Critical 🔴
-- **C026 / C074 — the tool allowlist kill-switch doesn't kill.** A per-agent
-  `enabled_tools` list *replaces* the global allowlist instead of intersecting,
-  so disabling `shell_exec` project-wide doesn't stop an agent that carries it.
-- **C087 — substring domain whitelist.** The MCP-synthesis approval gate matches
-  `url.contains(domain)`, so `api.github.com.evil.com` passes.
-- **C202 — Gemini API key in URL.** Key sent as `?key=…` → leaks into proxy /
-  access logs.
-- **C247 — master key not zeroized** in memory after use.
+Confirmed open in the 2026-06-15 audit and **still open** on `main`. Full detail
++ fix in [`BACKLOG.md`](BACKLOG.md); IDs given for cross-reference.
 
 ### High 🟠
-- **C169–C188 — SSRF via hostname redirect / DNS rebinding.** The redirect
-  policy only checks IP literals; a hostname that resolves to `169.254.169.254`
-  on reqwest's own DNS still reaches cloud metadata. *(Source comment admits
-  this.)*
-- **C088 — chat-attachment read path** lacks the canonicalize+bounds check the
-  download path has.
-- **C251 — git-option injection** (`--git-dir=…`) through unvalidated `git` args.
-- **C256 — Windows master-key file** uses default ACLs (readable by other local
-  users).
 - **C261 — `shell_exec` runs any binary** (`curl`/`nc`/`socat`); no command
   allowlist.
 - **C134–C140 — repo-layer credential mutations** bypass audit + allowlist
-  validation.
-- **C203 / C201 — Gemini** model-name URL injection; null `generationConfig` on
-  streaming.
+  validation (the handler-level audit trail is now complete, but direct repo
+  callers like `seed.rs` still bypass it).
 - **Frontend credential lifecycle** — C337/C338/C339 secrets in React state with
-  no cleanup; C478/C482 plaintext key transmission; C480/C481 unencoded URL
-  segments.
+  no cleanup; C478/C482 plaintext key transmission.
 
-### Audit coverage
-- **~30 state-changing endpoints don't write `audit::append`** (C001–C056 +
-  medium batch). The "every mutation is auditable" guarantee is not yet met. One
-  middleware fix closes the batch.
+### Recently resolved (do not re-report)
+- **C026 / C074** tool-allowlist kill-switch — PR #15 (intersect + authority carve-out).
+- **C202 / C203 / C201** Gemini key-in-URL / model-name injection / null `generationConfig` — PR #16.
+- **C169–C188** SSRF via hostname redirect / DNS rebinding — PR #23 (redirects
+  walked manually; the async guard resolves hostnames on every hop, with tests).
+- **C247 / C256** master key not zeroized / Windows key-file ACL — PR #24.
+- **C087** substring domain whitelist — 2026-07-10 triage (host/subdomain match via `url::Url`).
+- **C088** chat-attachment read-path traversal — 2026-07-10 triage (same canonicalize+bounds check as the download path).
+- **C251** git-option injection (`--git-dir=…`) — 2026-07-10 triage (`ensure_safe_ref` + first `hive-git` tests).
+- **C151** raw-`format!` SQL in the migration-repair path — 2026-07-10 triage (parameterized).
+- **C480 / C481** unencoded URL path segments — 2026-07-10 triage (`encodeURIComponent` across the API layer).
+- **Audit coverage** — the C001–C056 cluster: every state-changing endpoint now
+  writes `audit::append` (51 sites, up from 15) — 2026-07-10 triage.
 
 ## 4. Dependency advisories
 
-- **C543** — `vitest 3.2.4` (GHSA-5xrq-8626-4rwp, CVSS 9.8). Bump to ≥3.2.6.
-- **C544 / C545** — transitive `esbuild` advisories (dev-server CORS; Deno-binary
-  vector). Lower severity; dev-only surface.
+- **C543** — `vitest 3.2.4` (GHSA-5xrq-8626-4rwp, CVSS 9.8). **Resolved** —
+  floor raised to ^3.2.7; `dompurify` forced to ^3.4.11 via `overrides`
+  (monaco-editor pins a vulnerable transitive version).
+- **C544 / C545** — transitive `esbuild`/`vite` advisories (dev-server CORS;
+  Deno-binary vector). **Still open** — needs the vite 5→8 major bump; dev-only
+  surface, lower severity.
 
 Run `just audit` (`cargo audit` + `npm audit`) before any release.
 
@@ -86,8 +78,8 @@ HIVE has **no authentication**. The API can `shell_exec` arbitrary commands,
 decrypt stored tokens, and write files. CORS protects browsers only — `curl`
 does not care. **Do not set `HIVE_BIND` to anything other than `127.0.0.1`**
 without first adding an auth layer (a `HIVE_API_TOKEN` gate is the documented
-next step; tracked as a hardening item). On a shared host, also resolve C256
-(Windows key ACL) first.
+next step; tracked as a hardening item). C256 (Windows key ACL) is resolved as
+of PR #24.
 
 ## 6. Reporting
 

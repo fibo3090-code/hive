@@ -54,7 +54,7 @@ export function useAssignments(projectId: string | null | undefined) {
     queryKey: assignmentsKey(projectId),
     queryFn: () =>
       api<AgentTaskAssignment[]>(
-        `/v1/projects/${projectId}/agent-task-assignments`,
+        `/v1/projects/${encodeURIComponent(String(projectId))}/agent-task-assignments`,
       ),
     enabled: Boolean(projectId),
   });
@@ -65,7 +65,7 @@ export function useCreateAssignment(projectId: string | null | undefined) {
   return useMutation({
     mutationFn: (input: CreateAssignmentInput) =>
       api<AgentTaskAssignment>(
-        `/v1/projects/${projectId}/agent-task-assignments`,
+        `/v1/projects/${encodeURIComponent(String(projectId))}/agent-task-assignments`,
         {
           method: 'POST',
           body: JSON.stringify(input),
@@ -79,7 +79,7 @@ export function useUpdateAssignment(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: UpdateAssignmentInput }) =>
-      api<AgentTaskAssignment>(`/v1/agent-task-assignments/${id}`, {
+      api<AgentTaskAssignment>(`/v1/agent-task-assignments/${encodeURIComponent(String(id))}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
       }),

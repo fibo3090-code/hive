@@ -38,7 +38,7 @@ export function useDriftEvents(
     queryKey: driftKey(projectId, openOnly),
     queryFn: () =>
       api<DriftEvent[]>(
-        `/v1/projects/${projectId}/drift-events${openOnly ? '?openOnly=true' : ''}`,
+        `/v1/projects/${encodeURIComponent(String(projectId))}/drift-events${openOnly ? '?openOnly=true' : ''}`,
       ),
     enabled: Boolean(projectId),
   });
@@ -48,7 +48,7 @@ export function useUpdateDriftStatus(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, status }: { id: string; status: DriftStatus }) =>
-      api<DriftEvent>(`/v1/drift-events/${id}`, {
+      api<DriftEvent>(`/v1/drift-events/${encodeURIComponent(String(id))}`, {
         method: 'PATCH',
         body: JSON.stringify({ status }),
       }),

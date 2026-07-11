@@ -233,30 +233,6 @@ export const defaultSettings: SettingsState = {
   },
 };
 
-export function mergeSettings(partial?: Partial<SettingsState> | null): SettingsState {
-  return {
-    ...defaultSettings,
-    ...partial,
-    general: { ...defaultSettings.general, ...partial?.general },
-    defaultModel: partial?.defaultModel ?? defaultSettings.defaultModel,
-    router: { ...defaultSettings.router, ...partial?.router },
-    toolsSandbox: { ...defaultSettings.toolsSandbox, ...partial?.toolsSandbox },
-    modules: { ...defaultSettings.modules, ...partial?.modules },
-    git: { ...defaultSettings.git, ...partial?.git },
-    github: { ...defaultSettings.github, ...partial?.github },
-    integrations: { ...defaultSettings.integrations, ...partial?.integrations },
-    fileProtection: {
-      ...defaultSettings.fileProtection,
-      ...partial?.fileProtection,
-      files: partial?.fileProtection?.files ?? defaultSettings.fileProtection.files,
-    },
-    security: { ...defaultSettings.security, ...partial?.security },
-    notifications: partial?.notifications ?? defaultSettings.notifications,
-    appearance: { ...defaultSettings.appearance, ...partial?.appearance },
-    dataPrivacy: { ...defaultSettings.dataPrivacy, ...partial?.dataPrivacy },
-  };
-}
-
 const defaultState: WorkspaceState = {
   onboardingDraft: defaultOnboardingDraft,
   chatTargetAgentId: null,

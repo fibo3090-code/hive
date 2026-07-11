@@ -85,8 +85,10 @@ CRUD + live model discovery for the four provider slots
 | GET    | `/v1/llm-providers/:id/refresh-models` | Force-refresh that cache |
 
 Empty-string `apiKey` clears the stored key; setting/changing a key invalidates
-that provider's model cache. `client_for(ProviderConfig)` returns a boxed
-`LlmProvider` (`list_models` / `test_connection` / `complete` / `chat_stream`).
+that provider's model cache. `client_for(ProviderConfig)` returns
+`Result<Box<dyn LlmProvider>, LlmError>` (`list_models` / `test_connection` /
+`complete` / `chat_stream`) — a reqwest build failure surfaces as an error
+instead of panicking provider init.
 
 ## API documentation
 

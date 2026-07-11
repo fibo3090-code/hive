@@ -305,6 +305,22 @@ async fn collect_response(
         }
     }
 
+    // C218: a truncated stream can end after `ToolCallStart`/`ToolCallDelta`
+    // without the matching `ToolCallEnd` — leaving that call's arguments as
+    // `Value::Null` even though the full JSON already accumulated in
+    // `active_args`. Finalize the stragglers so the tool isn't invoked with
+    // null args (applies to every provider, not just Anthropic).
+    for (id, args) in active_args.drain() {
+        if let Some(tc) = tool_calls
+            .iter_mut()
+            .find(|tc| tc.id.as_deref() == Some(id.as_str()))
+        {
+            if tc.arguments.is_null() {
+                tc.arguments = serde_json::from_str(&args).unwrap_or(Value::Null);
+            }
+        }
+    }
+
     Ok(CollectOutcome {
         accumulated,
         tokens_in,
@@ -953,6 +969,25 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
     if let Some(s) = composed {
         messages.push(ChatMessage::system(s));
     }
+    // C102: fetch every user message's attachments in one query instead of
+    // one query per message inside the history loop.
+    let mut attachments_by_message: std::collections::HashMap<String, Vec<_>> = {
+        let user_message_ids: Vec<String> = history
+            .iter()
+            .filter(|row| row.role == "user")
+            .map(|row| row.id.clone())
+            .collect();
+        let mut grouped: std::collections::HashMap<String, Vec<_>> =
+            std::collections::HashMap::new();
+        for att in
+            hive_db::repos::chat_attachments::list_for_message_ids(db.conn(), &user_message_ids)
+                .await
+                .unwrap_or_default()
+        {
+            grouped.entry(att.message_id.clone()).or_default().push(att);
+        }
+        grouped
+    };
     for row in history {
         let is_compaction_summary = row.content.starts_with("[Conversation summary");
         let role = match row.role.as_str() {
@@ -974,27 +1009,41 @@ async fn run_turn_inner(params: RunTurn) -> Result<(), ChatError> {
         // follow-up; today the model at least knows the image was sent.
         let mut content = row.content;
         if matches!(role, ChatRole::User) {
-            let attachments =
-                hive_db::repos::chat_attachments::list_for_message(db.conn(), &row.id)
-                    .await
-                    .unwrap_or_default();
+            let attachments = attachments_by_message.remove(&row.id).unwrap_or_default();
             for att in attachments {
                 content.push_str(&format!(
                     "\n\n--- attachment: {} ({}, {} bytes) ---\n",
                     att.name, att.mime_type, att.bytes_size
                 ));
                 if att.kind == "text" {
-                    let absolute_path = data_dir.join("attachments").join(&att.storage_path);
-                    if let Ok(bytes) = tokio::fs::read(&absolute_path).await {
-                        let limit = 16 * 1024;
-                        let take = bytes.len().min(limit);
-                        let text = String::from_utf8_lossy(&bytes[..take]);
-                        content.push_str(&text);
-                        if bytes.len() > limit {
-                            content.push_str(&format!(
-                                "\n[truncated {} bytes]\n",
-                                bytes.len() - limit
-                            ));
+                    // C088 / same rationale as the download endpoint (ZZ57):
+                    // a `..`-laden `storage_path` (DB corruption, future
+                    // migration, SQL flaw) would otherwise let this inline
+                    // read pull arbitrary files into the LLM context.
+                    // Canonicalise both sides and require the resolved path
+                    // to stay under the attachments root; on any failure the
+                    // attachment body is simply not inlined.
+                    let attachments_root = data_dir.join("attachments");
+                    let absolute_path = attachments_root.join(&att.storage_path);
+                    let in_bounds = match (
+                        tokio::fs::canonicalize(&attachments_root).await,
+                        tokio::fs::canonicalize(&absolute_path).await,
+                    ) {
+                        (Ok(root), Ok(path)) => path.starts_with(&root),
+                        _ => false,
+                    };
+                    if in_bounds {
+                        if let Ok(bytes) = tokio::fs::read(&absolute_path).await {
+                            let limit = 16 * 1024;
+                            let take = bytes.len().min(limit);
+                            let text = String::from_utf8_lossy(&bytes[..take]);
+                            content.push_str(&text);
+                            if bytes.len() > limit {
+                                content.push_str(&format!(
+                                    "\n[truncated {} bytes]\n",
+                                    bytes.len() - limit
+                                ));
+                            }
                         }
                     }
                 } else if att.kind == "image" {

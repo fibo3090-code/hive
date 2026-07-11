@@ -11,6 +11,8 @@ pub enum GitError {
     MissingWorkspace(String),
     #[error("git executable failed: {0}")]
     Git(String),
+    #[error("invalid git argument: {0}")]
+    InvalidArg(String),
     #[error("parse error: {0}")]
     Parse(String),
     #[error("http error: {0}")]
@@ -101,6 +103,31 @@ pub struct CreatePullRequest {
 
 pub struct GitRepo {
     root: PathBuf,
+}
+
+/// C251: branch names and references arrive from HTTP handlers and LLM tool
+/// calls, and `run_git` places them in positional argument slots. `git`
+/// happily treats a positional that starts with `-` as an *option* —
+/// `checkout("--git-dir=/tmp/evil")` or `tree(Some("--output=/tmp/x"))` would
+/// redirect the operation entirely. Shell injection was never possible
+/// (`Command` doesn't invoke a shell); this closes the option-injection
+/// channel by rejecting anything that can't be a plain ref: leading `-`,
+/// embedded NUL/newline, or empty input.
+fn ensure_safe_ref(value: &str, what: &str) -> Result<(), GitError> {
+    if value.is_empty() {
+        return Err(GitError::InvalidArg(format!("{what} must not be empty")));
+    }
+    if value.starts_with('-') {
+        return Err(GitError::InvalidArg(format!(
+            "{what} must not start with '-': {value:?}"
+        )));
+    }
+    if value.contains(['\0', '\n']) {
+        return Err(GitError::InvalidArg(format!(
+            "{what} contains a control character: {value:?}"
+        )));
+    }
+    Ok(())
 }
 
 impl GitRepo {
@@ -199,11 +226,13 @@ impl GitRepo {
     }
 
     pub fn create_branch(&self, name: &str) -> Result<(), GitError> {
+        ensure_safe_ref(name, "branch name")?;
         let _ = self.run_git(&["branch", name])?;
         Ok(())
     }
 
     pub fn checkout(&self, name: &str, create: bool) -> Result<(), GitError> {
+        ensure_safe_ref(name, "branch name")?;
         if create {
             let _ = self.run_git(&["checkout", "-b", name])?;
         } else {
@@ -240,6 +269,7 @@ impl GitRepo {
 
     pub fn tree(&self, reference: Option<&str>) -> Result<Vec<GitTreeEntry>, GitError> {
         let reference = reference.unwrap_or("HEAD");
+        ensure_safe_ref(reference, "reference")?;
         let output = self.run_git(&["ls-tree", "-r", "-t", "-l", reference])?;
         let mut entries = Vec::new();
         for line in output.lines() {
@@ -272,6 +302,7 @@ impl GitRepo {
 
     pub fn file(&self, reference: Option<&str>, path: &str) -> Result<GitFile, GitError> {
         let reference = reference.unwrap_or("HEAD");
+        ensure_safe_ref(reference, "reference")?;
         let spec = format!("{reference}:{path}");
         let output = self.run_git(&["show", &spec])?;
         Ok(GitFile {
@@ -284,6 +315,7 @@ impl GitRepo {
 
     pub fn diff(&self, reference: Option<&str>) -> Result<GitDiff, GitError> {
         let reference = reference.unwrap_or("WORKTREE");
+        ensure_safe_ref(reference, "reference")?;
         let args = if reference.eq_ignore_ascii_case("WORKTREE") {
             vec!["diff", "HEAD"]
         } else {
@@ -517,5 +549,85 @@ impl GitHubClient {
                 .unwrap_or_default()
                 .to_owned(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_repo() -> GitRepo {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hive-git-test-{nanos:x}"));
+        let repo = GitRepo::new(&dir);
+        repo.init().expect("git init");
+        repo
+    }
+
+    #[test]
+    fn ensure_safe_ref_accepts_normal_refs() {
+        for ok in ["main", "feature/x", "HEAD", "HEAD~2", "v1.0.0", "abc123"] {
+            assert!(ensure_safe_ref(ok, "ref").is_ok(), "{ok} should pass");
+        }
+    }
+
+    #[test]
+    fn ensure_safe_ref_rejects_option_injection() {
+        for bad in [
+            "--git-dir=/tmp/evil",
+            "-b",
+            "--output=/tmp/x",
+            "",
+            "main\nevil",
+            "main\0evil",
+        ] {
+            assert!(
+                matches!(ensure_safe_ref(bad, "ref"), Err(GitError::InvalidArg(_))),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn create_branch_and_checkout_reject_option_like_names() {
+        let repo = fresh_repo();
+        assert!(matches!(
+            repo.create_branch("--git-dir=/tmp/evil"),
+            Err(GitError::InvalidArg(_))
+        ));
+        assert!(matches!(
+            repo.checkout("-b", false),
+            Err(GitError::InvalidArg(_))
+        ));
+        assert!(matches!(
+            repo.tree(Some("--output=/tmp/x")),
+            Err(GitError::InvalidArg(_))
+        ));
+        assert!(matches!(
+            repo.diff(Some("--no-index")),
+            Err(GitError::InvalidArg(_))
+        ));
+        assert!(matches!(
+            repo.file(Some("-Oorderfile"), "README.md"),
+            Err(GitError::InvalidArg(_))
+        ));
+    }
+
+    #[test]
+    fn commit_checkout_log_roundtrip_still_works() {
+        let repo = fresh_repo();
+        std::fs::write(repo.root().join("a.txt"), "hello").unwrap();
+        let commit = repo
+            .commit("initial", "Test", "test@example.com", None)
+            .unwrap();
+        assert_eq!(commit.summary, "initial");
+        repo.checkout("feature/x", true).unwrap();
+        let branches = repo.branches().unwrap();
+        assert!(branches.iter().any(|b| b.name == "feature/x" && b.current));
+        let log = repo.log(5).unwrap();
+        assert_eq!(log.len(), 1);
     }
 }

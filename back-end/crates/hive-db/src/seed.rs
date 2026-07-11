@@ -11,8 +11,12 @@ use crate::repos::{
     tech_debt,
 };
 
-fn json_value(raw: &str) -> Value {
-    serde_json::from_str(raw).expect("valid seed json")
+/// C141: seed JSON is embedded at compile time, but a corrupt or
+/// hand-edited seed file used to `.expect()` here and hard-crash boot.
+/// Surface the parse failure as a `DbErr` instead so the caller can log
+/// and continue without demo data.
+fn json_value(raw: &str) -> Result<Value, DbErr> {
+    serde_json::from_str(raw).map_err(|e| DbErr::Custom(format!("invalid seed json: {e}")))
 }
 
 struct ProjectSpec<'a> {
@@ -263,7 +267,7 @@ async fn ensure_agents(
                 current_task: Some(Some(current_task.into())),
                 quality_score: Some(Some(quality_score)),
                 tokens_used: Some(tokens_used),
-                eval_scores: Some(json_value(eval_scores)),
+                eval_scores: Some(json_value(eval_scores)?),
                 enabled_tools: None,
                 system_prompt: None,
                 model_provider_id: None,
@@ -783,49 +787,49 @@ async fn ensure_project_scope_settings(
         db,
         &scope,
         "requirements",
-        json_value(include_str!("../../../seed/requirements.json")),
+        json_value(include_str!("../../../seed/requirements.json"))?,
     )
     .await?;
     settings::put_value(
         db,
         &scope,
         "userStories",
-        json_value(include_str!("../../../seed/user_stories.json")),
+        json_value(include_str!("../../../seed/user_stories.json"))?,
     )
     .await?;
     settings::put_value(
         db,
         &scope,
         "activityFeed",
-        json_value(include_str!("../../../seed/activity_feed.json")),
+        json_value(include_str!("../../../seed/activity_feed.json"))?,
     )
     .await?;
     settings::put_value(
         db,
         &scope,
         "sessionHistory",
-        json_value(include_str!("../../../seed/session_history.json")),
+        json_value(include_str!("../../../seed/session_history.json"))?,
     )
     .await?;
     settings::put_value(
         db,
         &scope,
         "insights.qualityOverTime",
-        json_value(include_str!("../../../seed/quality_over_time.json")),
+        json_value(include_str!("../../../seed/quality_over_time.json"))?,
     )
     .await?;
     settings::put_value(
         db,
         &scope,
         "insights.spend",
-        json_value(include_str!("../../../seed/spend.json")),
+        json_value(include_str!("../../../seed/spend.json"))?,
     )
     .await?;
     settings::put_value(
         db,
         &scope,
         "insights.taskThroughput",
-        json_value(include_str!("../../../seed/task_throughput.json")),
+        json_value(include_str!("../../../seed/task_throughput.json"))?,
     )
     .await?;
     settings::put_value(db, &scope, "agentMessages", json!({})).await?;
@@ -885,7 +889,7 @@ async fn heal_enabled_tools(db: &DatabaseConnection) -> Result<(), DbErr> {
 
     // Pull the canonical list from the seed snapshot so this heal stays
     // in lockstep with whatever a fresh install ships.
-    let canonical = json_value(include_str!("../../../seed/settings_state.json"));
+    let canonical = json_value(include_str!("../../../seed/settings_state.json"))?;
     let Some(tools) = canonical
         .get("toolsSandbox")
         .and_then(|t| t.get("enabledTools"))
@@ -1050,21 +1054,21 @@ pub async fn seed_demo(db: &DatabaseConnection) -> Result<(), DbErr> {
         db,
         "global",
         "settingsState",
-        json_value(include_str!("../../../seed/settings_state.json")),
+        json_value(include_str!("../../../seed/settings_state.json"))?,
     )
     .await?;
     settings::put_value(
         db,
         "global",
         "agentBlueprints",
-        json_value(include_str!("../../../seed/agent_blueprints.json")),
+        json_value(include_str!("../../../seed/agent_blueprints.json"))?,
     )
     .await?;
     settings::put_value(
         db,
         "global",
         "moduleCatalog",
-        json_value(include_str!("../../../seed/module_catalog.json")),
+        json_value(include_str!("../../../seed/module_catalog.json"))?,
     )
     .await?;
 

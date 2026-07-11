@@ -82,6 +82,23 @@ pub async fn list_for_message(
         .await
 }
 
+/// Batched variant of [`list_for_message`] for history rebuilds: one query
+/// for every message in a thread instead of one per user message (C102).
+/// Returns rows ordered by `created_at`; the caller groups by `message_id`.
+pub async fn list_for_message_ids(
+    db: &DatabaseConnection,
+    message_ids: &[String],
+) -> Result<Vec<Model>, DbErr> {
+    if message_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    Entity::find()
+        .filter(Column::MessageId.is_in(message_ids.iter().cloned()))
+        .order_by_asc(Column::CreatedAt)
+        .all(db)
+        .await
+}
+
 pub async fn delete(db: &DatabaseConnection, id: &str) -> Result<(), DbErr> {
     Entity::delete_by_id(id.to_owned()).exec(db).await?;
     Ok(())

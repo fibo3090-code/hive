@@ -56,7 +56,7 @@ export const planGraphKey = (projectId?: string | null) => ['plan-graph', projec
 export function usePlanGraph(projectId?: string | null) {
   return useQuery({
     queryKey: planGraphKey(projectId),
-    queryFn: () => api<PlanGraphPayload>(`/v1/projects/${projectId}/plan-graph`),
+    queryFn: () => api<PlanGraphPayload>(`/v1/projects/${encodeURIComponent(String(projectId))}/plan-graph`),
     enabled: !!projectId,
   });
 }
@@ -68,7 +68,7 @@ export function useSavePlanGraph(projectId?: string | null) {
       if (!projectId) {
         throw new Error('Cannot save sprint graph without an active project.');
       }
-      return api<{ sprintIds: string[]; taskIds: string[] }>(`/v1/projects/${projectId}/plan-graph`, {
+      return api<{ sprintIds: string[]; taskIds: string[] }>(`/v1/projects/${encodeURIComponent(String(projectId))}/plan-graph`, {
         method: 'PUT',
         body: JSON.stringify(plan),
       });

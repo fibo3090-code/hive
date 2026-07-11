@@ -24,12 +24,14 @@ const routeNames: Record<string, string> = {
   '/settings': 'Settings',
 };
 
+// C422: the route table is static, so sort it once at module load instead
+// of filter+sort on every render.
+const routePrefixesLongestFirst = Object.keys(routeNames).sort((a, b) => b.length - a.length);
+
 function resolveRouteName(pathname: string): string {
   if (routeNames[pathname]) return routeNames[pathname];
   // Match longest known prefix (e.g. /modules/:id → Modules)
-  const match = Object.keys(routeNames)
-    .filter((p) => pathname.startsWith(p + '/'))
-    .sort((a, b) => b.length - a.length)[0];
+  const match = routePrefixesLongestFirst.find((p) => pathname.startsWith(p + '/'));
   return match ? routeNames[match] : 'HIVE';
 }
 

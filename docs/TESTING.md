@@ -5,7 +5,7 @@
 > by ID in [`BACKLOG.md`](BACKLOG.md) §3.5 (backend) and §4.5 (frontend); this
 > doc is the strategy + how-to, not a second tracker.
 
-**Last reviewed:** 2026-06-16.
+**Last reviewed:** 2026-07-10.
 
 ---
 
@@ -42,7 +42,7 @@ must pass; `cargo test --workspace` must be green.
 | Area | State |
 |---|---|
 | **Backend — runtime/db/llm/tools** | Real coverage exists: drift scoring, executor/registry lifecycle (regression tests), chat schema/tool-parsing, sandbox escape, seed, provider parsing. ~245+ workspace tests. |
-| **Backend — `hive-git`** | **Zero tests** (521 LOC) — C295–C298. Parsing of `log`/`tree`/`commit` can silently drop data. |
+| **Backend — `hive-git`** | **First tests landed** (2026-07-10): `ensure_safe_ref` option-injection guards + an init/commit/checkout/log round-trip. The `log`/`tree`/`file`/`diff` *parsers* (C295–C298) are still largely uncovered — silent data-loss risk remains there. |
 | **Backend — repo layer** | Mixed: `agents.rs` has tests; ~34 repo files have none (C165, partially overstated). |
 | **Backend — critical state machines** | Executor/registry, agent tools, drift-hook *integration*, budget reservation, wire cycle detection, SSRF guard, domain `FromStr` — confirmed gaps (C118–C299). |
 | **Frontend** | **Effectively untested.** The only test file is `src/test/example.test.ts`, which asserts `expect(true).toBe(true)` (C538). 19 pages, ~47 UI components, `useHiveData`, `RealtimeProvider`, `useSse` — all uncovered (C361/C400/C531–C533). |
@@ -76,10 +76,15 @@ this order — each protects a guarantee, not just a line:
    pause/resume/terminate/dispatch and DB↔executor sync (the recurring
    split-brain class, C092/C094).
 3. **Budget reservation → final** (C125, C155) — the money path.
-4. **SSRF guard + redirect policy** (C191, C192) — security guarantee; mock a
-   server redirecting to `127.0.0.1` / `169.254.169.254` / `ftp://` / 6+ hops.
-5. **`hive-git` parsing** (C295–C298) — the whole crate; silent data loss today.
+4. **SSRF guard + redirect policy** (C191, C192) — security guarantee; the
+   hostname-resolving guard now has unit tests (localhost / metadata-IP / public
+   IP); still want an integration test that mocks a server redirecting to
+   `127.0.0.1` / `169.254.169.254` / `ftp://` / 6+ hops.
+5. **`hive-git` parsing** (C295–C298) — `log`/`tree`/`file`/`diff` output
+   parsing (the guard + round-trip landed 2026-07-10; the parsers are next).
 6. **Domain `FromStr` + SSE UTF-8 boundary** (C286/C287/C294, C246).
+   The agent tree-walk (`agents::ancestors`/`descendants`) now has coverage
+   (C152), landed alongside the one-query rewrite.
 
 **Frontend**
 1. **`api()` client** error/`requestId` paths (C501, C537) — every call goes
@@ -93,5 +98,8 @@ this order — each protects a guarantee, not just a line:
 
 ## 5. Dependency safety
 
-`vitest` must be ≥3.2.6 (C543, GHSA-5xrq-8626-4rwp) — the test runner itself
-currently carries a critical CVE. Bump it before relying on the frontend suite.
+`vitest` is pinned ≥3.2.7 (C543, GHSA-5xrq-8626-4rwp resolved 2026-07-10) — the
+test runner no longer carries the critical CVE. `dompurify` is forced to
+^3.4.11 via an `overrides` entry because monaco-editor pins a vulnerable
+transitive version. Run `npm audit` before relying on the suite; the remaining
+esbuild/vite advisories (C544/C545) need a vite major bump.

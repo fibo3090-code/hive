@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
@@ -101,6 +101,10 @@ export default function Onboarding() {
 
   type LaunchStep = { name: string; status: string; detail: string };
   const [launch, setLaunch] = useState<{ phase: 'idle' | 'running' | 'done'; steps: LaunchStep[] }>({ phase: 'idle', steps: [] });
+  // C313: the post-launch redirect must not fire after unmount (operator
+  // navigates away during the 1.5s celebration pause).
+  const redirectTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(redirectTimer.current), []);
 
   const step = onboardingDraft.step;
   const nextStep = () => updateOnboardingDraft((draft) => ({ ...draft, step: Math.min(draft.step + 1, LAST_STEP_INDEX) }));
@@ -200,7 +204,7 @@ export default function Onboarding() {
       });
       setLaunch({ phase: 'done', steps: result.steps.length ? result.steps : LAUNCH_STEP_NAMES.map((name) => ({ name, status: 'ok', detail: '' })) });
       resetOnboardingDraft();
-      setTimeout(() => navigate('/dashboard'), 1500);
+      redirectTimer.current = setTimeout(() => navigate('/dashboard'), 1500);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Launch failed — see the backend logs.');
       setLaunch({ phase: 'idle', steps: [] });

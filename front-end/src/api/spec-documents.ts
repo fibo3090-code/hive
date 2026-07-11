@@ -71,7 +71,7 @@ const sectionsKey = (specDocumentId: string | null | undefined) =>
 export function useSpecDocuments(projectId: string | null | undefined) {
   return useQuery({
     queryKey: docsKey(projectId),
-    queryFn: () => api<SpecDocument[]>(`/v1/projects/${projectId}/spec-documents`),
+    queryFn: () => api<SpecDocument[]>(`/v1/projects/${encodeURIComponent(String(projectId))}/spec-documents`),
     enabled: Boolean(projectId),
   });
 }
@@ -79,7 +79,7 @@ export function useSpecDocuments(projectId: string | null | undefined) {
 export function useSpecDocument(specDocumentId: string | null | undefined) {
   return useQuery({
     queryKey: ['spec-document', specDocumentId ?? '_none'],
-    queryFn: () => api<SpecDocument>(`/v1/spec-documents/${specDocumentId}`),
+    queryFn: () => api<SpecDocument>(`/v1/spec-documents/${encodeURIComponent(String(specDocumentId))}`),
     enabled: Boolean(specDocumentId),
   });
 }
@@ -88,7 +88,7 @@ export function useSpecDocumentSections(specDocumentId: string | null | undefine
   return useQuery({
     queryKey: sectionsKey(specDocumentId),
     queryFn: () =>
-      api<SpecDocumentSection[]>(`/v1/spec-documents/${specDocumentId}/sections`),
+      api<SpecDocumentSection[]>(`/v1/spec-documents/${encodeURIComponent(String(specDocumentId))}/sections`),
     enabled: Boolean(specDocumentId),
   });
 }
@@ -97,7 +97,7 @@ export function useCreateSpecDocument(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateSpecDocumentInput) =>
-      api<SpecDocument>(`/v1/projects/${projectId}/spec-documents`, {
+      api<SpecDocument>(`/v1/projects/${encodeURIComponent(String(projectId))}/spec-documents`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
@@ -112,7 +112,7 @@ export function useUpdateSpecDocument(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: UpdateSpecDocumentInput }) =>
-      api<SpecDocument>(`/v1/spec-documents/${id}`, {
+      api<SpecDocument>(`/v1/spec-documents/${encodeURIComponent(String(id))}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
       }),
@@ -136,7 +136,7 @@ export function useDecomposeSpecDocument(projectId: string | null | undefined) {
       decomposition: DecomposeOutput;
       startingPosition?: number;
     }) =>
-      api<MaterializeResult>(`/v1/spec-documents/${specDocumentId}/decompose`, {
+      api<MaterializeResult>(`/v1/spec-documents/${encodeURIComponent(String(specDocumentId))}/decompose`, {
         method: 'POST',
         body: JSON.stringify({
           projectId,

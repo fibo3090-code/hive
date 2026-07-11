@@ -105,6 +105,23 @@ impl Tool for TodoTool {
         let args: TodoArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
 
+        // C168: take the sandbox lock across the whole load→mutate→save
+        // read-modify-write (not just the write) so the HiveGraph lock
+        // overlay shows todo activity like it does for fs_write /
+        // str_replace, and concurrent mutations are visible to each other.
+        // RAII — drop releases. `list` is read-only and skips the lock.
+        let _lock = (args.action != "list")
+            .then(|| {
+                ctx.sandbox_locks.as_ref().map(|reg| {
+                    reg.acquire(
+                        ctx.project_id.clone(),
+                        ctx.agent_id.clone().unwrap_or_else(|| "unknown".to_owned()),
+                        TODO_FILE_PATH.to_owned(),
+                    )
+                })
+            })
+            .flatten();
+
         let mut state = Self::load_state(ctx).await;
 
         match args.action.as_str() {

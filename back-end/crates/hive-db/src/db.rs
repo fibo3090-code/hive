@@ -74,11 +74,19 @@ async fn repair_renamed_migrations(conn: &DatabaseConnection) -> Result<(), DbEr
     }
 
     for (old, new) in RENAMES {
-        let stmt = format!(
-            "UPDATE seaql_migrations SET version = '{}' WHERE version = '{}'",
-            new, old
-        );
-        if let Ok(res) = conn.execute_unprepared(&stmt).await {
+        // C151: values are compile-time consts today, but bind them anyway so
+        // this never becomes the template someone copies for runtime input.
+        // Placeholder syntax is backend-specific ($N on Postgres, ? elsewhere).
+        let backend = conn.get_database_backend();
+        let sql = match backend {
+            sea_orm::DatabaseBackend::Postgres => {
+                "UPDATE seaql_migrations SET version = $1 WHERE version = $2"
+            }
+            _ => "UPDATE seaql_migrations SET version = ? WHERE version = ?",
+        };
+        let stmt =
+            sea_orm::Statement::from_sql_and_values(backend, sql, [(*new).into(), (*old).into()]);
+        if let Ok(res) = conn.execute(stmt).await {
             if res.rows_affected() > 0 {
                 info!(
                     rows = res.rows_affected(),

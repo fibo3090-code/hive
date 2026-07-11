@@ -15,7 +15,7 @@ export function BranchSelector({ currentBranch, branches, onBranchChange }: Bran
         <span className="truncate max-w-[120px]">{currentBranch}</span>
         <ChevronDown className="h-3 w-3 text-muted-foreground" />
       </button>
-      <div className="absolute top-full left-0 mt-1 w-48 rounded-md border border-border bg-card shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 py-1">
+      <div className="absolute top-full left-0 mt-1 w-48 rounded-md border border-border bg-card shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible transition-all z-50 py-1">
         <div className="px-3 py-1.5 text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Switch Branch</div>
         {branches.map((branch) => (
           <button key={branch} onClick={() => onBranchChange(branch)}

@@ -312,13 +312,16 @@ pub trait LlmProvider: Send + Sync {
 /// slow-token model), which is the wrong default for an LLM client.
 /// Stream consumers (`hive_runtime::chat::run_turn`) enforce their own
 /// per-turn wall-clock budget.
-pub fn client_for(config: ProviderConfig) -> Box<dyn LlmProvider> {
+///
+/// C211: a reqwest build failure (TLS backend init, mostly) used to
+/// `.expect()` and take the whole process down mid-request; surface it
+/// as an `LlmError` instead.
+pub fn client_for(config: ProviderConfig) -> Result<Box<dyn LlmProvider>, LlmError> {
     let http = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
         .pool_idle_timeout(std::time::Duration::from_secs(60))
-        .build()
-        .expect("reqwest client builds");
-    match config.kind {
+        .build()?;
+    Ok(match config.kind {
         ProviderKind::Anthropic => {
             Box::new(providers::anthropic::AnthropicProvider::new(http, config))
         }
@@ -328,7 +331,7 @@ pub fn client_for(config: ProviderConfig) -> Box<dyn LlmProvider> {
         ProviderKind::DeepSeek => {
             Box::new(providers::deepseek::DeepSeekProvider::new(http, config))
         }
-    }
+    })
 }
 
 #[cfg(test)]

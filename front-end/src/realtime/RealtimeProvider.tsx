@@ -71,12 +71,18 @@ export function RealtimeProvider({ children }: { readonly children: ReactNode })
       ensureNativeListener(eventName);
     }
 
+    // Capture the maps this effect run owns; the cleanup must clear what was
+    // registered against THIS EventSource, not whatever the refs point to by
+    // unmount time (react-hooks/exhaustive-deps warning).
+    const nativeListeners = nativeListenersRef.current;
+    const handlers = handlersRef.current;
+    const prefixHandlers = prefixHandlersRef.current;
     return () => {
       source.close();
       sourceRef.current = null;
-      nativeListenersRef.current.clear();
-      handlersRef.current.clear();
-      prefixHandlersRef.current.clear();
+      nativeListeners.clear();
+      handlers.clear();
+      prefixHandlers.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

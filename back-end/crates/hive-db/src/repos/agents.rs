@@ -221,47 +221,76 @@ pub async fn list_children(
         .await
 }
 
+/// Load every live agent in the subject's project, keyed by id. One query
+/// replaces the old per-node/per-level fetches in `ancestors`/`descendants`
+/// (C143/C144); projects hold tens of agents, so walking in memory is cheap.
+async fn project_agents_by_id(
+    db: &DatabaseConnection,
+    subject: &Model,
+) -> Result<std::collections::HashMap<String, Model>, DbErr> {
+    let rows = Entity::find()
+        .filter(Column::ProjectId.eq(subject.project_id.clone()))
+        .filter(Column::DeletedAt.is_null())
+        .all(db)
+        .await?;
+    Ok(rows.into_iter().map(|a| (a.id.clone(), a)).collect())
+}
+
 /// Walk up the parent chain. Returns ordered ancestors closest-first.
 pub async fn ancestors(db: &DatabaseConnection, id: &str) -> Result<Vec<Model>, DbErr> {
+    let Some(subject) = Entity::find_by_id(id.to_owned())
+        .filter(Column::DeletedAt.is_null())
+        .one(db)
+        .await?
+    else {
+        return Ok(Vec::new());
+    };
+    let by_id = project_agents_by_id(db, &subject).await?;
     let mut chain = Vec::new();
-    let mut cursor = id.to_owned();
+    let mut cursor = subject.parent_agent_id.clone();
     let mut depth = 0;
     while depth < 32 {
-        let agent = match Entity::find_by_id(cursor.clone())
-            .filter(Column::DeletedAt.is_null())
-            .one(db)
-            .await?
-        {
-            Some(a) => a,
-            None => break,
+        let Some(parent_id) = cursor else { break };
+        let Some(agent) = by_id.get(&parent_id) else {
+            break;
         };
-        let parent = agent.parent_agent_id.clone();
-        if depth > 0 {
-            chain.push(agent);
-        }
-        match parent {
-            Some(p) => {
-                cursor = p;
-                depth += 1;
-            }
-            None => break,
-        }
+        cursor = agent.parent_agent_id.clone();
+        chain.push(agent.clone());
+        depth += 1;
     }
     Ok(chain)
 }
 
 /// Walk down the descendant tree (BFS).
 pub async fn descendants(db: &DatabaseConnection, id: &str) -> Result<Vec<Model>, DbErr> {
+    let Some(subject) = Entity::find_by_id(id.to_owned())
+        .filter(Column::DeletedAt.is_null())
+        .one(db)
+        .await?
+    else {
+        return Ok(Vec::new());
+    };
+    let by_id = project_agents_by_id(db, &subject).await?;
+    let mut children_of: std::collections::HashMap<&str, Vec<&Model>> =
+        std::collections::HashMap::new();
+    for agent in by_id.values() {
+        if let Some(parent) = agent.parent_agent_id.as_deref() {
+            children_of.entry(parent).or_default().push(agent);
+        }
+    }
+    // Deterministic order within a level (HashMap iteration isn't).
+    for kids in children_of.values_mut() {
+        kids.sort_by(|a, b| a.id.cmp(&b.id));
+    }
     let mut out = Vec::new();
-    let mut frontier = vec![id.to_owned()];
+    let mut frontier = vec![id];
     let mut depth = 0;
     while !frontier.is_empty() && depth < 16 {
         let mut next = Vec::new();
-        for parent_id in &frontier {
-            let kids = list_children(db, parent_id).await?;
-            for k in kids {
-                next.push(k.id.clone());
-                out.push(k);
+        for parent_id in frontier {
+            for kid in children_of.get(parent_id).into_iter().flatten() {
+                next.push(kid.id.as_str());
+                out.push((*kid).clone());
             }
         }
         frontier = next;

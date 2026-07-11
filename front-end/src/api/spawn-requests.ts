@@ -74,7 +74,7 @@ export function useSpawnRequests(projectId: string | null | undefined) {
   return useQuery({
     queryKey: spawnKey(projectId),
     queryFn: () =>
-      api<AgentSpawnRequest[]>(`/v1/projects/${projectId}/spawn-requests`),
+      api<AgentSpawnRequest[]>(`/v1/projects/${encodeURIComponent(String(projectId))}/spawn-requests`),
     enabled: Boolean(projectId),
   });
 }
@@ -83,7 +83,7 @@ export function useSpawnRequest(spawnRequestId: string | null | undefined) {
   return useQuery({
     queryKey: ['spawn-request', spawnRequestId ?? '_none'],
     queryFn: () =>
-      api<AgentSpawnRequest>(`/v1/spawn-requests/${spawnRequestId}`),
+      api<AgentSpawnRequest>(`/v1/spawn-requests/${encodeURIComponent(String(spawnRequestId))}`),
     enabled: Boolean(spawnRequestId),
     // Auto-refresh while the pipeline is running. The UI also subscribes
     // to `agent_spawn_request.updated` SSE for instant deltas.
@@ -100,7 +100,7 @@ export function useCreateSpawnRequest(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateSpawnRequestInput) =>
-      api<AgentSpawnRequest>(`/v1/projects/${projectId}/spawn-requests`, {
+      api<AgentSpawnRequest>(`/v1/projects/${encodeURIComponent(String(projectId))}/spawn-requests`, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
@@ -112,7 +112,7 @@ export function useUpdateSpawnRequest(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: UpdateSpawnRequestInput }) =>
-      api<AgentSpawnRequest>(`/v1/spawn-requests/${id}`, {
+      api<AgentSpawnRequest>(`/v1/spawn-requests/${encodeURIComponent(String(id))}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
       }),
@@ -132,7 +132,7 @@ export function useApproveSpawnRequest(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      api<{ ok: boolean }>(`/v1/spawn-requests/${id}/approve`, { method: 'POST' }),
+      api<{ ok: boolean }>(`/v1/spawn-requests/${encodeURIComponent(String(id))}/approve`, { method: 'POST' }),
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: spawnKey(projectId) });
       qc.invalidateQueries({ queryKey: ['spawn-request', id] });
@@ -148,7 +148,7 @@ export function useRejectSpawnRequest(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      api<AgentSpawnRequest>(`/v1/spawn-requests/${id}`, {
+      api<AgentSpawnRequest>(`/v1/spawn-requests/${encodeURIComponent(String(id))}`, {
         method: 'PATCH',
         body: JSON.stringify({ status: 'cancelled' satisfies SpawnStatus }),
       }),

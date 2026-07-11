@@ -27,7 +27,7 @@ export function useStartSynthesis(projectId: string | null | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (payload: { description: string; tier?: string | null; model?: { providerId: string; modelId: string } | null }) =>
-      api<{ jobId: string }>(`/v1/projects/${projectId}/modules/synthesize`, {
+      api<{ jobId: string }>(`/v1/projects/${encodeURIComponent(String(projectId))}/modules/synthesize`, {
         method: 'POST',
         body: JSON.stringify(payload),
       }),
@@ -41,7 +41,7 @@ export function useProjectSynthesisJobs(projectId: string | null | undefined) {
   return useQuery({
     queryKey: ['synthesis-jobs', projectId],
     queryFn: () =>
-      api<SynthesisJob[]>(`/v1/projects/${projectId}/synthesis-jobs`),
+      api<SynthesisJob[]>(`/v1/projects/${encodeURIComponent(String(projectId))}/synthesis-jobs`),
     enabled: Boolean(projectId),
     staleTime: 15_000,
   });
@@ -50,7 +50,7 @@ export function useProjectSynthesisJobs(projectId: string | null | undefined) {
 export function useSynthesisJob(jobId: string | null | undefined) {
   return useQuery({
     queryKey: ['synthesis-job', jobId],
-    queryFn: () => api<SynthesisJob>(`/v1/synthesis-jobs/${jobId}`),
+    queryFn: () => api<SynthesisJob>(`/v1/synthesis-jobs/${encodeURIComponent(String(jobId))}`),
     enabled: Boolean(jobId),
     refetchInterval: (query) => {
       const status = query.state.data?.status;
@@ -76,7 +76,7 @@ export function usePublishModule() {
       visibility: ModuleVisibility;
       summary?: string;
     }) =>
-      api<SynthesisJob>(`/v1/synthesis-jobs/${input.jobId}/publish`, {
+      api<SynthesisJob>(`/v1/synthesis-jobs/${encodeURIComponent(String(input.jobId))}/publish`, {
         method: 'POST',
         body: JSON.stringify({
           visibility: input.visibility,
@@ -94,7 +94,7 @@ export function useUnpublishModule() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (jobId: string) =>
-      api<SynthesisJob>(`/v1/synthesis-jobs/${jobId}/unpublish`, {
+      api<SynthesisJob>(`/v1/synthesis-jobs/${encodeURIComponent(String(jobId))}/unpublish`, {
         method: 'POST',
       }),
     onSuccess: (_data, jobId) => {

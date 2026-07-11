@@ -7,7 +7,7 @@
 > [`FEATURE_STATUS.md`](FEATURE_STATUS.md); how the built parts work lives in
 > [`architecture.md`](architecture.md). Start at [`README.md`](README.md) (the docs index).
 
-**Last consolidation:** 2026-06-16
+**Last consolidation:** 2026-07-10 (post PR #20-#24 sync + triage batch)
 **Canonical audit:** the 2026-06-15 exhaustive multi-agent audit (C-IDs), verified
 file-by-file in [`AUDIT_VERIFICATION.md`](../../AUDIT_VERIFICATION.md). Full
 per-finding evidence (file:line, votes, suggested fix) lives in
@@ -53,21 +53,26 @@ C-ID finding has an older A./Z/ZZ equivalent, that provenance is shown in the
 
 ## 1. Status snapshot
 
-| Severity | Confirmed (audit) | Unique defects | OPEN | Fixed (on `main`) |
+| Severity | Confirmed (audit) | Unique defects | OPEN | Fixed |
 |---|---:|---:|---:|---:|
-| 🔴 Critical | 29 | 18 | ~14 | 3 (C026/C074, C092, C202/C203) |
-| 🟠 High | 150 | ~95 | ~92 | C094, C201/C204 + see §6 |
-| 🟡 Medium | 39 | ~27 | ~27 | — |
+| 🔴 Critical | 29 | 18 | ~7 | ~11 (incl. C312/C477, C169-188, C247/C256, C402, C543, audit cluster) |
+| 🟠 High | 150 | ~95 | ~70 | ~25 + see §6 |
+| 🟡 Medium | 39 | ~27 | ~24 | ~3 |
 | 🟢 Low | 0 | — | — | — |
-| **Total** | **218** | **~140** | **~133** | — |
+| **Total** | **218** | **~140** | **~100** | — |
 
 > Counts are approximate because the audit-coverage findings (missing
-> `audit::append`) collapse to one middleware fix, and the test-coverage
-> findings collapse to "stand up the suites." See §3.3 and §3.5.
+> `audit::append`) collapse to one fix, and the test-coverage findings collapse
+> to "stand up the suites." See §3.3 and §3.5.
 >
 > **2026-06-20 merge batch:** PRs #13–#18 landed on `main` (C026/C074, C092,
-> C094, C201/C204, C202/C203 + the LLM tool-calling cluster) and backend CI is
-> green again (fmt/audit). See §6.
+> C094, C201/C204, C202/C203 + the LLM tool-calling cluster). See §6.
+>
+> **2026-07-10 triage batch:** PRs #20–#24 (C312/C477, C169-188, C202/C203/C201,
+> C247/C256, C092, C402) were reconciled into this register — they were fixed
+> but the doc hadn't been updated — and a fresh code-verified sweep landed ~25
+> more fixes on `claude/issue-triage-fixes-xic46d` (audit coverage, C087, C088,
+> C141, C151, C168, C211, C218, C102, C143/C144, and a frontend batch). See §6.
 
 **Verification verdict distribution** (from `AUDIT_VERIFICATION.md`, 218 findings):
 115 CONFIRMED · 36 CONFIRMED-duplicate · 1 CONFIRMED-worse-than-stated (C402) ·
@@ -83,20 +88,23 @@ ease, reconciled with the verification report's "what I'd ship first":
 
 1. ~~**C026 / C074 — tool-allowlist kill-switch**~~ ✅ **DONE (PR #15)**. The
    operator's "disable shell_exec project-wide" now narrows per-agent loadouts. → §3.1
-2. **C312 cluster / C477 — `Modules.tsx` duplicate EventSource** (~30 lines, one
-   file). One bug away from app-wide freeze. → §4.1
-3. **C169–C188 — `web_fetch` SSRF on hostname redirect / DNS rebinding**
-   (`web.rs:129`). Source comment already admits the hole. → §3.2
-4. ~~**C202 / C203 / C201 — Gemini provider**~~ ✅ **DONE (PR #16)** (key in URL,
-   model-name injection, null `generationConfig`). → §3.2 / §3.4
-5. **C247 / C256 — master-key hygiene** (no zeroize; Windows ACL). → §3.2
-6. ~~**C092 — `DeleteAgent` `let _ =` executor swallow**~~ ✅ **DONE (PR #18)** (`agent_tools.rs:553`). → §3.4
-7. **C543 — bump `vitest` to ≥3.2.6** (CVE, one line). → §4.4
-8. **C402 — `useFormField` null-ref** (5 lines, real crash). → §4.1
-9. **Audit middleware** — collapses the entire C001–C056 + medium batch into one
-   fix. → §3.3
+2. ~~**C312 cluster / C477 — `Modules.tsx` duplicate EventSource**~~ ✅ **DONE (PR #21)**. → §4.1
+3. ~~**C169–C188 — `web_fetch` SSRF on hostname redirect / DNS rebinding**~~ ✅ **DONE (PR #23)**. → §3.2
+4. ~~**C202 / C203 / C201 — Gemini provider**~~ ✅ **DONE (PR #16)**. → §3.2 / §3.4
+5. ~~**C247 / C256 — master-key hygiene**~~ ✅ **DONE (PR #24)**. → §3.2
+6. ~~**C092 — `DeleteAgent` `let _ =` executor swallow**~~ ✅ **DONE (PR #18)**. → §3.4
+7. ~~**C543 — bump `vitest` to ≥3.2.6**~~ ✅ **DONE (2026-07-10 triage)** + dompurify override. → §4.4
+8. ~~**C402 — `useFormField` null-ref**~~ ✅ **DONE (PR #22)**. → §4.1
+9. ~~**Audit middleware**~~ ✅ **DONE (2026-07-10 triage)** — 36 per-site `audit::append`
+   calls (15 → 51). → §3.3
 10. **Test foundation** — central hooks, realtime layer, backend state-machines,
-    budget, SSRF, git parsing. → §3.5 / §4.5
+    budget, SSRF, git parsing. **Partial** — `hive-git`, agent tree-walk, and
+    the C087 whitelist now have their first tests; the frontend suite is still open. → §3.5 / §4.5
+
+**Remaining highest-value OPEN items (2026-07-10):** C134-C140 repo-layer
+audit/allowlist bypass (§3.2), C261 sandbox `exec` arbitrary binary (§3.2),
+C060/C061/C106 backend perf (§3.5), C544/C545 esbuild/vite advisories needing
+the vite 5→8 major bump (§4.4), and the frontend test suite (§4.5).
 
 ---
 
@@ -107,11 +115,11 @@ ease, reconciled with the verification report's "what I'd ship first":
 | ID | Legacy | file:line | Defect | Status |
 |---|---|---|---|---|
 | **C026 / C074** | A.9, Z9 | `hive-api/src/main.rs:1508` | `effective_tool_names` returns `per_agent.to_vec()` directly when non-empty — **no intersection** with the global allowlist, so a per-agent loadout bypasses the operator kill-switch. Comment at 1528-1531 confirms it's intentional for the Coordinator. | **✅ RESOLVED** — PR #15 (merged): intersection + `is_authority_tool` carve-out so role-gated coordination tools still reach the Coordinator. |
-| **C087** | — | `hive-runtime/src/spawn/llm_deps.rs:114` | Research-API whitelist uses `picked.url.contains(d)` — raw substring. `http://api.github.com.evil.com` passes; the unapproved-MCP approval gate is bypassable. | **OPEN** |
+| **C087** | — | `hive-runtime/src/spawn/llm_deps.rs` | Research-API whitelist uses `picked.url.contains(d)` — raw substring. `http://api.github.com.evil.com` passes; the unapproved-MCP approval gate is bypassable. | **✅ RESOLVED** (2026-07-10 triage): `host_in_whitelist` parses with `url::Url`, exact-host or true-subdomain match, with regression tests. |
 | **C092** | A.7, Z2 | `hive-runtime/src/agent_tools.rs:553` | `DeleteAgent` tool: `cancel_subtree` result dropped, `let _ = terminate`, `let _ = set_status`, returns `Ok`. A `NotFound` silently desyncs DB ↔ ExecutorRegistry while reporting success. | **✅ RESOLVED** — PR #18 (merged): tolerate `NotFound` on terminate (warn otherwise), propagate `set_status` failure via `?`. |
 | **C186** | A.30 | `hive-tools/src/builtins/edit.rs:114` | `str_replace` binds the sandbox lock to `let _lock` then never references it. *Verification: the audit's "drops at end of map" mechanism is **wrong** (Rust extends the binding to end of block); the real issue is the unused `_`-style binding and lock-overlay visibility.* | **OPEN** (severity ↓; smell, not race) |
 | **C202 / C203** | — | `hive-llm/src/providers/gemini.rs:222,242,311` | Gemini API key embedded as `?key={}` in all three method URLs — leaks into proxy/access logs and history. (C203: model id interpolated unencoded into the path.) | **✅ RESOLVED** — PR #16 (merged): key moved to `x-goog-api-key` header; model id `urlencoding::encode`d. |
-| **C247** | ZZ18 | `hive-crypto/src/lib.rs:60` | Master key built as `Vec<u8>` across three paths and dropped without zeroize — the root secret lingers in heap, recoverable from a core dump / same-uid `/proc/pid/mem`. | **OPEN** |
+| **C247** | ZZ18 | `hive-crypto/src/lib.rs` | Master key built as `Vec<u8>` across three paths and dropped without zeroize. | **✅ RESOLVED** — PR #24 (merged): zeroize + Windows key-file ACL (C256). |
 | **C191** | A.1 | `hive-tools/src/builtins/web.rs:129` | The SSRF redirect policy (5-hop cap, http(s)-only, private-IP-literal reject) is **completely untested**; source comment admits the DNS-rebinding window (ZZ8) is uncovered. | **OPEN** (test gap) |
 
 **Fixes.** C026/C074: `per_agent.iter().filter(|t| global.contains(t)).collect()`.
@@ -123,13 +131,13 @@ C202: send `x-goog-api-key` header. C247: `zeroize::Zeroizing<Vec<u8>>`.
 
 | ID | Legacy | file:line | Defect | Status |
 |---|---|---|---|---|
-| **C169/C171/C173/C184/C188** | A.1, Z3, ZZ8 | `hive-tools/src/builtins/web.rs:129-184` | Redirect policy validates **only IP literals**; a hostname redirect resolving to `127.0.0.1`/`169.254.169.254` passes to reqwest's own DNS unchecked. Source comment confesses ZZ8. | **MITIGATED** (IP-literal hops blocked, batch 1; hostname/DNS-rebind still **OPEN**) |
-| **C088** | — | `hive-runtime/src/chat.rs:893` | Chat-attachment **read** path joins `storage_path` with no canonicalize/bounds check (the download endpoint has the check; the read path doesn't). | **OPEN** |
-| **C251** | — | `hive-git/src/lib.rs:123` | `Command::new("git").args(args)` blocks shell injection but not **git-option** injection (`checkout("--git-dir=/tmp/evil")`). | **OPEN** |
-| **C256** | ZZ20 | `hive-crypto/src/lib.rs:193` | Windows master-key file written with default ACL; any local user on a shared host can read it. Only a `warn!` mitigates today. | **OPEN** |
+| **C169/C171/C173/C184/C188** | A.1, Z3, ZZ8 | `hive-tools/src/builtins/web.rs` | Redirect policy validated only IP literals; hostname redirects passed to reqwest's DNS unchecked. | **✅ RESOLVED** — PR #23 (merged): auto-follow disabled, redirects walked manually with the async hostname-resolving SSRF guard on every hop + tests. |
+| **C088** | — | `hive-runtime/src/chat.rs` | Chat-attachment **read** path joined `storage_path` with no canonicalize/bounds check. | **✅ RESOLVED** (2026-07-10 triage): same canonicalize + starts_with bounds check as the download endpoint. |
+| **C251** | — | `hive-git/src/lib.rs` | `Command::new("git")` blocked shell injection but not **git-option** injection. | **✅ RESOLVED** (2026-07-10 triage): `ensure_safe_ref` rejects option-like/control-char refs at every entry point; crate gained its first tests (C295-C298 partial). |
+| **C256** | ZZ20 | `hive-crypto/src/lib.rs` | Windows master-key file written with default ACL. | **✅ RESOLVED** — PR #24 (merged): icacls lockdown alongside the zeroize fix (C247). |
 | **C261** | — | `hive-sandbox/src/local.rs:424` | `exec()` runs **any** binary (`curl`, `nc`, `socat`); `check_path_allowed` filters file paths, not the command. | **OPEN** |
-| **C151** | — | `hive-db/src/db.rs:77` | `repair_renamed_migrations` builds SQL via `format!` + `execute_unprepared` — safe today (compile-time const) but a latent injection precedent. | **OPEN** (latent) |
-| **C203** | — | `hive-llm/src/providers/gemini.rs:241` | `request.model` interpolated into the URL path unencoded (lines 244, 313). | **OPEN** |
+| **C151** | — | `hive-db/src/db.rs` | `repair_renamed_migrations` built SQL via `format!` + `execute_unprepared`. | **✅ RESOLVED** (2026-07-10 triage): parameterized `Statement::from_sql_and_values` with backend-specific placeholders. |
+| **C203** | — | `hive-llm/src/providers/gemini.rs` | `request.model` interpolated into the URL path unencoded. | **✅ RESOLVED** — PR #16 (merged): model id `urlencoding::encode`d (same fix as C202). |
 | **C134/C135/C136/C137/C140** | A.6 | `hive-db/src/repos/{agents,projects,connectors,llm_providers}.rs` | Repo-layer mutations (`update`/`set_status`/`set_connected`) change tools/status/credentials with **no audit** and **no allowlist validation**; direct callers (e.g. `seed.rs`) bypass handler-level checks. | **OPEN** |
 
 ### 3.3 🟠 High + 🟡 Medium — audit-coverage gap (one root cause)
@@ -155,7 +163,10 @@ the "every mutation is auditable" guarantee. Verification grep found only **14**
   `create_assignment`, C047 `update_spawn_request`.
 
 **Legacy:** A.6, A.20, Z8 (partial — `pause/resume/terminate_agent` and
-`set_agent_status` already audit, batch 2). **Status: OPEN.**
+`set_agent_status` already audit, batch 2). **Status: ✅ RESOLVED (2026-07-10 triage)** —
+36 new `audit::append` sites (15 → 51) cover every handler in both batches;
+settings audits record the post-scrub blob, connector audits redact sealed
+credentials. The repo-layer findings (C134-C140, §3.2) remain open.
 **Single fix:** a `ctx.mutation(entity, id, op, before, after, |db| …)` helper (or
 tower middleware) that wraps audit + broadcast — collapses all ~40 findings.
 Tracked historically as HANDOFF §4.5.
@@ -165,22 +176,22 @@ Tracked historically as HANDOFF §4.5.
 | ID | Legacy | file:line | Defect | Status |
 |---|---|---|---|---|
 | **C094** | A.5, A.10, Z1, ZZ16 | `hive-runtime/src/drift_hook.rs:202` | Drift auto-pause: DB pause (203) and executor pause (217) are independent best-effort blocks — either can fail leaving DB ↔ executor split-brain. | **✅ MITIGATED** — PR #13 (merged): chat-path pause gate + drift-hook `ensure`-before-pause. Full two-write atomicity (ZZ16) still open. |
-| **C141** | HANDOFF 3.4 | `hive-db/src/seed.rs:15` | `json_value()` `.expect()`s on parse — corrupt seed JSON hard-crashes boot. | **OPEN** |
+| **C141** | HANDOFF 3.4 | `hive-db/src/seed.rs` | `json_value()` `.expect()`ed on parse — corrupt seed JSON hard-crashed boot. | **✅ RESOLVED** (2026-07-10 triage): returns `DbErr`, propagated at all 12 call sites. |
 | **C201/C204** | — | `hive-llm/src/providers/gemini.rs:122,150` | When temp+max_tokens both `None`, `generationConfig` is never created, then line 150 mutates `["generationConfig"]["candidateCount"]` on a `Null` → invalid streaming request. | **✅ RESOLVED** — PR #16 (merged): `generationConfig` materialised as an object when streaming (`!generation.is_empty() \|\| stream`). |
-| **C211** | — | `hive-llm/src/lib.rs:284` | `client_for` `.expect("reqwest client builds")` and returns a non-`Result` — a build failure panics provider init. | **OPEN** |
-| **C218** | — | `hive-llm/src/providers/anthropic.rs:280` | Tool-blocks `HashMap` never cleared on a truncated stream (unmatched `content_block_start`). | **OPEN** |
+| **C211** | — | `hive-llm/src/lib.rs` | `client_for` `.expect()`ed on the reqwest builder — a build failure panicked provider init. | **✅ RESOLVED** (2026-07-10 triage): returns `Result<_, LlmError>`; all 10 call sites propagate or fall back. |
+| **C218** | — | `hive-llm/src/providers/anthropic.rs` | Truncated stream left tool-call args unfinalized (map itself is per-stream). | **✅ RESOLVED** (2026-07-10 triage): consumer-side — `chat.rs` finalizes accumulated args when the stream ends without `ToolCallEnd` (covers all providers). |
 
 ### 3.5 🟠 High — performance & test coverage
 
 **Performance (N+1 & oversized):** C060 `list_projects` (1+2N), C061
-`export_project` (1+N), C102 chat-attachments history loop, C143
-`agents::ancestors` (query/level), C144 `agents::descendants` (BFS/level), C106
-`run_turn_inner` (~784 LOC monolith). **Fix:** batch queries / recursive CTE;
-split `run_turn_inner` into setup/reserve/loop/finalize. **Status: OPEN.**
+`export_project` (1+N), C106 `run_turn_inner` (~784 LOC monolith) — **OPEN**.
+~~C102 chat-attachments history loop~~, ~~C143 `agents::ancestors`~~, ~~C144
+`agents::descendants`~~ — **✅ RESOLVED (2026-07-10 triage)**: batched
+`list_for_message_ids` + one-query in-memory tree walks (with first tests, C152).
 
-**Concurrency:** C168 `todo.rs:53` `save_state` writes without a sandbox lock
-(unlike `fs_write`/`str_replace`) — lost-update race + no overlay visibility.
-Legacy A.30. **Status: OPEN.**
+**Concurrency:** C168 `todo.rs` `save_state` wrote without a sandbox lock.
+Legacy A.30. **Status: ✅ RESOLVED (2026-07-10 triage)** — RAII guard held across
+the full read-modify-write for mutating actions.
 
 **Test coverage (backend, ~30 paths — all confirmed gaps).** Critical untested
 paths: executor/registry state machine (C118, C119), agent tools (C120), drift
@@ -205,10 +216,10 @@ fs/edit/meta/shell with inconsistent timestamp generation. **Status: OPEN.**
 
 | ID | Legacy | file:line | Defect | Status |
 |---|---|---|---|---|
-| **C312 cluster / C477** (11 votes) | A.2, Z4, ZZ72 | `front-end/src/pages/Modules.tsx:73` + `api/client.ts:75` | Page opens its **own** `EventSource` per `jobId`, bypassing the `RealtimeProvider` singleton — exhausts the browser's 6-conn/origin cap and freezes navigation. The `eventStreamUrl` export (C477) enables it. *One defect, not eleven.* | **OPEN** |
-| **C402 / C393** | — | `front-end/src/components/ui/form.tsx:35` | `useFormField` reads `fieldContext.name` (line 40) before the null check (42), and `itemContext.id` (46) with **no check at all** — a real crash. *Verification: worse than the audit stated.* | **OPEN** |
+| **C312 cluster / C477** (11 votes) | A.2, Z4, ZZ72 | `front-end/src/pages/Modules.tsx` + `api/client.ts` | Page opened its own `EventSource` per `jobId`, bypassing the `RealtimeProvider` singleton. | **✅ RESOLVED** — PR #21 (merged): synthesis stream routed through the SSE singleton; `eventStreamUrl` export removed. |
+| **C402 / C393** | — | `front-end/src/components/ui/form.tsx` | `useFormField` read context fields before/without null checks — a real crash. | **✅ RESOLVED** — PR #22 (merged): guards on `fieldContext?.name` / `itemContext?.id` before use. |
 | **C478** | — | `front-end/src/api/queries/useServerData.ts:24` | Settings PATCH `JSON.stringify({ settings })` ships the entire `SettingsState`, including secret-bearing fields (`tavilyApiKey`), in plaintext. *(Verification re-rated → high, not critical.)* | **OPEN** |
-| **C543** | — | `front-end/package.json:94` | `vitest 3.2.4` — GHSA-5xrq-8626-4rwp (CVSS 9.8, arbitrary file read/exec) affects <3.2.6. | **OPEN** (one-line bump) |
+| **C543** | — | `front-end/package.json` | `vitest 3.2.4` — GHSA-5xrq-8626-4rwp (CVSS 9.8) affects <3.2.6. | **✅ RESOLVED** (2026-07-10 triage): floor raised to ^3.2.7; dompurify forced to ^3.4.11 via `overrides` (monaco-editor pins a vulnerable version). esbuild/vite advisories (C544) still need the vite major bump. |
 | **C361/C400/C531/C532/C533** | — | `front-end/src` | Near-zero tests: 19 pages, ~47 UI components, `useHiveData`, `RealtimeProvider`, and `useSse` all untested; the only test asserts `expect(true).toBe(true)` (C538). | **OPEN** (see §4.5) |
 
 **Fix (C312):** replace the inline `EventSource` with
@@ -218,20 +229,22 @@ remove/JSDoc-restrict the `eventStreamUrl` export.
 
 ### 4.2 🟠 High — React correctness, a11y, credentials
 
-**React correctness:** C313 `Onboarding.tsx:203` setTimeout-navigate with no
-cleanup (legacy ZZ75), C316 `ChatCentral.tsx:451` thread-creation race, C371
-`carousel.tsx:91` `reInit` listener leak, C508 `use-toast.ts:167` `[state]` dep
-re-registers listener, C354 `StepCoordinatorChat.tsx:223` missing dep, C356
-`HiveGraph.tsx:398` unsafe non-null assertion. *(C471 `RealtimeProvider`
+**React correctness:** ~~C313 `Onboarding.tsx` setTimeout-navigate cleanup~~,
+~~C316 `ChatCentral.tsx` thread-creation race~~, ~~C371 `carousel.tsx` `reInit`
+listener leak~~, ~~C508 `use-toast.ts` `[state]` dep~~, ~~C356 `HiveGraph.tsx`
+unsafe non-null assertion~~ — **✅ RESOLVED (2026-07-10 triage)**. C354
+`StepCoordinatorChat.tsx` missing dep still **OPEN**. *(C471 `RealtimeProvider`
 useRealtimeEvent dep — **FALSIFIED** by verification: the `handlerRef` pattern is
 correct. Do not "fix" it.)*
 
 **Accessibility (WCAG 2.1 AA):** C414/C320/C326 hover-only controls hidden from
 keyboard (`opacity-0`, no `focus:`), C322 `AgentDetailDrawer` no focus trap, C327
 `Forge` modal missing `aria-labelledby`, C328 `SpecPlan` drag cards no keyboard
-path, C378 `ToastViewport` no `aria-live`, C511/C512 `GitFileTree` clickable div
-+ unlabeled icon button, C513/C514 dashboard `motion.div onClick` no role, C515
-`CodeViewerDialog` `dangerouslySetInnerHTML` links. **Shared fix:** clickable
+path, C378 `ToastViewport` no `aria-live`, C513/C514 dashboard `motion.div onClick`
+no role, C515 `CodeViewerDialog` `dangerouslySetInnerHTML` links — **OPEN**.
+~~C511/C512 `GitFileTree` clickable div + unlabeled icon button~~ and the
+hover-only `focus:` reveals (C320/C414 cluster: NotificationDropdown, ChatCentral,
+Planning, BranchSelector) — **✅ RESOLVED (2026-07-10 triage)**. **Shared fix:** clickable
 `div`→`button` (or `role`/`tabIndex`/`onKeyDown`/`aria-label`);
 `focus:opacity-100`; Radix dialog primitives for focus-trap; `aria-live` on
 toasts. **Status: OPEN.**
@@ -245,21 +258,20 @@ state) for secret inputs + cleanup; `encodeURIComponent` every dynamic segment
 
 ### 4.3 🟠 High — performance
 
-C342 `ChatCentral.tsx:805` unbounded animated message list (no virtualization),
-C347 `HiveGraph.tsx:121` `AgentNode` not `React.memo`'d, C422 `TopBar.tsx:27`
-`resolveRouteName` O(n log n)/render, C423 `CommandPalette.tsx:183` O(n²)
-`findIndex` in render, C424 `NotificationDropdown.tsx:42` sync
-`getBoundingClientRect` (layout thrash), C524 `useHiveData.ts:113` 9-key
-invalidation per mutation, **C411/C429/C486 `BackendDownBanner.tsx:47` keyless
-`invalidateQueries()` nukes the whole cache** (legacy A.36). **Fix:** virtualize
+C342 `ChatCentral.tsx` unbounded animated message list, C424
+`NotificationDropdown.tsx` sync `getBoundingClientRect`, C524 `useHiveData.ts`
+9-key invalidation per mutation — **OPEN**. ~~C347 `HiveGraph.tsx` `AgentNode`
+not memo'd~~, ~~C422 `TopBar.tsx` `resolveRouteName`~~, ~~C423
+`CommandPalette.tsx` O(n²) findIndex~~, ~~C411/C429/C486 `BackendDownBanner.tsx`
+keyless invalidate~~ (legacy A.36) — **✅ RESOLVED (2026-07-10 triage)**. **Fix:** virtualize
 (`react-window`); `React.memo`; memoize derived names; precompute index `Map`;
 `requestAnimationFrame` for layout reads; scope every invalidate. **Status: OPEN.**
 
 ### 4.4 🟠 High — type-safety & dependencies
 
-C394 `input-otp.tsx:28` missing null check on OTP context, C428
-`ModelPicker.tsx:110` unsafe `as Error` cast, C492 `useServerData.ts:284` dead
-duplicate `useAgentMessagesData` typed `any[]`. **Deps:** C544 `esbuild 0.21.5`
+~~C394 `input-otp.tsx` missing null check on OTP context~~, ~~C428
+`ModelPicker.tsx` unsafe `as Error` cast~~, ~~C492 `useServerData.ts` dead
+`useAgentMessagesData`~~ — **✅ RESOLVED (2026-07-10 triage)**. **Deps:** C544 `esbuild 0.21.5`
 (via vite 5.4.19) dev-server CORS bypass, C545 `esbuild 0.25.0` (via
 lovable-tagger) advisory (verifier: CVSS 8.1, Deno-binary vector). **Status: OPEN.**
 
@@ -279,8 +291,8 @@ C318 non-semantic clickable card (`AgentForge.tsx:165`), C345 triple-filter in
 `SpecPlan` kanban, C355 incomplete `ensureProjectForChat` deps
 (`Onboarding.tsx:213`, legacy ZZ75), C377 `PaginationLink` raw anchor (unused),
 C410 carousel keyboard untested (unused), C445 `CommandPalette` activate untested,
-C521 `WorkspaceContext` localStorage no sensitivity safelist, C534 `mergeSettings`
-array-merge bug (dead code). **Status: OPEN.**
+C521 `WorkspaceContext` localStorage no sensitivity safelist — **OPEN**.
+~~C534 `mergeSettings` array-merge bug~~ — **✅ RESOLVED (2026-07-10 triage)**: dead export deleted.
 
 ---
 
@@ -296,6 +308,27 @@ array-merge bug (dead code). **Status: OPEN.**
 
 Reverse-chronological. These landed on `main`; the newer C-audit does **not**
 re-flag them as broken (where it cites the same file it only flags a *test* gap).
+
+**Triage batch (2026-07-10)** — a code-verified sweep against current `main`
+after discovering the register was stale (PRs #20-#24 had already fixed
+C312/C477, C169-188, C202/C203/C201, C247/C256, C092, C402 without the doc
+being updated). Newly landed on the `claude/issue-triage-fixes-xic46d` branch:
+- **Audit coverage (C001-C056 cluster)** — 36 new `audit::append` sites
+  (15 → 51) so every state-changing handler records a row; settings audit uses
+  the post-scrub blob, connector audits redact sealed credentials.
+- **Security** — C087 host-based (not substring) research-API whitelist; C088
+  bounds-checked chat-attachment read path; C251 git option-injection guard
+  (+ first `hive-git` tests); C151 parameterized migration-repair SQL.
+- **Panics → errors** — C141 seed JSON returns `DbErr`; C211 `client_for`
+  returns `Result`.
+- **Provider correctness** — C218 truncated-stream tool-call args finalized
+  consumer-side (all providers).
+- **Perf** — C102 batched attachment lookups; C143/C144 one-query in-memory
+  agent tree walks (+ first tests, C152); C168 todo sandbox-lock.
+- **Frontend** — C543 vitest floor + dompurify override; React correctness
+  C313/C316/C371/C356/C508; perf C347/C422/C423/C486; type-safety
+  C394/C428/C492; a11y C320/C414/C511/C512; dead-code C534.
+
 
 **Durable-execution migration (2026-06-21)** — extends the `WorkflowBackend`
 seam (built for the B4 spawn pipeline, PRs #26/#27) to a **second** job family,

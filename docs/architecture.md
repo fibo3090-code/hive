@@ -325,11 +325,13 @@ The runtime / API decoupling matters: `hive-runtime` cannot depend on
   `169.254.169.254`), unspecified, broadcast, multicast, IPv6
   unique-local / link-local / documentation, and IPv4-mapped variants
   of all of the above.
-- `WebFetchTool` installs a custom `reqwest::redirect::Policy` that
-  re-validates IP-literal hops, caps the chain at 5, and refuses
-  non-http(s) schemes — closes the redirect-chain bypass where a public
-  host could `302 → 169.254.169.254` (Z3/A9 — partial; the DNS-rebinding
-  hostname window is still open, tracked as ZZ8).
+- `WebFetchTool` disables reqwest auto-follow (`Policy::none()`) and walks
+  redirects **manually** in `invoke`, running the async
+  `validate_url_destination` guard on **every** hop. Because the guard
+  resolves hostnames (not just IP literals), a public host that
+  `302 → localhost` / `→ 169.254.169.254` is rejected — closing the
+  redirect-to-internal and DNS-rebinding-hostname window (C169–C188, was
+  Z3/A9/ZZ8). Caps the chain at 5 hops and refuses non-http(s) schemes.
 
 ---
 
