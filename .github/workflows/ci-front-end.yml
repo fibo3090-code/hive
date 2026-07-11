@@ -98,11 +98,23 @@ jobs:
       - name: Test
         run: bun run test
 
-  # Frontend dependency CVE audit. `bun audit` first; falls back to
-  # `npm audit` if Bun's audit subcommand isn't available on the
-  # selected version. `--audit-level=high` keeps Medium/Low advisories
-  # out of the failure path so the workflow tracks blocking issues
-  # only.
+  # Frontend dependency CVE audit. No lockfile is committed (bun.lockb
+  # and package-lock.json are both gitignored), so this job must
+  # materialize one via `npm install` before it can audit anything —
+  # skipping that step is why `bun audit` used to fail with
+  # "Lockfile not found" on every run.
+  #
+  # The gate is scoped to production dependencies only
+  # (`npm audit --omit=dev`): `bun audit` has no prod-only/omit-dev
+  # flag (confirmed via `bun audit --help`), so we use `npm audit`
+  # unconditionally here for a deterministic, reproducible gate
+  # rather than branching on bun/npm availability. Dev-only tooling
+  # CVEs (e.g. the vite/esbuild dev-server advisories, C544/C545)
+  # don't ship to users and shouldn't block application merges — they
+  # are tracked separately in docs/SECURITY.md §4 and
+  # docs/BACKLOG.md §4.4. `--audit-level=high` keeps Medium/Low
+  # advisories out of the failure path so the workflow tracks
+  # blocking issues only.
   audit:
     name: audit
     runs-on: ubuntu-latest
@@ -113,16 +125,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: latest
+      # No Bun setup needed: this job only ever uses `npm`, which
+      # ships preinstalled on GitHub-hosted ubuntu-latest runners.
+      - name: Install (materialize lockfile for audit)
+        run: npm install --no-audit --no-fund --silent
 
-      - name: Audit
-        run: |
-          if bun audit --help >/dev/null 2>&1; then
-            bun audit --audit-level=high
-          else
-            npm install --no-audit --no-fund --silent
-            npm audit --audit-level=high --omit=dev
-          fi
+      - name: Audit (production dependencies only)
+        run: npm audit --audit-level=high --omit=dev

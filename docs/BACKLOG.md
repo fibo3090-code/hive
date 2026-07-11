@@ -101,10 +101,10 @@ ease, reconciled with the verification report's "what I'd ship first":
     budget, SSRF, git parsing. **Partial** — `hive-git`, agent tree-walk, and
     the C087 whitelist now have their first tests; the frontend suite is still open. → §3.5 / §4.5
 
-**Remaining highest-value OPEN items (2026-07-10):** C134-C140 repo-layer
+**Remaining highest-value OPEN items (2026-07-11):** C134-C140 repo-layer
 audit/allowlist bypass (§3.2), C261 sandbox `exec` arbitrary binary (§3.2),
-C060/C061/C106 backend perf (§3.5), C544/C545 esbuild/vite advisories needing
-the vite 5→8 major bump (§4.4), and the frontend test suite (§4.5).
+C060/C061/C106 backend perf (§3.5), and the frontend test suite (§4.5).
+C544/C545 esbuild/vite advisories **resolved** — vite bumped 5→7 (§4.4).
 
 ---
 
@@ -219,7 +219,7 @@ fs/edit/meta/shell with inconsistent timestamp generation. **Status: OPEN.**
 | **C312 cluster / C477** (11 votes) | A.2, Z4, ZZ72 | `front-end/src/pages/Modules.tsx` + `api/client.ts` | Page opened its own `EventSource` per `jobId`, bypassing the `RealtimeProvider` singleton. | **✅ RESOLVED** — PR #21 (merged): synthesis stream routed through the SSE singleton; `eventStreamUrl` export removed. |
 | **C402 / C393** | — | `front-end/src/components/ui/form.tsx` | `useFormField` read context fields before/without null checks — a real crash. | **✅ RESOLVED** — PR #22 (merged): guards on `fieldContext?.name` / `itemContext?.id` before use. |
 | **C478** | — | `front-end/src/api/queries/useServerData.ts:24` | Settings PATCH `JSON.stringify({ settings })` ships the entire `SettingsState`, including secret-bearing fields (`tavilyApiKey`), in plaintext. *(Verification re-rated → high, not critical.)* | **OPEN** |
-| **C543** | — | `front-end/package.json` | `vitest 3.2.4` — GHSA-5xrq-8626-4rwp (CVSS 9.8) affects <3.2.6. | **✅ RESOLVED** (2026-07-10 triage): floor raised to ^3.2.7; dompurify forced to ^3.4.11 via `overrides` (monaco-editor pins a vulnerable version). esbuild/vite advisories (C544) still need the vite major bump. |
+| **C543** | — | `front-end/package.json` | `vitest 3.2.4` — GHSA-5xrq-8626-4rwp (CVSS 9.8) affects <3.2.6. | **✅ RESOLVED** (2026-07-10 triage): floor raised to ^3.2.7; dompurify forced to ^3.4.11 via `overrides` (monaco-editor pins a vulnerable version). esbuild/vite advisories (C544/C545) **resolved 2026-07-11** — see below. |
 | **C361/C400/C531/C532/C533** | — | `front-end/src` | Near-zero tests: 19 pages, ~47 UI components, `useHiveData`, `RealtimeProvider`, and `useSse` all untested; the only test asserts `expect(true).toBe(true)` (C538). | **OPEN** (see §4.5) |
 
 **Fix (C312):** replace the inline `EventSource` with
@@ -271,9 +271,20 @@ keyless invalidate~~ (legacy A.36) — **✅ RESOLVED (2026-07-10 triage)**. **F
 
 ~~C394 `input-otp.tsx` missing null check on OTP context~~, ~~C428
 `ModelPicker.tsx` unsafe `as Error` cast~~, ~~C492 `useServerData.ts` dead
-`useAgentMessagesData`~~ — **✅ RESOLVED (2026-07-10 triage)**. **Deps:** C544 `esbuild 0.21.5`
-(via vite 5.4.19) dev-server CORS bypass, C545 `esbuild 0.25.0` (via
-lovable-tagger) advisory (verifier: CVSS 8.1, Deno-binary vector). **Status: OPEN.**
+`useAgentMessagesData`~~ — **✅ RESOLVED (2026-07-10 triage)**. **Deps:** ~~C544
+`esbuild 0.21.5` (via vite 5.4.19) dev-server CORS bypass, C545 `esbuild
+0.25.0` (via lovable-tagger) advisory (verifier: CVSS 8.1, Deno-binary
+vector)~~ — **✅ RESOLVED (2026-07-11 triage)**: `vite` bumped `^5.4.19` →
+`^7.3.6` and `@vitejs/plugin-react-swc` bumped `^3.11.0` → `^4.3.1` (peer
+range `^4 || ^5 || ^6 || ^7 || ^8`); `lovable-tagger ^1.1.13` already accepted
+vite `>=5.0.0 <9.0.0` so no change needed there. `vite@8` was evaluated first
+but rejected: vite 8 defaults to the Rolldown bundler, which does not support
+the object form of `rollupOptions.output.manualChunks` used in
+`vite.config.ts` (`TypeError: manualChunks is not a function`) — fixing that
+would require a separate rollup-to-rolldown config migration, out of scope
+here. vite 7 carries the esbuild fix without that break. `npm audit` (all
+deps) now reports 0 vulnerabilities; `npm run build` / `npm run test` /
+`tsc --noEmit -p tsconfig.app.json` all still pass. **Status: RESOLVED.**
 
 ### 4.5 🟠 High — frontend test coverage
 

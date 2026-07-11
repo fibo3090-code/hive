@@ -67,10 +67,16 @@ Confirmed open in the 2026-06-15 audit and **still open** on `main`. Full detail
   floor raised to ^3.2.7; `dompurify` forced to ^3.4.11 via `overrides`
   (monaco-editor pins a vulnerable transitive version).
 - **C544 / C545** — transitive `esbuild`/`vite` advisories (dev-server CORS;
-  Deno-binary vector). **Still open** — needs the vite 5→8 major bump; dev-only
-  surface, lower severity.
+  Deno-binary vector). **Resolved (2026-07-11)** — `vite` bumped `^5.4.19` →
+  `^7.3.6` and `@vitejs/plugin-react-swc` bumped to `^4.3.1` to match; `vite@8`
+  was evaluated but rejected because it defaults to the Rolldown bundler,
+  which breaks the object-form `manualChunks` config in `vite.config.ts`.
+  `npm audit` (all deps) now reports 0 vulnerabilities.
 
-Run `just audit` (`cargo audit` + `npm audit`) before any release.
+Run `just audit` (`cargo audit` + `npm audit`) before any release. CI's
+`audit` job (`.github/workflows/ci-front-end.yml`) gates merges on
+`npm audit --audit-level=high --omit=dev` (production dependencies only);
+dev-only advisories are tracked here instead of blocking merges.
 
 ## 5. Before you bind off-loopback
 

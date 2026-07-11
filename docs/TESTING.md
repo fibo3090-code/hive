@@ -101,5 +101,7 @@ this order — each protects a guarantee, not just a line:
 `vitest` is pinned ≥3.2.7 (C543, GHSA-5xrq-8626-4rwp resolved 2026-07-10) — the
 test runner no longer carries the critical CVE. `dompurify` is forced to
 ^3.4.11 via an `overrides` entry because monaco-editor pins a vulnerable
-transitive version. Run `npm audit` before relying on the suite; the remaining
-esbuild/vite advisories (C544/C545) need a vite major bump.
+transitive version. The esbuild/vite advisories (C544/C545) are resolved as
+of 2026-07-11 — `vite` bumped `^5.4.19` → `^7.3.6` (vite 8 was rejected; its
+default Rolldown bundler breaks the `manualChunks` config). Run `npm audit`
+before relying on the suite; it should report 0 vulnerabilities.
