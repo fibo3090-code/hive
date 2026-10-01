@@ -1,5 +1,11 @@
 # HIVE
 
+> [!WARNING]
+> **Paused — shared as-is.** Development is on hold. Parts of HIVE may be
+> incomplete, broken or out of date, and it is not actively maintained. You are
+> free to use, fork or adapt it under the MIT licence, but review it carefully
+> before relying on it, especially the sandbox and anything that runs commands.
+
 HIVE is a **local-first multi-agent project-execution platform**. You give it a
 project brief; a *coordinator* agent (the "CEO") turns it into a spec document
 and a roadmap of sprints/tasks, spawns specialist sub-agents, and the agents
