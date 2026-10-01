@@ -8,7 +8,9 @@ export const meta = {
   ],
 }
 
-const ROOT = '..'
+// Directory that holds the checkout (`hive-code/`) and receives `audit-out/`.
+// Set HIVE_AUDIT_ROOT to override; defaults to the checkout's parent directory.
+const ROOT = globalThis.process?.env?.HIVE_AUDIT_ROOT ?? '..'
 const CODE = ROOT + '/hive-code'
 const OUT = ROOT + '/audit-out'
 const ORDER = { critical: 3, high: 2, medium: 1, low: 0 }
